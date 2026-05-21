@@ -9,12 +9,14 @@ module Exwiw
       output_dir:,
       config_dir:,
       dump_target:,
-      logger:
+      logger:,
+      output_format: 'insert'
     )
       @connection_config = connection_config
       @output_dir = output_dir
       @config_dir = config_dir
       @dump_target = dump_target
+      @output_format = output_format
       @logger = logger
     end
 
@@ -52,18 +54,30 @@ module Exwiw
           @logger.info("  No records matched. skip this table.")
           next
         end
-        @logger.debug("  Generate INSERT statement...")
-
-        chunk_size = table.bulk_insert_chunk_size
-        chunks = chunk_size ? results.each_slice(chunk_size).to_a : [results]
-        insert_sql = chunks.map { |chunk_rows| adapter.to_bulk_insert(chunk_rows, table) }.join("\n")
-
-        @logger.info("  Generated INSERT statement for #{record_num} records (#{chunks.size} statement(s)).")
         insert_idx = (idx + 1).to_s.rjust(3, '0')
-        File.open(File.join(@output_dir, "insert-#{insert_idx}-#{table_name}.#{adapter.output_extension}"), 'w') do |file|
-          file.puts(insert_sql)
-          post = adapter.post_insert_sql(table)
-          file.puts(post) if post
+
+        if @output_format == 'copy'
+          @logger.debug("  Generate COPY statement...")
+          copy_sql = adapter.to_copy_from_stdin(results, table)
+          @logger.info("  Generated COPY statement for #{record_num} records.")
+
+          File.open(File.join(@output_dir, "insert-#{insert_idx}-#{table_name}.#{adapter.output_extension}"), 'w') do |file|
+            file.puts(copy_sql)
+            post = adapter.post_insert_sql(table)
+            file.puts(post) if post
+          end
+        else
+          @logger.debug("  Generate INSERT statement...")
+          chunk_size = table.bulk_insert_chunk_size
+          chunks = chunk_size ? results.each_slice(chunk_size).to_a : [results]
+          insert_sql = chunks.map { |chunk_rows| adapter.to_bulk_insert(chunk_rows, table) }.join("\n")
+
+          @logger.info("  Generated INSERT statement for #{record_num} records (#{chunks.size} statement(s)).")
+          File.open(File.join(@output_dir, "insert-#{insert_idx}-#{table_name}.#{adapter.output_extension}"), 'w') do |file|
+            file.puts(insert_sql)
+            post = adapter.post_insert_sql(table)
+            file.puts(post) if post
+          end
         end
 
         if adapter.supports_bulk_delete?

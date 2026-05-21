@@ -83,6 +83,7 @@ module Exwiw
             output_dir: output_dir,
             config_dir: scenario[:config_dir],
             dump_target: DumpTarget.new(table_name: "shops", ids: ["1"]),
+            output_format: scenario.fetch(:output_format, "insert"),
             logger: ::Logger.new(nil),
           )
         end
