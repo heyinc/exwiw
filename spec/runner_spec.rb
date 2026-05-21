@@ -115,6 +115,40 @@ module Exwiw
       end
     end
 
+    describe 'with insert_only' do
+      let(:config_dir) { 'tmp/runner_spec_config_insert_only' }
+      let(:output_dir) { 'tmp/runner_spec_output_insert_only' }
+      let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1']) }
+      let(:runner) do
+        Runner.new(
+          connection_config: connection_config,
+          output_dir: output_dir,
+          config_dir: config_dir,
+          dump_target: dump_target,
+          insert_only: true,
+          logger: ::Logger.new(nil),
+        )
+      end
+
+      before do
+        FileUtils.rm_rf(config_dir)
+        FileUtils.rm_rf(output_dir)
+        FileUtils.mkdir_p(config_dir)
+
+        FileUtils.cp('scenario/sqlite3-schema/shops.json', File.join(config_dir, 'shops.json'))
+      end
+
+      it 'does not generate delete files' do
+        runner.run
+
+        insert_files = Dir[File.join(output_dir, 'insert-*-shops.sql')]
+        expect(insert_files).not_to be_empty
+
+        delete_files = Dir[File.join(output_dir, 'delete-*.sql')]
+        expect(delete_files).to be_empty
+      end
+    end
+
     describe 'with output_format copy' do
       let(:output_dir) { 'tmp/runner_spec_output_copy' }
       let(:connection_config) do

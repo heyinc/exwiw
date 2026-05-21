@@ -10,13 +10,15 @@ module Exwiw
       config_dir:,
       dump_target:,
       logger:,
-      output_format: 'insert'
+      output_format: 'insert',
+      insert_only: false
     )
       @connection_config = connection_config
       @output_dir = output_dir
       @config_dir = config_dir
       @dump_target = dump_target
       @output_format = output_format
+      @insert_only = insert_only
       @logger = logger
     end
 
@@ -80,7 +82,7 @@ module Exwiw
           end
         end
 
-        if adapter.supports_bulk_delete?
+        if adapter.supports_bulk_delete? && !@insert_only
           @logger.debug("  Generate DELETE statement...")
           delete_sql = adapter.to_bulk_delete(query_ast, table)
           if @logger.debug?

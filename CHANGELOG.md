@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `--insert-only` CLI flag to skip generating `delete-*.sql` files.
+
 ## [0.1.9] - 2026-05-21
 
   Added
