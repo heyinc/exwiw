@@ -221,10 +221,10 @@ module Exwiw
           "\\N"
         when String
           value
-            .gsub("\\", "\\\\")
-            .gsub("\t", "\\t")
-            .gsub("\n", "\\n")
-            .gsub("\r", "\\r")
+            .gsub('\\') { '\\\\' }
+            .gsub("\t", '\t')
+            .gsub("\n", '\n')
+            .gsub("\r", '\r')
         else
           value.to_s
         end
