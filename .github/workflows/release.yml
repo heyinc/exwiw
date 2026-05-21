@@ -7,19 +7,21 @@ on:
     paths:
       - 'lib/exwiw/version.rb'
 
-permissions:
-  contents: write
-
 jobs:
   release:
     runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Extract version
-        id: version
+      - name: Extract version and check tag
+        id: check_tag
         run: |
           VERSION=$(grep -E 'VERSION\s*=' lib/exwiw/version.rb | sed -E 's/.*"([^"]+)".*/\1/')
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -27,12 +29,6 @@ jobs:
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Release version: $VERSION"
-
-      - name: Skip if tag already exists
-        id: check_tag
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
           if git rev-parse "v$VERSION" >/dev/null 2>&1; then
             echo "Tag v$VERSION already exists; skipping release."
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -45,35 +41,17 @@ jobs:
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.4'
+          bundler-cache: true
 
-      - name: Configure git
+      - name: Release gem (build, tag, push via OIDC)
         if: steps.check_tag.outputs.skip != 'true'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: Tag release
-        if: steps.check_tag.outputs.skip != 'true'
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          git tag -a "v$VERSION" -m "Release v$VERSION"
-          git push origin "v$VERSION"
-
-      - name: Build gem
-        if: steps.check_tag.outputs.skip != 'true'
-        run: gem build exwiw.gemspec
-
-      - name: Publish to RubyGems
-        if: steps.check_tag.outputs.skip != 'true'
-        env:
-          GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
-        run: gem push "exwiw-${{ steps.version.outputs.version }}.gem"
+        uses: rubygems/release-gem@v1
 
       - name: Extract release notes from CHANGELOG
         if: steps.check_tag.outputs.skip != 'true'
         id: notes
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.check_tag.outputs.version }}
         run: |
           NOTES=$(ruby <<'RUBY'
           version = ENV["VERSION"]
@@ -96,7 +74,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${{ steps.check_tag.outputs.version }}"
           gh release create "v$VERSION" \
             --title "v$VERSION" \
             --notes "${{ steps.notes.outputs.notes }}"
