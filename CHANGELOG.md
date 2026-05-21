@@ -4,6 +4,20 @@
 
 ## [0.1.9] - 2026-05-21
 
+  Added
+
+  - PostgreSQL: --output-format=copy — emits COPY FROM stdin blocks instead of
+  INSERT statements. Faster restores for large dumps. (c026960)
+  - PostgreSQL: dump-all-tables mode — running without --target-table / --ids now
+   dumps every table in the scenario. (c026960)
+
+  Fixed
+
+  - PostgreSQL: value escape sequences — corrected escape handling in formatted
+  values. (50e6772)
+
+https://github.com/heyinc/exwiw/pull/21
+
 ## [0.1.8] - 2026-05-16
 
 ### Added
