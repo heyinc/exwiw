@@ -1,0 +1,86 @@
+name: Release PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'New version (e.g., 0.1.9)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-pr:
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate version format
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid version: $VERSION (expected X.Y.Z)"
+            exit 1
+          fi
+
+          CURRENT=$(grep -E 'VERSION\s*=' lib/exwiw/version.rb | sed -E 's/.*"([^"]+)".*/\1/')
+          if [[ "$CURRENT" == "$VERSION" ]]; then
+            echo "::error::version.rb is already $VERSION"
+            exit 1
+          fi
+
+      - name: Update version.rb and CHANGELOG.md
+        run: |
+          ruby -i -pe 'gsub(/VERSION = ".*"/, %Q[VERSION = "#{ENV["VERSION"]}"])' lib/exwiw/version.rb
+
+          ruby <<'RUBY'
+          path = "CHANGELOG.md"
+          version = ENV["VERSION"]
+          date = Time.now.utc.strftime("%Y-%m-%d")
+          content = File.read(path)
+          unless content.include?("## [Unreleased]")
+            warn "## [Unreleased] section not found in #{path}"
+            exit 1
+          end
+          new_section = "## [Unreleased]\n\n## [#{version}] - #{date}"
+          File.write(path, content.sub("## [Unreleased]", new_section))
+          RUBY
+
+          echo "--- diff ---"
+          git --no-pager diff
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit and push branch
+        run: |
+          BRANCH="release/$VERSION"
+          git checkout -b "$BRANCH"
+          git add lib/exwiw/version.rb CHANGELOG.md
+          git commit -m "chore(release): バージョンを $VERSION に bump"
+          git push -u origin "$BRANCH"
+
+      - name: Create PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --base main \
+            --head "release/$VERSION" \
+            --title "chore(release): バージョンを $VERSION に bump" \
+            --body "$(cat <<EOF
+          自動生成されたリリース PR です。
+
+          - \`lib/exwiw/version.rb\`: \`VERSION\` を \`$VERSION\` に更新
+          - \`CHANGELOG.md\`: \`[Unreleased]\` の下に \`[$VERSION] - <today>\` セクションを追加
+
+          このPRをmergeすると \`Release\` workflow が走り、\`v$VERSION\` タグを打って rubygems に publish します。
+          CHANGELOG の \`[Unreleased]\` 配下の項目が今回のリリース内容として反映されているか、merge 前に確認してください。
+          EOF
+          )"
