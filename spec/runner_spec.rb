@@ -1,6 +1,7 @@
 require 'spec_helper'
 require 'fileutils'
 require 'json'
+require 'tmpdir'
 
 module Exwiw
   RSpec.describe Runner do
@@ -14,8 +15,8 @@ module Exwiw
         password: nil,
       )
     end
-    let(:output_dir) { 'tmp/test_output_dir' }
-    let(:config_dir) { 'test_config' }
+    let(:output_dir) { @output_dir }
+    let(:config_dir) { @config_dir }
     let(:dump_target) { DumpTarget.new(table_name: nil, ids: []) }
     let(:runner) do
       Runner.new(
@@ -27,21 +28,25 @@ module Exwiw
       )
     end
 
+    around do |example|
+      Dir.mktmpdir do |config|
+        Dir.mktmpdir do |output|
+          @config_dir = config
+          @output_dir = output
+          example.run
+        end
+      end
+    end
+
     it 'writes bulk insert SQL to the output file' do
       expect { runner.run }.not_to raise_error
     end
 
     describe 'with bulk_insert_chunk_size' do
-      let(:config_dir) { 'tmp/runner_spec_config' }
-      let(:output_dir) { 'tmp/runner_spec_output' }
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1', '2', '3', '4', '5']) }
       let(:insert_sql_regex) { /INSERT INTO shops .+ VALUES\n\([^)]+\)(?:,\n\([^)]+\))*;/ }
 
       before do
-        FileUtils.rm_rf(config_dir)
-        FileUtils.rm_rf(output_dir)
-        FileUtils.mkdir_p(config_dir)
-
         shops_config = JSON.parse(File.read('scenario/sqlite3-schema/shops.json'))
         shops_config['bulk_insert_chunk_size'] = 2
         File.write(File.join(config_dir, 'shops.json'), JSON.dump(shops_config))
@@ -67,15 +72,9 @@ module Exwiw
     end
 
     describe 'without bulk_insert_chunk_size' do
-      let(:config_dir) { 'tmp/runner_spec_config_nochunk' }
-      let(:output_dir) { 'tmp/runner_spec_output_nochunk' }
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1', '2', '3', '4', '5']) }
 
       before do
-        FileUtils.rm_rf(config_dir)
-        FileUtils.rm_rf(output_dir)
-        FileUtils.mkdir_p(config_dir)
-
         FileUtils.cp('scenario/sqlite3-schema/shops.json', File.join(config_dir, 'shops.json'))
       end
 
@@ -90,8 +89,6 @@ module Exwiw
       end
     end
     describe 'dump-all mode (no target table or ids)' do
-      let(:config_dir) { 'tmp/runner_spec_config_dumpall' }
-      let(:output_dir) { 'tmp/runner_spec_output_dumpall' }
       let(:dump_target) { DumpTarget.new(table_name: nil, ids: []) }
       let(:runner) do
         Runner.new(
@@ -103,10 +100,6 @@ module Exwiw
         )
       end
 
-      before do
-        FileUtils.rm_rf(output_dir)
-      end
-
       it 'writes insert files for all tables without raising' do
         expect { runner.run }.not_to raise_error
 
@@ -116,8 +109,6 @@ module Exwiw
     end
 
     describe 'with insert_only' do
-      let(:config_dir) { 'tmp/runner_spec_config_insert_only' }
-      let(:output_dir) { 'tmp/runner_spec_output_insert_only' }
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1']) }
       let(:runner) do
         Runner.new(
@@ -131,10 +122,6 @@ module Exwiw
       end
 
       before do
-        FileUtils.rm_rf(config_dir)
-        FileUtils.rm_rf(output_dir)
-        FileUtils.mkdir_p(config_dir)
-
         FileUtils.cp('scenario/sqlite3-schema/shops.json', File.join(config_dir, 'shops.json'))
       end
 
@@ -150,7 +137,6 @@ module Exwiw
     end
 
     describe 'with output_format copy' do
-      let(:output_dir) { 'tmp/runner_spec_output_copy' }
       let(:connection_config) do
         ConnectionConfig.new(
           adapter: 'postgresql',
@@ -171,10 +157,6 @@ module Exwiw
           output_format: 'copy',
           logger: ::Logger.new(nil),
         )
-      end
-
-      before do
-        FileUtils.rm_rf(output_dir)
       end
 
       it 'generates COPY FROM stdin format instead of INSERT' do
