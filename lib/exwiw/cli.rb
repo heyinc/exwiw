@@ -28,6 +28,7 @@ module Exwiw
       @database_name = nil
       @target_table_name = nil
       @ids = []
+      @output_format = 'insert'
       @log_level = :info
 
       parser.parse!(@argv)
@@ -60,6 +61,7 @@ module Exwiw
           output_dir: @output_dir,
           config_dir: @config_dir,
           dump_target: dump_target,
+          output_format: @output_format,
           logger: logger,
         ).run
       end
@@ -92,6 +94,17 @@ module Exwiw
         exit 1
       end
 
+      valid_output_formats = ["insert", "copy"]
+      unless valid_output_formats.include?(@output_format)
+        $stderr.puts "Invalid output format '#{@output_format}'. Available options are: #{valid_output_formats.join(', ')}"
+        exit 1
+      end
+
+      if @output_format == "copy" && @database_adapter != "postgresql"
+        $stderr.puts "--output-format=copy is only supported with the postgresql adapter"
+        exit 1
+      end
+
       if @config_dir.nil?
         $stderr.puts "Config dir is required"
         exit 1
@@ -107,13 +120,13 @@ module Exwiw
         exit 1
       end
 
-      if @target_table_name.nil? || @target_table_name.empty?
-        $stderr.puts "Target table is required"
+      if @target_table_name && @ids.empty?
+        $stderr.puts "--ids is required when --target-table is specified"
         exit 1
       end
 
-      if @ids.empty?
-        $stderr.puts "At least one ID is required"
+      if !@target_table_name && @ids.any?
+        $stderr.puts "--target-table is required when --ids is specified"
         exit 1
       end
     end
@@ -151,8 +164,9 @@ module Exwiw
         end
         opts.on("-a", "--adapter=ADAPTER", "Database adapter") { |v| @database_adapter = v }
         opts.on("--database=DATABASE", "Target database name") { |v| @database_name = v }
-        opts.on("--target-table=TABLE", "Target table for extraction") { |v| @target_table_name = v }
-        opts.on("--ids=IDS", "Comma-separated list of identifiers") { |v| @ids = v.split(',') }
+        opts.on("--target-table=[TABLE]", "Target table for extraction. If omitted, dump all tables.") { |v| @target_table_name = v }
+        opts.on("--ids=[IDS]", "Comma-separated list of identifiers. Required when --target-table is given.") { |v| @ids = v.split(',') }
+        opts.on("--output-format=[FORMAT]", "Output format: insert (default) or copy (PostgreSQL only)") { |v| @output_format = v }
         opts.on("--log-level=LEVEL", "Log level (debug, info). default is info") { |v| @log_level = v.to_sym }
 
         opts.on("--help", "Print this help") do

@@ -62,6 +62,20 @@ exwiw \
   --log-level=info
 ```
 
+When `--target-table` and `--ids` are omitted, exwiw dumps all tables defined in `--config-dir`:
+
+```bash
+# dump all tables
+exwiw \
+  --adapter=postgresql \
+  --host=localhost \
+  --port=5432 \
+  --user=reader \
+  --database=app_production \
+  --config-dir=exwiw \
+  --output-dir=dump
+```
+
 This command will generate sql files in the `dump` directory.
 
 - `dump/insert-000-schema.sql` — idempotent `CREATE TABLE IF NOT EXISTS ...` for every table in scope. Apply this first to provision an empty database.
@@ -119,6 +133,32 @@ This is an example of the one table schema:
 ```
 
 `--config-dir` will use all json files in the specified directory.
+
+### Output format
+
+By default, exwiw generates `INSERT` statements. For PostgreSQL, you can use `--output-format=copy` to generate `COPY FROM stdin` format instead, which is significantly faster for bulk loading:
+
+```bash
+exwiw \
+  --adapter=postgresql \
+  --host=localhost \
+  --port=5432 \
+  --user=reader \
+  --database=app_production \
+  --config-dir=exwiw \
+  --target-table=shops \
+  --ids=1 \
+  --output-dir=dump \
+  --output-format=copy
+```
+
+The generated file uses tab-separated values with PostgreSQL's text-format escaping (`\N` for NULL, `\\` for backslash, etc.). Import with `psql`:
+
+```bash
+psql -d app_dev -f dump/insert-001-shops.sql
+```
+
+`--output-format=copy` is only supported with the `postgresql` adapter.
 
 ### Bulk insert chunk size
 

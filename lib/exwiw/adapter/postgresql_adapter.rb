@@ -74,6 +74,16 @@ module Exwiw
         "INSERT INTO #{table_name} (#{column_names}) VALUES\n#{values};"
       end
 
+      def to_copy_from_stdin(results, table)
+        column_names = table.columns.map(&:name).join(', ')
+        lines = ["COPY #{table.name} (#{column_names}) FROM stdin;"]
+        results.each do |row|
+          lines << row.map { |v| escape_copy_value(v) }.join("\t")
+        end
+        lines << '\\.'
+        lines.join("\n")
+      end
+
       # Transcribe the FROM-side sequence cursor backing `table.primary_key`
       # onto the import target. Without this, importing into a clean DB leaves
       # the sequence at 1 while the inserted rows occupy higher IDs, so the
@@ -202,6 +212,21 @@ module Exwiw
           "'#{qv}'"
         else
           value
+        end
+      end
+
+      private def escape_copy_value(value)
+        case value
+        when nil
+          "\\N"
+        when String
+          value
+            .gsub('\\') { '\\\\' }
+            .gsub("\t", '\t')
+            .gsub("\n", '\n')
+            .gsub("\r", '\r')
+        else
+          value.to_s
         end
       end
 

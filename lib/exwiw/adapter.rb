@@ -70,6 +70,10 @@ module Exwiw
       def post_insert_sql(_table)
         nil
       end
+
+      def to_copy_from_stdin(_results, _table)
+        raise NotImplementedError, "COPY format is not supported by #{self.class.name}"
+      end
     end
 
     # @params [Exwiw::QueryAst] query_ast

@@ -253,6 +253,57 @@ module Exwiw
         end
       end
 
+      describe "#to_copy_from_stdin" do
+        context "simple rows" do
+          let(:results) do
+            [
+              ["1", "Shop 1", "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              ["2", "Shop 2", "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+            ]
+          end
+          let(:copy_sql) { adapter.to_copy_from_stdin(results, shops_table(adapter_name)) }
+
+          it "returns correct COPY FROM stdin block" do
+            expect(copy_sql).to eq(
+              "COPY shops (id, name, updated_at, created_at) FROM stdin;\n" \
+              "1\tShop 1\t2025-01-01 00:00:00\t2025-01-01 00:00:00\n" \
+              "2\tShop 2\t2025-01-01 00:00:00\t2025-01-01 00:00:00\n" \
+              "\\."
+            )
+          end
+        end
+
+        context "with NULL values" do
+          let(:results) do
+            [["1", nil, "2025-01-01 00:00:00", "2025-01-01 00:00:00"]]
+          end
+          let(:copy_sql) { adapter.to_copy_from_stdin(results, shops_table(adapter_name)) }
+
+          it "escapes NULL as \\N" do
+            lines = copy_sql.split("\n")
+            expect(lines[1]).to eq("1\t\\N\t2025-01-01 00:00:00\t2025-01-01 00:00:00")
+          end
+        end
+
+        context "with special characters" do
+          let(:results) do
+            [
+              ["1", "Shop\twith\ttabs", "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              ["2", "Shop\\with\\backslash", "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              ["3", "Shop\nwith\nnewlines", "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+            ]
+          end
+          let(:copy_sql) { adapter.to_copy_from_stdin(results, shops_table(adapter_name)) }
+
+          it "escapes tabs, backslashes, and newlines" do
+            lines = copy_sql.split("\n")
+            expect(lines[1]).to include("Shop\\twith\\ttabs")
+            expect(lines[2]).to include("Shop\\\\with\\\\backslash")
+            expect(lines[3]).to include("Shop\\nwith\\nnewlines")
+          end
+        end
+      end
+
       describe "#to_bulk_delete" do
         context "simple select query" do
           let(:bulk_delete_sql) { adapter.to_bulk_delete(build_select_shops_ast, shops_table(adapter_name)) }
