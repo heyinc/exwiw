@@ -29,6 +29,7 @@ module Exwiw
       @target_table_name = nil
       @ids = []
       @output_format = 'insert'
+      @insert_only = false
       @log_level = :info
 
       parser.parse!(@argv)
@@ -62,6 +63,7 @@ module Exwiw
           config_dir: @config_dir,
           dump_target: dump_target,
           output_format: @output_format,
+          insert_only: @insert_only,
           logger: logger,
         ).run
       end
@@ -167,6 +169,7 @@ module Exwiw
         opts.on("--target-table=[TABLE]", "Target table for extraction. If omitted, dump all tables.") { |v| @target_table_name = v }
         opts.on("--ids=[IDS]", "Comma-separated list of identifiers. Required when --target-table is given.") { |v| @ids = v.split(',') }
         opts.on("--output-format=[FORMAT]", "Output format: insert (default) or copy (PostgreSQL only)") { |v| @output_format = v }
+        opts.on("--insert-only", "Do not generate DELETE SQL files") { @insert_only = true }
         opts.on("--log-level=LEVEL", "Log level (debug, info). default is info") { |v| @log_level = v.to_sym }
 
         opts.on("--help", "Print this help") do

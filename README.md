@@ -160,6 +160,24 @@ psql -d app_dev -f dump/insert-001-shops.sql
 
 `--output-format=copy` is only supported with the `postgresql` adapter.
 
+### Skip DELETE SQL output
+
+By default, exwiw generates `delete-*.sql` files alongside the `insert-*.sql` files so that an existing dataset can be cleared before re-inserting. Pass `--insert-only` when you only need the insert files:
+
+```bash
+exwiw \
+  --adapter=mysql2 \
+  --host=localhost \
+  --port=3306 \
+  --user=reader \
+  --database=app_production \
+  --config-dir=exwiw \
+  --target-table=shops \
+  --ids=1 \
+  --output-dir=dump \
+  --insert-only
+```
+
 ### Bulk insert chunk size
 
 `bulk_insert_chunk_size` splits the generated `INSERT` statement into multiple statements, each containing at most the specified number of rows. This is useful when the number of records per table is large enough to hit limits like MySQL's `max_allowed_packet`.
