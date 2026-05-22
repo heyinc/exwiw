@@ -30,6 +30,7 @@ module Exwiw
       @ids = []
       @output_format = 'insert'
       @insert_only = false
+      @after_insert_hook_path = nil
       @log_level = :info
 
       parser.parse!(@argv)
@@ -64,6 +65,8 @@ module Exwiw
           dump_target: dump_target,
           output_format: @output_format,
           insert_only: @insert_only,
+          after_insert_hook_path: @after_insert_hook_path,
+          cli_options: build_cli_options_hash,
           logger: logger,
         ).run
       end
@@ -131,6 +134,38 @@ module Exwiw
         $stderr.puts "--target-table is required when --ids is specified"
         exit 1
       end
+
+      if @after_insert_hook_path
+        unless File.file?(@after_insert_hook_path)
+          $stderr.puts "--after-insert-hook file not found: #{@after_insert_hook_path}"
+          exit 1
+        end
+
+        ext = File.extname(@after_insert_hook_path)
+        if ext != '.rb' && !File.executable?(@after_insert_hook_path)
+          $stderr.puts "--after-insert-hook must be a .rb file or an executable script: #{@after_insert_hook_path}"
+          exit 1
+        end
+      end
+    end
+
+    private def build_cli_options_hash
+      {
+        database_host: @database_host,
+        database_port: @database_port,
+        database_user: @database_user,
+        database_password: @database_password,
+        output_dir: @output_dir,
+        config_dir: @config_dir,
+        database_adapter: @database_adapter,
+        database_name: @database_name,
+        target_table: @target_table_name,
+        ids: @ids.dup.freeze,
+        output_format: @output_format,
+        insert_only: @insert_only,
+        log_level: @log_level,
+        after_insert_hook: @after_insert_hook_path,
+      }.freeze
     end
 
     private def build_logger
@@ -170,6 +205,9 @@ module Exwiw
         opts.on("--ids=[IDS]", "Comma-separated list of identifiers. Required when --target-table is given.") { |v| @ids = v.split(',') }
         opts.on("--output-format=[FORMAT]", "Output format: insert (default) or copy (PostgreSQL only)") { |v| @output_format = v }
         opts.on("--insert-only", "Do not generate DELETE SQL files") { @insert_only = true }
+        opts.on("--after-insert-hook=PATH", "Path to a .rb or .sh post-processing hook executed after all insert/delete files are written") do |v|
+          @after_insert_hook_path = File.expand_path(v)
+        end
         opts.on("--log-level=LEVEL", "Log level (debug, info). default is info") { |v| @log_level = v.to_sym }
 
         opts.on("--help", "Print this help") do

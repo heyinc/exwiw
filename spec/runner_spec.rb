@@ -136,6 +136,45 @@ module Exwiw
       end
     end
 
+    describe 'with after_insert_hook_path (.rb)' do
+      let(:hook_path) { 'tmp/runner_spec_after_hook.rb' }
+      let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1', '2']) }
+      let(:runner) do
+        Runner.new(
+          connection_config: connection_config,
+          output_dir: output_dir,
+          config_dir: config_dir,
+          dump_target: dump_target,
+          after_insert_hook_path: hook_path,
+          cli_options: { ids: ['1', '2'], target_table: 'shops' },
+          logger: ::Logger.new(nil),
+        )
+      end
+
+      before do
+        FileUtils.cp('scenario/sqlite3-schema/shops.json', File.join(config_dir, 'shops.json'))
+
+        File.write(hook_path, <<~RUBY)
+          insert_sql <<~SQL
+            -- after-insert for ids: <%= cli_options.fetch(:ids).join(',') %>
+          SQL
+        RUBY
+      end
+
+      after do
+        FileUtils.rm_f(hook_path)
+      end
+
+      it 'writes insert-{N+1}-after_insert.sql with ERB-expanded content' do
+        runner.run
+
+        files = Dir[File.join(output_dir, 'insert-*-after_insert.sql')]
+        expect(files.size).to eq(1)
+        content = File.read(files.first)
+        expect(content).to include('-- after-insert for ids: 1,2')
+      end
+    end
+
     describe 'with output_format copy' do
       let(:connection_config) do
         ConnectionConfig.new(
