@@ -13,6 +13,7 @@ module Exwiw
     attribute :belongs_tos, array(BelongsTo)
     attribute :fields, array(MongodbField)
     attribute :bulk_insert_chunk_size, optional(Integer), skip_serializing_if_nil: true
+    attribute :skip, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
 
     # Marks this config as physically embedded inside another collection's
     # documents. When set, this config is not processed as a standalone dump

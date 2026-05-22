@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `skip: true` table config attribute to explicitly exclude a table from the dump. Skipped tables produce no schema entry, no `insert-*` file, and no `delete-*` file. Using a skipped table as `--target-table`, or having another non-skipped table reference it via `belongs_to`, raises `ArgumentError` on load. Available for both SQL adapters (`TableConfig`) and the MongoDB adapter (`MongodbCollectionConfig`).
+
 ## [0.2.0] - 2026-05-22
 
 ### Added

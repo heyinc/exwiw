@@ -78,6 +78,24 @@ module Exwiw
         end
       end
 
+      context 'with skip:true' do
+        let(:json) do
+          {
+            "name" => "logs",
+            "primary_key" => "_id",
+            "skip" => true,
+            "belongs_tos" => [],
+            "fields" => [{ "name" => "_id" }],
+          }
+        end
+
+        it 'loads skip and round-trips through to_hash' do
+          config = described_class.from(json)
+          expect(config.skip).to eq(true)
+          expect(config.to_hash["skip"]).to eq(true)
+        end
+      end
+
       context 'when fields contain raw_sql key' do
         let(:json) do
           {

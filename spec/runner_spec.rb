@@ -175,6 +175,64 @@ module Exwiw
       end
     end
 
+    describe 'with skip:true on a table config' do
+      let(:dump_target) { DumpTarget.new(table_name: nil, ids: []) }
+
+      before do
+        FileUtils.cp('scenario/sqlite3-schema/shops.json', File.join(config_dir, 'shops.json'))
+
+        announcements = JSON.parse(File.read('scenario/sqlite3-schema/system_announcements.json'))
+        announcements['skip'] = true
+        File.write(File.join(config_dir, 'system_announcements.json'), JSON.dump(announcements))
+      end
+
+      it 'does not emit schema, insert, or delete files for the skipped table' do
+        runner.run
+
+        expect(Dir[File.join(output_dir, 'insert-*-system_announcements.sql')]).to be_empty
+        expect(Dir[File.join(output_dir, 'delete-*-system_announcements.sql')]).to be_empty
+
+        schema_file = File.join(output_dir, 'insert-000-schema.sql')
+        expect(File.exist?(schema_file)).to be(true)
+        expect(File.read(schema_file)).not_to include('system_announcements')
+      end
+
+      it 'still emits files for non-skipped tables' do
+        runner.run
+
+        expect(Dir[File.join(output_dir, 'insert-*-shops.sql')]).not_to be_empty
+      end
+    end
+
+    describe 'when a non-skipped table has belongs_to a skipped table' do
+      let(:dump_target) { DumpTarget.new(table_name: nil, ids: []) }
+
+      before do
+        shops = JSON.parse(File.read('scenario/sqlite3-schema/shops.json'))
+        shops['skip'] = true
+        File.write(File.join(config_dir, 'shops.json'), JSON.dump(shops))
+        FileUtils.cp('scenario/sqlite3-schema/users.json', File.join(config_dir, 'users.json'))
+      end
+
+      it 'raises ArgumentError with a clear message' do
+        expect { runner.run }.to raise_error(ArgumentError, /belongs_to references to skipped table\(s\): shops/)
+      end
+    end
+
+    describe 'when --target-table is skipped' do
+      let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1']) }
+
+      before do
+        shops = JSON.parse(File.read('scenario/sqlite3-schema/shops.json'))
+        shops['skip'] = true
+        File.write(File.join(config_dir, 'shops.json'), JSON.dump(shops))
+      end
+
+      it 'raises ArgumentError' do
+        expect { runner.run }.to raise_error(ArgumentError, /target-table 'shops' is marked skip:true/)
+      end
+    end
+
     describe 'with output_format copy' do
       let(:connection_config) do
         ConnectionConfig.new(

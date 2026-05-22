@@ -121,6 +121,22 @@ module Exwiw
         end
       end
 
+      context 'when receiver has skip:true' do
+        let(:current_config) do
+          TableConfig.from_symbol_keys(
+            name: 'users',
+            primary_key: 'id',
+            skip: true,
+            belongs_tos: current_belongs_tos,
+            columns: current_columns,
+          )
+        end
+
+        it 'preserves skip from the receiver in the merged config' do
+          expect(merged_config.skip).to eq(true)
+        end
+      end
+
       context 'when passed config has less columns' do
         let(:current_columns) do
           [{ name: 'id' }, { name: 'name', replace_with: 'MaskedName{id}' }, { name: 'email' }]
