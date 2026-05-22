@@ -178,6 +178,47 @@ exwiw \
   --insert-only
 ```
 
+### After-insert hook
+
+`--after-insert-hook=PATH` runs a post-processing hook **after** all per-table insert/delete files have been written. The hook can be either a Ruby file (`.rb`) or any executable script (e.g. `.sh`).
+
+**Ruby hook (`.rb`)**: provides a tiny DSL with two builtins:
+
+- `cli_options` — Hash of all parsed CLI options (e.g. `cli_options.fetch(:ids)` returns the `--ids` array).
+- `insert_sql(template)` — appends an ERB-rendered string to a buffer. After the hook finishes, the buffer is concatenated and written to `insert-{N+1}-after_insert.{ext}` where `{N+1}` is one past the last per-table insert file. For the MongoDB adapter the equivalent alias `insert_jsonl(template)` is available; output goes to `insert-{N+1}-after_insert.jsonl`. Multiple `insert_sql` calls in a single hook are joined with `"\n"` into the same file. If no `insert_sql` call is made, no file is created.
+
+Example `hooks/seed_default_users.rb`:
+
+```ruby
+insert_sql <<~SQL
+  -- seed default users for tenants <%= cli_options.fetch(:ids).join(',') %>
+  <%- cli_options.fetch(:ids).each do |tenant_id| -%>
+  INSERT INTO users (tenant_id, email) VALUES (<%= tenant_id %>, 'default@example.com');
+  <%- end -%>
+SQL
+```
+
+Run with:
+
+```bash
+exwiw \
+  --adapter=mysql2 --host=localhost --port=3306 --user=reader \
+  --database=app_production --config-dir=exwiw \
+  --target-table=shops --ids=1,2 \
+  --output-dir=dump \
+  --after-insert-hook=hooks/seed_default_users.rb
+```
+
+**Shell hook**: anything other than `.rb` is exec'd as a child process. It is a pure side-effect hook — exwiw does not capture its stdout. The hook receives these env vars and inherits `DATABASE_PASSWORD` from the parent:
+
+- `EXWIW_OUTPUT_DIR`, `EXWIW_CONFIG_DIR`
+- `EXWIW_DATABASE_ADAPTER`, `EXWIW_DATABASE_HOST`, `EXWIW_DATABASE_PORT`, `EXWIW_DATABASE_USER`, `EXWIW_DATABASE_NAME`
+- `EXWIW_TARGET_TABLE`, `EXWIW_IDS` (comma-separated), `EXWIW_OUTPUT_FORMAT`
+
+A non-zero exit code from the shell hook aborts exwiw.
+
+Note: Ruby hooks are evaluated via `instance_eval` inside the exwiw process — only pass paths you trust.
+
 ### Bulk insert chunk size
 
 `bulk_insert_chunk_size` splits the generated `INSERT` statement into multiple statements, each containing at most the specified number of rows. This is useful when the number of records per table is large enough to hit limits like MySQL's `max_allowed_packet`.

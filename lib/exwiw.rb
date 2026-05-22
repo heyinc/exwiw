@@ -21,6 +21,7 @@ require_relative "exwiw/determine_table_processing_order"
 require_relative "exwiw/mongo_query"
 require_relative "exwiw/query_ast"
 require_relative "exwiw/query_ast_builder"
+require_relative "exwiw/after_insert_hook"
 require_relative "exwiw/runner"
 require_relative "exwiw/schema_generator"
 

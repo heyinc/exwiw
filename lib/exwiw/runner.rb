@@ -11,7 +11,9 @@ module Exwiw
       dump_target:,
       logger:,
       output_format: 'insert',
-      insert_only: false
+      insert_only: false,
+      after_insert_hook_path: nil,
+      cli_options: {}
     )
       @connection_config = connection_config
       @output_dir = output_dir
@@ -19,6 +21,8 @@ module Exwiw
       @dump_target = dump_target
       @output_format = output_format
       @insert_only = insert_only
+      @after_insert_hook_path = after_insert_hook_path
+      @cli_options = cli_options
       @logger = logger
     end
 
@@ -95,6 +99,18 @@ module Exwiw
             file.puts(delete_sql)
           end
         end
+      end
+
+      if @after_insert_hook_path
+        @logger.info("Running after-insert hook: #{@after_insert_hook_path}")
+        AfterInsertHook.run(
+          path: @after_insert_hook_path,
+          cli_options: @cli_options,
+          output_dir: @output_dir,
+          next_idx: total_size + 1,
+          output_extension: adapter.output_extension,
+          logger: @logger,
+        )
       end
     end
 
