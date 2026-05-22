@@ -219,6 +219,26 @@ A non-zero exit code from the shell hook aborts exwiw.
 
 Note: Ruby hooks are evaluated via `instance_eval` inside the exwiw process — only pass paths you trust.
 
+### Skip a table
+
+Set `"skip": true` on a table's config JSON to explicitly exclude it from the dump. The table is omitted from `insert-000-schema.{sql,js}`, and no `insert-*` / `delete-*` files are generated for it. Skipped tables are also not queried at all.
+
+```json
+{
+  "name": "audit_logs",
+  "primary_key": "id",
+  "skip": true,
+  "belongs_tos": [],
+  "columns": [{ "name": "id" }]
+}
+```
+
+Constraints:
+
+- If another non-skipped table has a `belongs_to` entry pointing at a skipped table, exwiw raises `ArgumentError` on load. Remove the `belongs_to` entry on the referencing table, or unset `skip` on the referenced table.
+- Specifying a skipped table as `--target-table` raises `ArgumentError`.
+- `skip: true` is preserved by `exwiw:schema:generate` regenerations (the receiver value wins over the auto-generated config).
+
 ### Bulk insert chunk size
 
 `bulk_insert_chunk_size` splits the generated `INSERT` statement into multiple statements, each containing at most the specified number of rows. This is useful when the number of records per table is large enough to hit limits like MySQL's `max_allowed_packet`.
