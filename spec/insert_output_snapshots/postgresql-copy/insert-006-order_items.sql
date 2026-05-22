@@ -1,0 +1,7 @@
+COPY order_items (id, quantity, order_id, product_id, updated_at, created_at) FROM stdin;
+3	1	3	3	2025-01-01 00:00:00	2025-01-01 00:00:00
+4	1	4	1	2025-01-01 00:00:00	2025-01-01 00:00:00
+5	1	5	2	2025-01-01 00:00:00	2025-01-01 00:00:00
+6	1	6	3	2025-01-01 00:00:00	2025-01-01 00:00:00
+\.
+SELECT pg_catalog.setval('public.order_items_id_seq', 30, true);
