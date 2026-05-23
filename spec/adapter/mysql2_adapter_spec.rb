@@ -198,6 +198,20 @@ module Exwiw
         end
       end
 
+      describe "#explain" do
+        it "returns EXPLAIN output for a simple select" do
+          output = adapter.explain(build_select_shops_ast)
+          expect(output).to be_a(String)
+          expect(output).not_to be_empty
+          # Output is formatted as vertical rows; assert that header markers and
+          # at least one key/value pair are present. MySQL 5.7/8.0 return classic
+          # table columns (id/select_type/table/...); MySQL 8.0.16+ returns a
+          # single EXPLAIN column with tree-format text. Both are acceptable.
+          expect(output).to include('1. row')
+          expect(output).to match(/(table|EXPLAIN):/i)
+        end
+      end
+
       describe "#to_bulk_insert" do
         let(:bulk_insert_sql) { adapter.to_bulk_insert(results, shops_table(adapter_name)) }
 

@@ -209,6 +209,16 @@ module Exwiw
         end
       end
 
+      describe "#explain" do
+        it "returns EXPLAIN output for a simple select" do
+          output = adapter.explain(build_select_shops_ast)
+          expect(output).to be_a(String)
+          expect(output).not_to be_empty
+          # postgres EXPLAIN includes scan-node descriptions
+          expect(output).to match(/Scan|shops/i)
+        end
+      end
+
       describe "#to_bulk_insert" do
         let(:bulk_insert_sql) { adapter.to_bulk_insert(results, shops_table(adapter_name)) }
 

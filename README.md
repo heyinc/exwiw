@@ -44,6 +44,23 @@ gem install exwiw
 
 ## Usage
 
+### Subcommands
+
+- `dump` (default) — generate INSERT/COPY SQL files. This is the existing behavior; if the subcommand is omitted, `dump` is assumed for backwards compatibility.
+- `explain` — print the compiled SQL and its `EXPLAIN` output (estimate-only; `EXPLAIN QUERY PLAN` on SQLite) for each query that `dump` would run, to stdout. No SELECT is executed. Supported for `mysql2`, `postgresql`, and `sqlite3`. The `mongodb` adapter is not yet supported.
+
+```bash
+# preview the queries exwiw would run, without executing the SELECTs
+exwiw explain \
+  --adapter=postgresql \
+  --host=localhost --port=5432 --user=reader \
+  --database=app_production \
+  --config-dir=exwiw \
+  --target-table=shops --ids=1
+```
+
+The `--output-dir`, `--output-format`, `--insert-only`, and `--after-insert-hook` options are dump-specific and rejected when used with `explain`.
+
 ### Command
 
 ```bash
