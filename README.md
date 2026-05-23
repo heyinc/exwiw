@@ -44,24 +44,12 @@ gem install exwiw
 
 ## Usage
 
-### Subcommands
+exwiw has two subcommands:
 
 - `dump` (default) — generate INSERT/COPY SQL files. This is the existing behavior; if the subcommand is omitted, `dump` is assumed for backwards compatibility.
-- `explain` — print the compiled SQL and its `EXPLAIN` output (estimate-only; `EXPLAIN QUERY PLAN` on SQLite) for each query that `dump` would run, to stdout. No SELECT is executed. Supported for `mysql2`, `postgresql`, and `sqlite3`. The `mongodb` adapter is not yet supported.
+- `explain` — print the compiled SQL and its `EXPLAIN` output for each query that `dump` would run, without executing the SELECTs.
 
-```bash
-# preview the queries exwiw would run, without executing the SELECTs
-exwiw explain \
-  --adapter=postgresql \
-  --host=localhost --port=5432 --user=reader \
-  --database=app_production \
-  --config-dir=exwiw \
-  --target-table=shops --ids=1
-```
-
-The `--output-dir`, `--output-format`, `--insert-only`, and `--after-insert-hook` options are dump-specific and rejected when used with `explain`.
-
-### Command
+### `exwiw dump`
 
 ```bash
 # dump & masking all records from database to dump.sql based on schema.json
@@ -108,6 +96,22 @@ you need to delete the records before importing the dump,
 `delete-{idx}-{table_name}.sql` will help you to do that.
 This sql will delete "all" related records to the extract targets.
 idx meaning is the same as insert sql.
+
+### `exwiw explain`
+
+Print the compiled SQL and its `EXPLAIN` output (estimate-only; `EXPLAIN QUERY PLAN` on SQLite) for each query that `dump` would run, to stdout. No SELECT is executed. Supported for `mysql2`, `postgresql`, and `sqlite3`. The `mongodb` adapter is not yet supported.
+
+```bash
+# preview the queries exwiw would run, without executing the SELECTs
+exwiw explain \
+  --adapter=postgresql \
+  --host=localhost --port=5432 --user=reader \
+  --database=app_production \
+  --config-dir=exwiw \
+  --target-table=shops --ids=1
+```
+
+The `--output-dir`, `--output-format`, `--insert-only`, and `--after-insert-hook` options are dump-specific and rejected when used with `explain`.
 
 ### Generator
 
