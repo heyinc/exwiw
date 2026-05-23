@@ -157,21 +157,7 @@ This is an example of the one table schema:
 
 ### Output format
 
-By default, exwiw generates `INSERT` statements. For PostgreSQL, you can use `--output-format=copy` to generate `COPY FROM stdin` format instead, which is significantly faster for bulk loading:
-
-```bash
-exwiw \
-  --adapter=postgresql \
-  --host=localhost \
-  --port=5432 \
-  --user=reader \
-  --database=app_production \
-  --config-dir=exwiw \
-  --target-table=shops \
-  --ids=1 \
-  --output-dir=dump \
-  --output-format=copy
-```
+By default, exwiw generates `INSERT` statements. For PostgreSQL, you can pass `--output-format=copy` to generate `COPY FROM stdin` format instead, which is significantly faster for bulk loading.
 
 The generated file uses tab-separated values with PostgreSQL's text-format escaping (`\N` for NULL, `\\` for backslash, etc.). Import with `psql`:
 
@@ -183,21 +169,7 @@ psql -d app_dev -f dump/insert-001-shops.sql
 
 ### Skip DELETE SQL output
 
-By default, exwiw generates `delete-*.sql` files alongside the `insert-*.sql` files so that an existing dataset can be cleared before re-inserting. Pass `--insert-only` when you only need the insert files:
-
-```bash
-exwiw \
-  --adapter=mysql2 \
-  --host=localhost \
-  --port=3306 \
-  --user=reader \
-  --database=app_production \
-  --config-dir=exwiw \
-  --target-table=shops \
-  --ids=1 \
-  --output-dir=dump \
-  --insert-only
-```
+By default, exwiw generates `delete-*.sql` files alongside the `insert-*.sql` files so that an existing dataset can be cleared before re-inserting. Pass `--insert-only` when you only need the insert files.
 
 ### After-insert hook
 
@@ -217,17 +189,6 @@ insert_sql <<~SQL
   INSERT INTO users (tenant_id, email) VALUES (<%= tenant_id %>, 'default@example.com');
   <%- end -%>
 SQL
-```
-
-Run with:
-
-```bash
-exwiw \
-  --adapter=mysql2 --host=localhost --port=3306 --user=reader \
-  --database=app_production --config-dir=exwiw \
-  --target-table=shops --ids=1,2 \
-  --output-dir=dump \
-  --after-insert-hook=hooks/seed_default_users.rb
 ```
 
 **Shell hook**: anything other than `.rb` is exec'd as a child process. It is a pure side-effect hook — exwiw does not capture its stdout. The hook receives these env vars and inherits `DATABASE_PASSWORD` from the parent:
