@@ -60,6 +60,18 @@ module Exwiw
         },
       },
       {
+        adapter: "postgresql",
+        config_dir: "scenario/postgresql-schema",
+        output_format: "copy",
+        snapshot_subdir: "postgresql-copy",
+        connection: {
+          adapter: "postgresql",
+          database_name: "exwiw_test",
+          host: "127.0.0.1", port: 5432,
+          user: "postgres", password: "test_password",
+        },
+      },
+      {
         adapter: "mongodb",
         config_dir: "scenario/mongodb-schema",
         connection: {
@@ -73,9 +85,10 @@ module Exwiw
     ].freeze
 
     SCENARIOS.each do |scenario|
-      context "with #{scenario[:adapter]} adapter" do
+      context_suffix = scenario[:output_format] ? " (#{scenario[:output_format]})" : ""
+      context "with #{scenario[:adapter]} adapter#{context_suffix}" do
         let(:output_dir) { @output_dir }
-        let(:snapshot_dir) { File.join("spec/insert_output_snapshots", scenario[:adapter]) }
+        let(:snapshot_dir) { File.join("spec/insert_output_snapshots", scenario[:snapshot_subdir] || scenario[:adapter]) }
         let(:connection_config) { ConnectionConfig.new(**scenario[:connection]) }
         let(:runner) do
           Runner.new(
