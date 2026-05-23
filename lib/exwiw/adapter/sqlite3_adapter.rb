@@ -14,6 +14,14 @@ module Exwiw
         connection.execute(sql)
       end
 
+      def explain(query_ast)
+        sql = compile_ast(query_ast)
+
+        @logger.debug("  Executing EXPLAIN QUERY PLAN: \n#{sql}")
+        rows = connection.execute("EXPLAIN QUERY PLAN #{sql}")
+        rows.map { |row| row[3] }.join("\n")
+      end
+
       def dump_schema(ordered_tables, output_path)
         @logger.debug("  Reading schema from sqlite_master...")
         target_names = ordered_tables.map(&:name)

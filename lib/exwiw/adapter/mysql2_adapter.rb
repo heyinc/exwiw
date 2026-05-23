@@ -14,6 +14,17 @@ module Exwiw
         connection.query(sql, cast: false, as: :array).to_a
       end
 
+      def explain(query_ast)
+        sql = compile_ast(query_ast)
+
+        @logger.debug("  Executing EXPLAIN: \n#{sql}")
+        rows = connection.query("EXPLAIN #{sql}", cast: false).to_a
+        rows.each_with_index.flat_map do |row, i|
+          ["*************************** #{i + 1}. row ***************************"] +
+            row.map { |k, v| "#{k}: #{v}" }
+        end.join("\n")
+      end
+
       def dump_schema(ordered_tables, output_path)
         require 'open3'
 

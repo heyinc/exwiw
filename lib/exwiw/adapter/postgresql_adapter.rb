@@ -14,6 +14,13 @@ module Exwiw
         connection.exec(sql).values
       end
 
+      def explain(query_ast)
+        sql = compile_ast(query_ast)
+
+        @logger.debug("  Executing EXPLAIN: \n#{sql}")
+        connection.exec("EXPLAIN #{sql}").values.map(&:first).join("\n")
+      end
+
       def dump_schema(ordered_tables, output_path)
         require 'open3'
 

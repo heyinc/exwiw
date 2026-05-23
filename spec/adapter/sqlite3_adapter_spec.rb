@@ -220,6 +220,22 @@ module Exwiw
         end
       end
 
+      describe "#explain" do
+        it "returns EXPLAIN QUERY PLAN output for a simple select" do
+          output = adapter.explain(build_select_shops_ast)
+          expect(output).to be_a(String)
+          expect(output).not_to be_empty
+          expect(output).to match(/shops/i)
+        end
+
+        it "returns EXPLAIN QUERY PLAN output for a join query" do
+          output = adapter.explain(build_order_items_ast)
+          expect(output).to be_a(String)
+          expect(output).not_to be_empty
+          expect(output).to match(/order_items|orders/i)
+        end
+      end
+
       describe "#to_bulk_insert" do
         let(:bulk_insert_sql) { adapter.to_bulk_insert(results, shops_table(adapter_name)) }
 

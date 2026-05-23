@@ -97,6 +97,10 @@ module Exwiw
         raise NotImplementedError, "MongodbAdapter does not support bulk delete"
       end
 
+      def explain(_query)
+        raise NotImplementedError, "MongodbAdapter does not support explain yet"
+      end
+
       def output_extension
         'jsonl'
       end

@@ -10,26 +10,36 @@ require 'exwiw'
 
 module Exwiw
   class CLI
+    KNOWN_SUBCOMMANDS = %w[dump explain].freeze
+
     def self.start(argv)
       new(argv).run
     end
 
     def initialize(argv)
       @argv = argv.dup
-      @help = argv.empty?
+
+      @subcommand =
+        if !@argv.empty? && !@argv.first.start_with?("-") && KNOWN_SUBCOMMANDS.include?(@argv.first)
+          @argv.shift
+        else
+          "dump"
+        end
+
+      @help = @argv.empty?
 
       @database_host = nil
       @database_port = nil
       @database_user = nil
       @database_password = ENV["DATABASE_PASSWORD"]
-      @output_dir = "dump"
+      @output_dir = nil
       @config_dir = nil
       @database_adapter = nil
       @database_name = nil
       @target_table_name = nil
       @ids = []
-      @output_format = 'insert'
-      @insert_only = false
+      @output_format = nil
+      @insert_only = nil
       @after_insert_hook_path = nil
       @log_level = :info
 
@@ -39,25 +49,29 @@ module Exwiw
     def run
       if @help
         puts parser.help
-      else
-        validate_options!
+        return
+      end
 
-        connection_config = ConnectionConfig.new(
-          adapter: @database_adapter,
-          host: @database_host,
-          port: @database_port,
-          user: @database_user,
-          password: @database_password,
-          database_name: @database_name,
-        )
+      validate_options!
 
-        dump_target = DumpTarget.new(
-          table_name: @target_table_name,
-          ids: @ids,
-        )
+      connection_config = ConnectionConfig.new(
+        adapter: @database_adapter,
+        host: @database_host,
+        port: @database_port,
+        user: @database_user,
+        password: @database_password,
+        database_name: @database_name,
+      )
 
-        logger = build_logger
+      dump_target = DumpTarget.new(
+        table_name: @target_table_name,
+        ids: @ids,
+      )
 
+      logger = build_logger
+
+      case @subcommand
+      when "dump"
         Runner.new(
           connection_config: connection_config,
           output_dir: @output_dir,
@@ -69,10 +83,22 @@ module Exwiw
           cli_options: build_cli_options_hash,
           logger: logger,
         ).run
+      when "explain"
+        ExplainRunner.new(
+          connection_config: connection_config,
+          config_dir: @config_dir,
+          dump_target: dump_target,
+          logger: logger,
+          io: $stdout,
+        ).run
       end
     end
 
     private def validate_options!
+      if @subcommand == "explain"
+        validate_explain_only!
+      end
+
       if @database_adapter != "sqlite3"
         required_options = {
           "Target database host" => @database_host,
@@ -99,15 +125,21 @@ module Exwiw
         exit 1
       end
 
-      valid_output_formats = ["insert", "copy"]
-      unless valid_output_formats.include?(@output_format)
-        $stderr.puts "Invalid output format '#{@output_format}'. Available options are: #{valid_output_formats.join(', ')}"
-        exit 1
-      end
+      if @subcommand == "dump"
+        @output_dir ||= "dump"
+        @output_format ||= "insert"
+        @insert_only = @insert_only ? true : false
 
-      if @output_format == "copy" && @database_adapter != "postgresql"
-        $stderr.puts "--output-format=copy is only supported with the postgresql adapter"
-        exit 1
+        valid_output_formats = ["insert", "copy"]
+        unless valid_output_formats.include?(@output_format)
+          $stderr.puts "Invalid output format '#{@output_format}'. Available options are: #{valid_output_formats.join(', ')}"
+          exit 1
+        end
+
+        if @output_format == "copy" && @database_adapter != "postgresql"
+          $stderr.puts "--output-format=copy is only supported with the postgresql adapter"
+          exit 1
+        end
       end
 
       if @config_dir.nil?
@@ -149,6 +181,24 @@ module Exwiw
       end
     end
 
+    private def validate_explain_only!
+      if @database_adapter == "mongodb"
+        $stderr.puts "mongodb adapter is not yet supported by 'explain' subcommand"
+        exit 1
+      end
+
+      rejected = []
+      rejected << "--output-dir" unless @output_dir.nil?
+      rejected << "--output-format" unless @output_format.nil?
+      rejected << "--insert-only" unless @insert_only.nil?
+      rejected << "--after-insert-hook" unless @after_insert_hook_path.nil?
+
+      unless rejected.empty?
+        $stderr.puts "The following options are not applicable in 'explain' subcommand: #{rejected.join(', ')}"
+        exit 1
+      end
+    end
+
     private def build_cli_options_hash
       {
         database_host: @database_host,
@@ -185,13 +235,22 @@ module Exwiw
 
     private def parser
       @parser ||= OptionParser.new do |opts|
-        opts.banner = "exwiw #{Exwiw::VERSION}"
+        opts.banner = <<~BANNER
+          exwiw #{Exwiw::VERSION}
+
+          Usage: exwiw [SUBCOMMAND] [options]
+
+          Subcommands:
+            dump      Generate INSERT/COPY SQL files (default when omitted).
+            explain   Print EXPLAIN output for each extraction query to stdout.
+                      (not yet supported for the mongodb adapter)
+        BANNER
         opts.version = Exwiw::VERSION
 
         opts.on("-h", "--host=HOST", "Target database host") { |v| @database_host = v }
         opts.on("-p", "--port=PORT", "Target database port") { |v| @database_port = v }
         opts.on("-u", "--user=USERNAME", "Target database user") { |v| @database_user = v }
-        opts.on("-o", "--output-dir=[DUMP_DIR_PATH]", "Output file path. default is dump/") do |v|
+        opts.on("-o", "--output-dir=[DUMP_DIR_PATH]", "Output file path. default is dump/ (dump subcommand only)") do |v|
           v = v.end_with?("/") ? v[0..-2] : v
           @output_dir = File.expand_path(v)
         end
@@ -203,9 +262,9 @@ module Exwiw
         opts.on("--database=DATABASE", "Target database name") { |v| @database_name = v }
         opts.on("--target-table=[TABLE]", "Target table for extraction. If omitted, dump all tables.") { |v| @target_table_name = v }
         opts.on("--ids=[IDS]", "Comma-separated list of identifiers. Required when --target-table is given.") { |v| @ids = v.split(',') }
-        opts.on("--output-format=[FORMAT]", "Output format: insert (default) or copy (PostgreSQL only)") { |v| @output_format = v }
-        opts.on("--insert-only", "Do not generate DELETE SQL files") { @insert_only = true }
-        opts.on("--after-insert-hook=PATH", "Path to a .rb or .sh post-processing hook executed after all insert/delete files are written") do |v|
+        opts.on("--output-format=[FORMAT]", "Output format: insert (default) or copy (PostgreSQL only, dump subcommand only)") { |v| @output_format = v }
+        opts.on("--insert-only", "Do not generate DELETE SQL files (dump subcommand only)") { @insert_only = true }
+        opts.on("--after-insert-hook=PATH", "Path to a .rb or .sh post-processing hook executed after all insert/delete files are written (dump subcommand only)") do |v|
           @after_insert_hook_path = File.expand_path(v)
         end
         opts.on("--log-level=LEVEL", "Log level (debug, info). default is info") { |v| @log_level = v.to_sym }

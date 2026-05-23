@@ -74,6 +74,13 @@ module Exwiw
       def to_copy_from_stdin(_results, _table)
         raise NotImplementedError, "COPY format is not supported by #{self.class.name}"
       end
+
+      # Run the database-specific EXPLAIN for the given query and return the
+      # output as a single string for `explain` subcommand to print.
+      # SQL adapters override; MongodbAdapter currently raises.
+      def explain(_query_ast)
+        raise NotImplementedError, "#{self.class.name} does not implement #explain"
+      end
     end
 
     # @params [Exwiw::QueryAst] query_ast
