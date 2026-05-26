@@ -186,7 +186,7 @@ module Exwiw
         File.write(File.join(config_dir, 'system_announcements.json'), JSON.dump(announcements))
       end
 
-      it 'does not emit schema, insert, or delete files for the skipped table' do
+      it 'emits schema for the skipped table but no insert/delete files' do
         runner.run
 
         expect(Dir[File.join(output_dir, 'insert-*-system_announcements.sql')]).to be_empty
@@ -194,7 +194,7 @@ module Exwiw
 
         schema_file = File.join(output_dir, 'insert-000-schema.sql')
         expect(File.exist?(schema_file)).to be(true)
-        expect(File.read(schema_file)).not_to include('system_announcements')
+        expect(File.read(schema_file)).to include('system_announcements')
       end
 
       it 'still emits files for non-skipped tables' do

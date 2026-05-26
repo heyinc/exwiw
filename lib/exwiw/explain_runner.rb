@@ -19,7 +19,7 @@ module Exwiw
     def run
       adapter = Adapter.build(@connection_config, @logger)
       configs = load_table_config(adapter.class.table_config_class)
-      configs = reject_and_validate_skipped(configs)
+      validate_skipped(configs)
 
       table_by_name = configs.each_with_object({}) { |config, hash| hash[config.name] = config }
 
@@ -31,8 +31,13 @@ module Exwiw
 
       total_size = ordered_table_names.size
       ordered_table_names.each_with_index do |table_name, idx|
-        @logger.debug("Explaining '#{table_name}'... (#{idx + 1}/#{total_size})")
         table = table_by_name.fetch(table_name)
+        if table.skip
+          @logger.debug("Skipping explain for '#{table_name}' (skip:true)")
+          next
+        end
+
+        @logger.debug("Explaining '#{table_name}'... (#{idx + 1}/#{total_size})")
 
         query_ast = adapter.build_query(table, @dump_target, table_by_name)
         sql = adapter.compile_ast(query_ast)
@@ -54,9 +59,9 @@ module Exwiw
       end
     end
 
-    private def reject_and_validate_skipped(configs)
+    private def validate_skipped(configs)
       skipped_names = configs.select { |c| c.skip }.map(&:name).to_set
-      return configs if skipped_names.empty?
+      return if skipped_names.empty?
 
       configs.each do |config|
         next if config.skip
@@ -75,9 +80,6 @@ module Exwiw
         raise ArgumentError,
               "--target-table '#{@dump_target.table_name}' is marked skip:true and cannot be used as a dump target."
       end
-
-      skipped_names.each { |n| @logger.info("Skipping table '#{n}' (skip:true)") }
-      configs.reject { |c| c.skip }
     end
   end
 end

@@ -203,7 +203,7 @@ Note: Ruby hooks are evaluated via `instance_eval` inside the exwiw process — 
 
 ### Skip a table
 
-Set `"skip": true` on a table's config JSON to explicitly exclude it from the dump. The table is omitted from `insert-000-schema.{sql,js}`, and no `insert-*` / `delete-*` files are generated for it. Skipped tables are also not queried at all.
+Set `"skip": true` on a table's config JSON to exclude it from data extraction. The table's DDL is still emitted into `insert-000-schema.{sql,js}` so the schema stays consistent, but no `insert-*` / `delete-*` files are generated for it and the table is never queried.
 
 ```json
 {
