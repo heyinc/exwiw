@@ -69,5 +69,38 @@ module Exwiw
         expect(out.scan(/END \$exwiw\$;/).size).to eq(2)
       end
     end
+
+    describe '.create_type_enum_statements' do
+      it 'returns empty string for empty input' do
+        expect(described_class.create_type_enum_statements([])).to eq("")
+      end
+
+      it 'generates an idempotent DO block for one enum' do
+        enums = [{ schema: 'public', name: 'admin_role', labels: %w[developer cs_viewer] }]
+        out = described_class.create_type_enum_statements(enums)
+        expect(out).to include('DO $exwiw$ BEGIN')
+        expect(out).to include("CREATE TYPE public.admin_role AS ENUM ('developer', 'cs_viewer');")
+        expect(out).to include('EXCEPTION WHEN duplicate_object THEN NULL;')
+        expect(out).to include('END $exwiw$;')
+      end
+
+      it 'generates multiple DO blocks for multiple enums' do
+        enums = [
+          { schema: 'public', name: 'role_type', labels: %w[admin user] },
+          { schema: 'public', name: 'status', labels: %w[active inactive pending] },
+        ]
+        out = described_class.create_type_enum_statements(enums)
+        expect(out.scan('DO $exwiw$ BEGIN').size).to eq(2)
+        expect(out).to include("CREATE TYPE public.role_type AS ENUM ('admin', 'user');")
+        expect(out).to include("CREATE TYPE public.status AS ENUM ('active', 'inactive', 'pending');")
+      end
+
+      it 'escapes single quotes in labels' do
+        enums = [{ schema: 'public', name: 'quirky', labels: ["it's", "they're"] }]
+        out = described_class.create_type_enum_statements(enums)
+        expect(out).to include("'it''s'")
+        expect(out).to include("'they''re'")
+      end
+    end
   end
 end

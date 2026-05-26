@@ -66,3 +66,14 @@ ActiveRecord::Schema.define do
     t.timestamps
   end
 end
+
+if adapter == "postgresql"
+  conn = ActiveRecord::Base.connection
+  conn.execute(<<~SQL)
+    DO $$ BEGIN
+      CREATE TYPE public.user_role AS ENUM ('admin', 'member');
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END $$;
+  SQL
+  conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role public.user_role;")
+end

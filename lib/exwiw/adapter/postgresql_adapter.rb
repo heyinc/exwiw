@@ -52,6 +52,13 @@ module Exwiw
           raise "pg_dump failed (exit #{status.exitstatus}): #{stderr}"
         end
 
+        enum_types = query_enum_types(table_names)
+        unless enum_types.empty?
+          enum_ddl = DdlPostprocessor.create_type_enum_statements(enum_types)
+          @logger.debug("  Found #{enum_types.size} enum type(s) to prepend.")
+          stdout = enum_ddl + stdout
+        end
+
         idempotent = stdout
         idempotent = DdlPostprocessor.add_if_not_exists_to_create_schema(idempotent)
         idempotent = DdlPostprocessor.add_if_not_exists_to_create_sequence(idempotent)
@@ -261,6 +268,40 @@ module Exwiw
           "CONCAT(#{replaced})"
         else
           raise "Unreachable case: #{column.inspect}"
+        end
+      end
+
+      private def query_enum_types(table_names)
+        return [] if table_names.empty?
+
+        placeholders = table_names.each_with_index.map { |_, i| "$#{i + 1}" }.join(', ')
+        sql = <<~SQL
+          SELECT DISTINCT
+            n.nspname  AS type_schema,
+            t.typname  AS type_name,
+            array_agg(e.enumlabel ORDER BY e.enumsortorder) AS enum_labels
+          FROM pg_attribute a
+          JOIN pg_class c      ON c.oid = a.attrelid
+          JOIN pg_namespace cn ON cn.oid = c.relnamespace
+          JOIN pg_type t       ON t.oid = a.atttypid
+          JOIN pg_namespace n  ON n.oid = t.typnamespace
+          JOIN pg_enum e       ON e.enumtypid = t.oid
+          WHERE c.relname IN (#{placeholders})
+            AND a.attnum > 0
+            AND NOT a.attisdropped
+            AND t.typtype = 'e'
+          GROUP BY n.nspname, t.typname
+          ORDER BY n.nspname, t.typname
+        SQL
+
+        decoder = PG::TextDecoder::Array.new
+        result = connection.exec_params(sql, table_names)
+        result.map do |row|
+          {
+            schema: row['type_schema'],
+            name: row['type_name'],
+            labels: decoder.decode(row['enum_labels']),
+          }
         end
       end
 
