@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `skip: true` table config now still emits the table's DDL into `insert-000-schema.{sql,js}` so downstream schemas stay consistent; only data extraction (`insert-*` / `delete-*`) is skipped. Previously the table was excluded from the schema file as well.
+
 ## [0.2.1] - 2026-05-23
 
 ### Added
