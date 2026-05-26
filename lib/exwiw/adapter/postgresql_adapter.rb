@@ -294,8 +294,8 @@ module Exwiw
           ORDER BY n.nspname, t.typname
         SQL
 
-        decoder = PG::TextDecoder::Array.new
         result = connection.exec_params(sql, table_names)
+        decoder = PG::TextDecoder::Array.new
         result.map do |row|
           {
             schema: row['type_schema'],
