@@ -41,6 +41,8 @@ module Exwiw
             expect(sql).to include('DO $exwiw$')
             expect(sql).to include('EXCEPTION WHEN duplicate_object')
           end
+          expect(sql).to include('CREATE TYPE')
+          expect(sql).to include("AS ENUM ('admin', 'member')")
         end
       end
 

@@ -79,7 +79,7 @@ module Exwiw
         enums = [{ schema: 'public', name: 'admin_role', labels: %w[developer cs_viewer] }]
         out = described_class.create_type_enum_statements(enums)
         expect(out).to include('DO $exwiw$ BEGIN')
-        expect(out).to include("CREATE TYPE public.admin_role AS ENUM ('developer', 'cs_viewer');")
+        expect(out).to include("CREATE TYPE \"public\".\"admin_role\" AS ENUM ('developer', 'cs_viewer');")
         expect(out).to include('EXCEPTION WHEN duplicate_object THEN NULL;')
         expect(out).to include('END $exwiw$;')
       end
@@ -91,8 +91,8 @@ module Exwiw
         ]
         out = described_class.create_type_enum_statements(enums)
         expect(out.scan('DO $exwiw$ BEGIN').size).to eq(2)
-        expect(out).to include("CREATE TYPE public.role_type AS ENUM ('admin', 'user');")
-        expect(out).to include("CREATE TYPE public.status AS ENUM ('active', 'inactive', 'pending');")
+        expect(out).to include("CREATE TYPE \"public\".\"role_type\" AS ENUM ('admin', 'user');")
+        expect(out).to include("CREATE TYPE \"public\".\"status\" AS ENUM ('active', 'inactive', 'pending');")
       end
 
       it 'escapes single quotes in labels' do

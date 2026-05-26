@@ -64,7 +64,7 @@ module Exwiw
       return "" if enum_types.empty?
 
       stmts = enum_types.map do |t|
-        qualified_name = "#{t[:schema]}.#{t[:name]}"
+        qualified_name = "\"#{t[:schema]}\".\"#{t[:name]}\""
         labels_sql = t[:labels].map { |l| "'#{l.gsub("'", "''")}'" }.join(', ')
         <<~SQL.chomp
           DO $exwiw$ BEGIN
