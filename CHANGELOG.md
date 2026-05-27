@@ -4,6 +4,10 @@
 
 ## [0.2.3] - 2026-05-27
 
+### Fixed
+
+- PostgreSQL: schema dump now includes `CREATE TYPE ... AS ENUM` for custom enum types referenced by dumped tables. Previously `pg_dump --table` excluded schema-level type definitions, causing `type "..." does not exist` errors on import. ([#22](https://github.com/heyinc/exwiw/pull/22))
+
 ## [0.2.2] - 2026-05-26
 
 ### Changed
