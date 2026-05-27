@@ -57,5 +57,24 @@ module Exwiw
         SQL
       end
     end
+
+    # Generate idempotent CREATE TYPE ... AS ENUM statements.
+    # +enum_types+ is an Array of Hashes with keys :schema, :name, :labels.
+    def create_type_enum_statements(enum_types)
+      return "" if enum_types.empty?
+
+      stmts = enum_types.map do |t|
+        qualified_name = "\"#{t[:schema]}\".\"#{t[:name]}\""
+        labels_sql = t[:labels].map { |l| "'#{l.gsub("'", "''")}'" }.join(', ')
+        <<~SQL.chomp
+          DO $exwiw$ BEGIN
+            CREATE TYPE #{qualified_name} AS ENUM (#{labels_sql});
+          EXCEPTION WHEN duplicate_object THEN NULL;
+          END $exwiw$;
+        SQL
+      end
+
+      stmts.join("\n\n") + "\n\n"
+    end
   end
 end

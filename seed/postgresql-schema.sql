@@ -2,8 +2,10 @@
 -- PostgreSQL database dump
 --
 
--- Dumped from database version 17.2
--- Dumped by pg_dump version 17.2
+\restrict FuZZbF8OQcXgCcmK9URaZ5rbTXsEuJ0lRW6vMtr5HJ3Aci5rI8ZLNLM0Jhc9zvg
+
+-- Dumped from database version 17.10
+-- Dumped by pg_dump version 17.10
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -16,6 +18,18 @@ SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
+
+--
+-- Name: user_role; Type: TYPE; Schema: public; Owner: postgres
+--
+
+CREATE TYPE public.user_role AS ENUM (
+    'admin',
+    'member'
+);
+
+
+ALTER TYPE public.user_role OWNER TO postgres;
 
 SET default_tablespace = '';
 
@@ -313,7 +327,8 @@ CREATE TABLE public.users (
     email character varying NOT NULL,
     shop_id bigint NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
-    updated_at timestamp(6) without time zone NOT NULL
+    updated_at timestamp(6) without time zone NOT NULL,
+    role public.user_role
 );
 
 
@@ -606,4 +621,6 @@ ALTER TABLE ONLY public.orders
 --
 -- PostgreSQL database dump complete
 --
+
+\unrestrict FuZZbF8OQcXgCcmK9URaZ5rbTXsEuJ0lRW6vMtr5HJ3Aci5rI8ZLNLM0Jhc9zvg
 

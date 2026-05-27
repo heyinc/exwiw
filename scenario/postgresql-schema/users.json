@@ -19,5 +19,7 @@
     "name": "updated_at"
   }, {
     "name": "created_at"
+  }, {
+    "name": "role"
   }]
 }

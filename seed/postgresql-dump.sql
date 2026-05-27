@@ -2,8 +2,10 @@
 -- PostgreSQL database dump
 --
 
--- Dumped from database version 17.2
--- Dumped by pg_dump version 17.2
+\restrict SsVj6CQKSuMz5uao6sWVIKu5yURMy2dkTgEin5LcfUDOCsG5R3eOaORdNb7IMEB
+
+-- Dumped from database version 17.10
+-- Dumped by pg_dump version 17.10
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -16,6 +18,18 @@ SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
+
+--
+-- Name: user_role; Type: TYPE; Schema: public; Owner: postgres
+--
+
+CREATE TYPE public.user_role AS ENUM (
+    'admin',
+    'member'
+);
+
+
+ALTER TYPE public.user_role OWNER TO postgres;
 
 SET default_tablespace = '';
 
@@ -313,7 +327,8 @@ CREATE TABLE public.users (
     email character varying NOT NULL,
     shop_id bigint NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
-    updated_at timestamp(6) without time zone NOT NULL
+    updated_at timestamp(6) without time zone NOT NULL,
+    role public.user_role
 );
 
 
@@ -401,7 +416,7 @@ ALTER TABLE ONLY public.users ALTER COLUMN id SET DEFAULT nextval('public.users_
 --
 
 COPY public.ar_internal_metadata (key, value, created_at, updated_at) FROM stdin;
-environment	default_env	2025-02-11 05:56:27.063537	2025-02-11 05:56:27.063541
+environment	default_env	2026-05-26 10:00:43.498033	2026-05-26 10:00:43.498035
 \.
 
 
@@ -586,17 +601,17 @@ COPY public.transactions (id, order_id, type, amount, created_at, updated_at) FR
 -- Data for Name: users; Type: TABLE DATA; Schema: public; Owner: postgres
 --
 
-COPY public.users (id, name, email, shop_id, created_at, updated_at) FROM stdin;
-1	User 1	user1@example.com	1	2025-01-01 00:00:00	2025-01-01 00:00:00
-2	User 2	user2@example.com	1	2025-01-01 00:00:00	2025-01-01 00:00:00
-3	User 1	user1@example.com	2	2025-01-01 00:00:00	2025-01-01 00:00:00
-4	User 2	user2@example.com	2	2025-01-01 00:00:00	2025-01-01 00:00:00
-5	User 1	user1@example.com	3	2025-01-01 00:00:00	2025-01-01 00:00:00
-6	User 2	user2@example.com	3	2025-01-01 00:00:00	2025-01-01 00:00:00
-7	User 1	user1@example.com	4	2025-01-01 00:00:00	2025-01-01 00:00:00
-8	User 2	user2@example.com	4	2025-01-01 00:00:00	2025-01-01 00:00:00
-9	User 1	user1@example.com	5	2025-01-01 00:00:00	2025-01-01 00:00:00
-10	User 2	user2@example.com	5	2025-01-01 00:00:00	2025-01-01 00:00:00
+COPY public.users (id, name, email, shop_id, created_at, updated_at, role) FROM stdin;
+1	User 1	user1@example.com	1	2025-01-01 00:00:00	2025-01-01 00:00:00	\N
+2	User 2	user2@example.com	1	2025-01-01 00:00:00	2025-01-01 00:00:00	\N
+3	User 1	user1@example.com	2	2025-01-01 00:00:00	2025-01-01 00:00:00	\N
+4	User 2	user2@example.com	2	2025-01-01 00:00:00	2025-01-01 00:00:00	\N
+5	User 1	user1@example.com	3	2025-01-01 00:00:00	2025-01-01 00:00:00	\N
+6	User 2	user2@example.com	3	2025-01-01 00:00:00	2025-01-01 00:00:00	\N
+7	User 1	user1@example.com	4	2025-01-01 00:00:00	2025-01-01 00:00:00	\N
+8	User 2	user2@example.com	4	2025-01-01 00:00:00	2025-01-01 00:00:00	\N
+9	User 1	user1@example.com	5	2025-01-01 00:00:00	2025-01-01 00:00:00	\N
+10	User 2	user2@example.com	5	2025-01-01 00:00:00	2025-01-01 00:00:00	\N
 \.
 
 
@@ -866,4 +881,6 @@ ALTER TABLE ONLY public.orders
 --
 -- PostgreSQL database dump complete
 --
+
+\unrestrict SsVj6CQKSuMz5uao6sWVIKu5yURMy2dkTgEin5LcfUDOCsG5R3eOaORdNb7IMEB
 

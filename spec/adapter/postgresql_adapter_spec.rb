@@ -41,6 +41,8 @@ module Exwiw
             expect(sql).to include('DO $exwiw$')
             expect(sql).to include('EXCEPTION WHEN duplicate_object')
           end
+          expect(sql).to include('CREATE TYPE')
+          expect(sql).to include("AS ENUM ('admin', 'member')")
         end
       end
 
@@ -57,7 +59,7 @@ module Exwiw
           let(:sql) { adapter.compile_ast(build_select_users_ast) }
 
           it "builds sql" do
-            expect(sql).to eq("SELECT users.id, CONCAT('masked', users.id), CONCAT('masked', users.id, '@example.com'), users.shop_id, users.updated_at, users.created_at FROM users WHERE users.shop_id = 1")
+            expect(sql).to eq("SELECT users.id, CONCAT('masked', users.id), CONCAT('masked', users.id, '@example.com'), users.shop_id, users.updated_at, users.created_at, users.role FROM users WHERE users.shop_id = 1")
           end
         end
 
@@ -65,7 +67,7 @@ module Exwiw
           let(:sql) { adapter.compile_ast(build_select_users_ast("users.id > 1")) }
 
           it "builds sql" do
-            expect(sql).to eq("SELECT users.id, CONCAT('masked', users.id), CONCAT('masked', users.id, '@example.com'), users.shop_id, users.updated_at, users.created_at FROM users WHERE users.shop_id = 1 AND users.id > 1")
+            expect(sql).to eq("SELECT users.id, CONCAT('masked', users.id), CONCAT('masked', users.id, '@example.com'), users.shop_id, users.updated_at, users.created_at, users.role FROM users WHERE users.shop_id = 1 AND users.id > 1")
           end
         end
 
@@ -136,8 +138,8 @@ module Exwiw
 
           it "returns correct results" do
             expect(results).to eq([
-              ["1", "masked1", "masked1@example.com", "1", "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
-              ["2", "masked2", "masked2@example.com", "1", "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              ["1", "masked1", "masked1@example.com", "1", "2025-01-01 00:00:00", "2025-01-01 00:00:00", nil],
+              ["2", "masked2", "masked2@example.com", "1", "2025-01-01 00:00:00", "2025-01-01 00:00:00", nil],
             ])
           end
         end
@@ -147,7 +149,7 @@ module Exwiw
 
           it "returns correct results" do
             expect(results).to eq([
-              ["2", "masked2", "masked2@example.com", "1", "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              ["2", "masked2", "masked2@example.com", "1", "2025-01-01 00:00:00", "2025-01-01 00:00:00", nil],
             ])
           end
         end
