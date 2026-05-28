@@ -81,6 +81,34 @@ module Exwiw
       def explain(_query_ast)
         raise NotImplementedError, "#{self.class.name} does not implement #explain"
       end
+
+      # Identifier text prepended to every query exwiw sends to the (often
+      # production) source DB, so the statement is recognizable in the
+      # processlist / slow-query log / db.currentOp() and can be killed if it
+      # runs long. e.g. "exwiw table=shops". `label` is "table=..." /
+      # "collection=...". The version is intentionally omitted to keep the
+      # comment stable across releases (snapshots / diffs). Strips `*/` to
+      # avoid breaking out of the comment.
+      def query_comment_text(label = nil)
+        parts = ["exwiw"]
+        parts << label if label
+        parts.join(' ').gsub('*/', '')
+      end
+
+      # SQL block-comment form, prefixed to SELECT / EXPLAIN.
+      def sql_query_comment(query_ast)
+        label =
+          if query_ast.respond_to?(:from_table_name) && query_ast.from_table_name
+            "table=#{query_ast.from_table_name}"
+          end
+        "/* #{query_comment_text(label)} */"
+      end
+
+      # Comment-prefixed SELECT. Relies on the SQL adapter's #compile_ast
+      # (dispatched to the subclass at runtime).
+      def commented_sql(query_ast)
+        "#{sql_query_comment(query_ast)} #{compile_ast(query_ast)}"
+      end
     end
 
     # @params [Exwiw::QueryAst] query_ast

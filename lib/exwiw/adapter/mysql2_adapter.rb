@@ -8,14 +8,14 @@ module Exwiw
       end
 
       def execute(query_ast)
-        sql = compile_ast(query_ast)
+        sql = commented_sql(query_ast)
 
         @logger.debug("  Executing SQL: \n#{sql}")
         connection.query(sql, cast: false, as: :array).to_a
       end
 
       def explain(query_ast)
-        sql = compile_ast(query_ast)
+        sql = commented_sql(query_ast)
 
         @logger.debug("  Executing EXPLAIN: \n#{sql}")
         rows = connection.query("EXPLAIN #{sql}", cast: false).to_a

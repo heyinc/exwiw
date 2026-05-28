@@ -40,7 +40,7 @@ module Exwiw
         @logger.debug("Explaining '#{table_name}'... (#{idx + 1}/#{total_size})")
 
         query_ast = adapter.build_query(table, @dump_target, table_by_name)
-        sql = adapter.compile_ast(query_ast)
+        sql = adapter.commented_sql(query_ast)
         explain_text = adapter.explain(query_ast)
 
         @io.puts "-- [#{idx + 1}/#{total_size}] #{table_name}"
