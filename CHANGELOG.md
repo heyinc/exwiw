@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-05-28
+
 ### Added
 
 - Dump/explain queries issued against the source DB now carry an identifying comment (e.g. `/* exwiw table=shops */`) so exwiw-originated queries can be spotted in `processlist` / slow query log / `db.currentOp()` and killed by table when they run long. Added to the SELECT/EXPLAIN of the `mysql2`, `postgresql`, and `sqlite3` adapters and to MongoDB `find` (via `.comment(...)`); the `explain` subcommand's printed SQL matches the emitted form. The comment is applied only at the query-issuing boundary, so generated `insert-*` / `delete-*` files (and `to_bulk_delete` subqueries) stay comment-free, and the version is intentionally omitted to keep snapshots/diffs stable. ([#35](https://github.com/heyinc/exwiw/pull/35))
