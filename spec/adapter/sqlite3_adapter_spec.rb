@@ -131,6 +131,25 @@ module Exwiw
         end
       end
 
+      describe "#commented_sql" do
+        it "prefixes the compiled SELECT with an exwiw identifier comment" do
+          ast = build_select_shops_ast
+          expect(adapter.commented_sql(ast)).to eq(
+            "/* exwiw table=shops */ #{adapter.compile_ast(ast)}"
+          )
+        end
+
+        it "leaves the bare compile_ast output free of comments (subquery/DELETE reuse)" do
+          expect(adapter.compile_ast(build_select_shops_ast)).not_to include('exwiw')
+        end
+      end
+
+      describe "#query_comment_text" do
+        it "strips comment terminators to prevent breaking out of the comment" do
+          expect(adapter.query_comment_text("table=foo*/DROP")).not_to include('*/')
+        end
+      end
+
       describe "#execute" do
         context "simple select query" do
           let(:results) { adapter.execute(build_select_shops_ast) }

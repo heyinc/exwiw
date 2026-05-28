@@ -73,7 +73,11 @@ module Exwiw
       def execute(query)
         @logger.debug("  Executing Mongo find on '#{query.collection}': filter=#{query.filter.inspect} projection=#{query.projection.inspect}")
 
-        docs = db[query.collection].find(query.filter).projection(query.projection).to_a
+        docs = db[query.collection]
+          .find(query.filter)
+          .projection(query.projection)
+          .comment(query_comment_text("collection=#{query.collection}"))
+          .to_a
 
         @state[query.collection] = docs.map { |doc| doc[query.primary_key] }
 
