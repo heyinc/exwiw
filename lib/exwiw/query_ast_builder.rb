@@ -23,7 +23,11 @@ module Exwiw
 
       QueryAst::Select.new.tap do |ast|
         ast.from(table.name)
-        ast.select(table.columns)
+        if table.rails_managed?
+          ast.select_all!
+        else
+          ast.select(table.columns)
+        end
         join_clauses.each { |join_clause| ast.join(join_clause) }
         where_clauses.each { |where_clause| ast.where(where_clause) }
       end
