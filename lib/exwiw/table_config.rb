@@ -138,7 +138,9 @@ module Exwiw
                 "Table '#{name}' has type=#{type}; columns must not be defined."
         end
       else
-        if primary_key.nil?
+        # skip:true のテーブルはデータ抽出を行わないため primary_key を要求しない。
+        # (例: exwiw 非対応の複合主キーテーブル)
+        if primary_key.nil? && !skip
           raise ArgumentError, "Table '#{name}' requires primary_key."
         end
       end

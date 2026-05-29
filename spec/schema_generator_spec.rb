@@ -36,6 +36,14 @@ module Exwiw
     class ChildBelongsToUser < ParentNoBelongsTo
       belongs_to :user, class_name: "::User"
     end
+
+    # Composite primary key model. `representative.primary_key` returns an Array
+    # for these, which exwiw does not support; the generator must mark them
+    # skip:true instead of raising on the TableConfig type check.
+    class CompositePkRecord < ::ActiveRecord::Base
+      self.table_name = "composite_pk_records"
+      self.primary_key = [:organization_id, :location_id]
+    end
   end
 
   # Real Rails multi-DB setup: two abstract bases wired through
@@ -186,6 +194,44 @@ module Exwiw
 
         belongs_tos = tables.first.belongs_tos.map { |b| [b.table_name, b.foreign_key] }
         expect(belongs_tos).to contain_exactly(["shops", "shop_id"], ["users", "user_id"])
+      end
+    end
+
+    describe "composite primary key" do
+      before(:all) do
+        ActiveRecord::Base.connection.execute(<<~SQL)
+          CREATE TABLE IF NOT EXISTS composite_pk_records (
+            organization_id INTEGER NOT NULL,
+            location_id INTEGER NOT NULL,
+            name TEXT,
+            PRIMARY KEY (organization_id, location_id)
+          )
+        SQL
+      end
+
+      after(:all) do
+        ActiveRecord::Base.connection.execute("DROP TABLE IF EXISTS composite_pk_records")
+      end
+
+      let(:table) do
+        described_class
+          .new(models: [SchemaGeneratorStiFixtures::CompositePkRecord], output_dir: output_dir)
+          .build_tables
+          .find { |t| t.name == "composite_pk_records" }
+      end
+
+      it "emits the table with skip:true and no primary_key" do
+        expect(table.skip).to eq(true)
+        expect(table.primary_key).to be_nil
+      end
+
+      it "records that exwiw does not support composite primary keys in the comment" do
+        expect(table.comment).to include("does not support composite primary keys")
+        expect(table.comment).to include("organization_id", "location_id")
+      end
+
+      it "still captures columns" do
+        expect(table.column_names).to include("organization_id", "location_id", "name")
       end
     end
 
