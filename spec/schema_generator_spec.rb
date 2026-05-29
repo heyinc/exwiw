@@ -38,28 +38,60 @@ module Exwiw
     end
   end
 
-  # Real multi-DB setup: two abstract bases each with their own
-  # AR connection, exercising connection_specification_name without
-  # any stubbing.
+  # Real Rails multi-DB setup: two abstract bases wired through
+  # `connects_to` against named entries in `ActiveRecord::Base.configurations`,
+  # exactly as a `database.yml`-backed app would. This makes
+  # `connection_db_config.name` return "primary" / "analytics", which is what
+  # SchemaGenerator uses to bucket tables into per-database directories.
   module SchemaGeneratorMultiDbFixtures
-    ANALYTICS_DB_PATH = "tmp/test_analytics.sqlite3"
+    PRIMARY_DB_PATH = "tmp/test_multidb_primary.sqlite3"
+    ANALYTICS_DB_PATH = "tmp/test_multidb_analytics.sqlite3"
 
-    class PrimaryAbstract < ::ActiveRecord::Base
-      self.abstract_class = true
-      establish_connection(adapter: "sqlite3", database: database_config("sqlite3").fetch(:database))
+    CONFIGURATIONS = {
+      "test" => {
+        "primary"   => { "adapter" => "sqlite3", "database" => PRIMARY_DB_PATH },
+        "analytics" => { "adapter" => "sqlite3", "database" => ANALYTICS_DB_PATH },
+      },
+    }.freeze
+
+    module_function
+
+    # `connects_to` resolves against `ActiveRecord::Base.configurations` at
+    # class-definition time, so the fixture classes are defined lazily — only
+    # after the surrounding example group has set configurations and RAILS_ENV.
+    def setup!
+      FileUtils.mkdir_p("tmp")
+      [PRIMARY_DB_PATH, ANALYTICS_DB_PATH].each { |p| File.delete(p) if File.exist?(p) }
+
+      SQLite3::Database.new(PRIMARY_DB_PATH).execute_batch(<<~SQL)
+        CREATE TABLE shops (id INTEGER PRIMARY KEY, name TEXT);
+        CREATE TABLE schema_migrations (version TEXT NOT NULL PRIMARY KEY);
+      SQL
+      # Each database in a Rails multi-DB setup keeps its own migration
+      # history, so analytics also gets a schema_migrations table.
+      SQLite3::Database.new(ANALYTICS_DB_PATH).execute_batch(<<~SQL)
+        CREATE TABLE analytics_events (id INTEGER PRIMARY KEY);
+        CREATE TABLE schema_migrations (version TEXT NOT NULL PRIMARY KEY);
+      SQL
+
+      define_models!
     end
 
-    class AnalyticsAbstract < ::ActiveRecord::Base
-      self.abstract_class = true
-      establish_connection(adapter: "sqlite3", database: ANALYTICS_DB_PATH)
-    end
+    def define_models!
+      return if const_defined?(:PrimaryModel, false)
 
-    class PrimaryModel < PrimaryAbstract
-      self.table_name = "shops"
-    end
+      # `connects_to` rejects anonymous classes, so name the class via
+      # const_set before wiring the connection.
+      primary_abstract = Class.new(::ActiveRecord::Base) { self.abstract_class = true }
+      const_set(:PrimaryAbstract, primary_abstract)
+      primary_abstract.connects_to(database: { writing: :primary })
 
-    class AnalyticsModel < AnalyticsAbstract
-      self.table_name = "analytics_events"
+      analytics_abstract = Class.new(::ActiveRecord::Base) { self.abstract_class = true }
+      const_set(:AnalyticsAbstract, analytics_abstract)
+      analytics_abstract.connects_to(database: { writing: :analytics })
+
+      const_set(:PrimaryModel, Class.new(primary_abstract) { self.table_name = "shops" })
+      const_set(:AnalyticsModel, Class.new(analytics_abstract) { self.table_name = "analytics_events" })
     end
   end
 
@@ -157,28 +189,59 @@ module Exwiw
       end
     end
 
-    describe "multi-database detection" do
+    describe "multi-database support" do
       before(:all) do
-        FileUtils.mkdir_p(File.dirname(SchemaGeneratorMultiDbFixtures::ANALYTICS_DB_PATH))
-        # DIRTY: 後にseedで対応するようにする
-        SQLite3::Database.new(SchemaGeneratorMultiDbFixtures::ANALYTICS_DB_PATH).execute_batch(<<~SQL)
-          CREATE TABLE IF NOT EXISTS analytics_events (id INTEGER PRIMARY KEY);
-        SQL
+        @previous_env = ENV["RAILS_ENV"]
+        @previous_configs = ActiveRecord::Base.configurations
+        ENV["RAILS_ENV"] = "test"
+        ActiveRecord::Base.configurations = SchemaGeneratorMultiDbFixtures::CONFIGURATIONS
+        SchemaGeneratorMultiDbFixtures.setup!
       end
 
-      it "raises when concrete models point to different connection specifications" do
-        models = [
+      after(:all) do
+        ActiveRecord::Base.configurations = @previous_configs
+        ENV["RAILS_ENV"] = @previous_env
+      end
+
+      let(:multidb_models) do
+        [
           SchemaGeneratorMultiDbFixtures::PrimaryModel,
           SchemaGeneratorMultiDbFixtures::AnalyticsModel,
         ]
-        generator = described_class.new(models: models, output_dir: output_dir)
-        expect { generator.build_tables }
-          .to raise_error(SchemaGenerator::MultipleDatabasesNotSupportedError, /multiple-database/)
       end
 
-      it "does not raise when all models share the same connection specification" do
-        generator = described_class.new(models: [Shop, User], output_dir: output_dir)
-        expect { generator.build_tables }.not_to raise_error
+      describe "#build_table_groups" do
+        let(:groups) { described_class.new(models: multidb_models, output_dir: output_dir).build_table_groups }
+
+        it "buckets tables by their database config name" do
+          expect(groups.keys).to contain_exactly("primary", "analytics")
+        end
+
+        it "places each model's table in its own database group" do
+          expect(groups["primary"].map(&:name)).to include("shops")
+          expect(groups["analytics"].map(&:name)).to include("analytics_events")
+        end
+
+        it "emits each database's own rails-managed schema_migrations table" do
+          expect(groups["primary"].map(&:name)).to include("schema_migrations")
+          expect(groups["analytics"].map(&:name)).to include("schema_migrations")
+        end
+
+        it "collapses into a single nil-keyed group for a single-database setup" do
+          single = described_class.new(models: [SchemaGeneratorMultiDbFixtures::PrimaryModel], output_dir: output_dir)
+          expect(single.build_table_groups.keys).to eq([nil])
+        end
+      end
+
+      describe "#generate!" do
+        it "writes each database's tables into its own subdirectory" do
+          described_class.new(models: multidb_models, output_dir: output_dir).generate!
+
+          expect(Dir[File.join(output_dir, "primary", "*.json")].map { |p| File.basename(p) })
+            .to contain_exactly("shops.json", "schema_migrations.json")
+          expect(Dir[File.join(output_dir, "analytics", "*.json")].map { |p| File.basename(p) })
+            .to contain_exactly("analytics_events.json", "schema_migrations.json")
+        end
       end
     end
 

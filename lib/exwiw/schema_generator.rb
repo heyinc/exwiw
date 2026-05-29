@@ -5,8 +5,6 @@ require "json"
 
 module Exwiw
   class SchemaGenerator
-    class MultipleDatabasesNotSupportedError < StandardError; end
-
     def self.from_rails_application(output_dir:)
       Rails.application.eager_load!
       new(models: ActiveRecord::Base.descendants, output_dir: output_dir)
@@ -18,33 +16,53 @@ module Exwiw
     end
 
     def generate!
-      tables = build_tables
-      write_files(tables)
-      tables
+      groups = build_table_groups
+      write_groups(groups)
+      groups
     end
 
-    def build_tables
+    # Returns a Hash keyed by the database name.
+    #
+    # - Single-database setup: the only key is `nil`, signalling that the table
+    #   configs should be written flat into `output_dir` (backwards compatible).
+    # - Multi-database setup (Rails `connects_to`): one key per database
+    #   (`connection_db_config.name`, e.g. "primary" / "analytics"), each
+    #   mapping to that database's table configs. They are written into
+    #   `output_dir/<db_name>/`.
+    def build_table_groups
       models = concrete_models
-      validate_single_database!(models)
+      grouped = models.group_by { |model| database_name_for(model) }
 
-      tables_from_models = models.group_by(&:table_name).map do |table_name, model_group|
-        representative = model_group.first
-        TableConfig.from_symbol_keys(
-          name: table_name,
-          primary_key: representative.primary_key,
-          belongs_tos: aggregate_belongs_tos(model_group),
-          columns: representative.column_names.map { |name| { name: name } },
-        )
+      if grouped.size <= 1
+        conn = models.empty? ? ActiveRecord::Base.connection : models.first.connection
+        return { nil => build_tables_for(models, conn) }
       end
 
-      tables_from_models + build_rails_managed_tables
+      grouped.each_with_object({}) do |(db_name, group_models), result|
+        conn = group_models.first.connection
+        result[db_name] = build_tables_for(group_models, conn)
+      end
     end
 
-    def write_files(tables)
-      FileUtils.mkdir_p(@output_dir)
+    # Backwards-compatible flat list of all table configs. Only meaningful for
+    # a single-database setup; for multi-database setups prefer
+    # `#build_table_groups` so the database association is preserved.
+    def build_tables
+      build_table_groups.values.flatten
+    end
+
+    def write_groups(groups)
+      groups.each do |db_name, tables|
+        dir = db_name.nil? ? @output_dir : File.join(@output_dir, db_name)
+        write_files(dir, tables)
+      end
+    end
+
+    def write_files(dir, tables)
+      FileUtils.mkdir_p(dir)
 
       tables.each do |table|
-        path = File.join(@output_dir, "#{table.name}.json")
+        path = File.join(dir, "#{table.name}.json")
         config_to_write =
           if File.exist?(path)
             TableConfig.from(JSON.parse(File.read(path))).merge(table)
@@ -55,20 +73,31 @@ module Exwiw
       end
     end
 
+    private def build_tables_for(models, conn)
+      tables_from_models = models.group_by(&:table_name).map do |table_name, model_group|
+        representative = model_group.first
+        TableConfig.from_symbol_keys(
+          name: table_name,
+          primary_key: representative.primary_key,
+          belongs_tos: aggregate_belongs_tos(model_group),
+          columns: representative.column_names.map { |name| { name: name } },
+        )
+      end
+
+      tables_from_models + build_rails_managed_tables(conn)
+    end
+
     private def concrete_models
       @models.reject(&:abstract_class?).select(&:table_exists?)
     end
 
-    # NOTE: multi-database setup には未対応。`ActiveRecord::Base.schema_migrations_table_name`
-    # と `internal_metadata_table_name` はクラスレベルのグローバル設定を返すため、
-    # connection 毎にテーブル名が違うケース (`connects_to` で別 DB を扱う場合や
-    # `ActiveRecord::Base` 以外で `connection.schema_migration.table_name` を上書きしている場合)
-    # を拾えない。現状は `validate_single_database!` で multi-DB を弾いているので
-    # ここに到達するのは単一 DB 構成のみという前提で動いている。
-    # multi-DB 対応する際は、対象の connection に紐づく schema_migration から
-    # テーブル名を取り、connection 毎にエントリを生成する必要がある。
-    private def build_rails_managed_tables
-      conn = ActiveRecord::Base.connection
+    # rails-managed テーブル (`schema_migrations` / `ar_internal_metadata`) は
+    # モデルクラスを持たないため `ActiveRecord::Base.descendants` からは拾えない。
+    # multi-DB 構成では各 connection が独立した migration 履歴テーブルを持つので、
+    # 対象 connection を受け取り、その connection 上に該当テーブルが存在する場合のみ
+    # エントリを生成する。テーブル名そのものは prefix/suffix を含むグローバル設定
+    # (`ActiveRecord::Base.schema_migrations_table_name` 等) から得る。
+    private def build_rails_managed_tables(conn)
       result = []
 
       schema_migrations_name = ActiveRecord::Base.schema_migrations_table_name
@@ -108,22 +137,13 @@ module Exwiw
       end
     end
 
-    # `connection_specification_name` is a quasi-private API but has been stable
-    # across Rails 6.1 - 8.x. With Rails multi-DB (`connects_to`), every
-    # descendant of the same abstract base shares one spec name regardless of
-    # role/shard, so distinct values across concrete models indicate genuinely
-    # separate databases.
-    private def validate_single_database!(models)
-      return if models.empty?
-
-      specs = models.map(&:connection_specification_name).uniq
-      return if specs.size <= 1
-
-      raise MultipleDatabasesNotSupportedError, <<~MSG
-        exwiw does not yet support Rails multiple-database setup.
-        Detected connection specifications: #{specs.inspect}
-        Track progress at https://github.com/riseshia/exwiw/issues
-      MSG
+    # Identifies which database a model belongs to. With Rails multi-DB
+    # (`connects_to` backed by `database.yml`), `connection_db_config.name`
+    # returns the configuration name ("primary", "analytics", ...) which is
+    # stable across roles/shards and makes a natural per-database directory
+    # name. Single-database apps all share one name, collapsing into one group.
+    private def database_name_for(model)
+      model.connection_db_config.name
     end
   end
 end
