@@ -128,6 +128,22 @@ By default, the schema files will be saved in the `exwiw` directory. You can spe
 OUTPUT_DIR_PATH=custom_directory bundle exec rake exwiw:schema:generate
 ```
 
+#### Multiple databases
+
+If the application uses Rails' multiple-database support (`connects_to`), `schema:generate` buckets models by the database they connect to and writes each database's config files into its own subdirectory of the output directory, named after the database config name (`primary`, `analytics`, ...):
+
+```
+exwiw/
+  primary/
+    shops.json
+    users.json
+    schema_migrations.json
+  analytics/
+    analytics_events.json
+```
+
+Rails-managed tables (`schema_migrations` / `ar_internal_metadata`) are emitted under whichever database actually contains them. Single-database applications are unaffected and continue to write files flat into the output directory.
+
 ### Configuration
 
 This is an example of the one table schema:
@@ -250,7 +266,7 @@ Constraints:
 
 - Defining `primary_key`, `columns`, or `belongs_tos` on a rails-managed entry is rejected with `ArgumentError` on load.
 - A rails-managed table cannot be used as `--target-table`.
-- Multi-database setups are not yet supported — the table name is read from the global `ActiveRecord::Base` accessor.
+- In multi-database setups, the rails-managed entry is emitted under whichever database's connection actually contains the table (see [Multiple databases](#multiple-databases)). The table name itself is still derived from the global `ActiveRecord::Base.schema_migrations_table_name` / `internal_metadata_table_name` (prefix/suffix) accessors.
 
 ### Bulk insert chunk size
 

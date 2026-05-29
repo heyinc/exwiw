@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `schema:generate` now supports Rails multiple-database setups (`connects_to`). Models are bucketed by their database (`connection_db_config.name`, e.g. `primary` / `analytics`) and each database's config files are written into its own subdirectory under `OUTPUT_DIR_PATH` (`exwiw/primary/`, `exwiw/analytics/`, ...). Rails-managed tables (`schema_migrations` / `ar_internal_metadata`) are emitted under whichever database actually owns them. Single-database apps are unaffected and still write flat into the output directory. This replaces the previous behavior of raising `MultipleDatabasesNotSupportedError`.
+
 ## [0.2.5] - 2026-05-29
 
 ### Added
