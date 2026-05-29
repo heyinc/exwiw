@@ -221,6 +221,37 @@ Constraints:
 - Specifying a skipped table as `--target-table` raises `ArgumentError`.
 - `skip: true` is preserved by `exwiw:schema:generate` regenerations (the receiver value wins over the auto-generated config).
 
+### Rails-managed tables (special `type` values)
+
+Some tables are owned by Rails itself rather than the application — they have no ActiveRecord model and Rails reserves the right to evolve their column shape between versions (e.g. `schema_migrations`, `ar_internal_metadata`). exwiw treats them as a distinct category via the `type` field on a table config:
+
+- `type: "rails_managed_schema_migrations"` — Rails' migration history table (`ActiveRecord::Base.schema_migrations_table_name`).
+- `type: "rails_managed_internal_metadata"` — Rails' internal metadata table (`ActiveRecord::Base.internal_metadata_table_name`).
+
+`exwiw:schema:generate` emits these entries automatically when the corresponding tables exist on the connection — they are NOT pulled from `ActiveRecord::Base.descendants` because they have no model class.
+
+A rails-managed entry has a minimal shape (no `primary_key`, no `belongs_tos`, no `columns`):
+
+```json
+{
+  "name": "schema_migrations",
+  "type": "rails_managed_schema_migrations",
+  "comment": "Managed internally by Rails. Tracks applied schema migrations."
+}
+```
+
+Behavior at dump time:
+
+- Extraction uses `SELECT *` so the dump is robust against Rails-side column additions.
+- `INSERT` statements omit the column list (`INSERT INTO schema_migrations VALUES (...)`). For PostgreSQL `--output-format=copy`, the `COPY` header similarly omits the column list (`COPY schema_migrations FROM stdin;`).
+- No `delete-*.sql` file is generated for rails-managed tables, to avoid wiping migration history on the import target.
+
+Constraints:
+
+- Defining `primary_key`, `columns`, or `belongs_tos` on a rails-managed entry is rejected with `ArgumentError` on load.
+- A rails-managed table cannot be used as `--target-table`.
+- Multi-database setups are not yet supported — the table name is read from the global `ActiveRecord::Base` accessor.
+
 ### Bulk insert chunk size
 
 `bulk_insert_chunk_size` splits the generated `INSERT` statement into multiple statements, each containing at most the specified number of rows. This is useful when the number of records per table is large enough to hit limits like MySQL's `max_allowed_packet`.
