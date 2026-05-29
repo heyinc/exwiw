@@ -532,6 +532,9 @@ COPY public.reviews (id, reviewable_type, reviewable_id, user_id, rating, conten
 --
 
 COPY public.schema_migrations (version) FROM stdin;
+20250101000001
+20250101000002
+20250101000003
 \.
 
 
