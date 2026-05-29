@@ -31,6 +31,7 @@ module Exwiw
       configs = load_table_config(adapter.class.table_config_class)
 
       validate_skipped(configs)
+      validate_rails_managed_target!(configs)
 
       table_by_name = configs.each_with_object({}) { |config, hash| hash[config.name] = config }
 
@@ -94,7 +95,7 @@ module Exwiw
           end
         end
 
-        if adapter.supports_bulk_delete? && !@insert_only
+        if adapter.supports_bulk_delete? && !@insert_only && !(table.respond_to?(:rails_managed?) && table.rails_managed?)
           @logger.debug("  Generate DELETE statement...")
           delete_sql = adapter.to_bulk_delete(query_ast, table)
           if @logger.debug?
@@ -152,6 +153,17 @@ module Exwiw
       end
 
       skipped_names.each { |n| @logger.info("Table '#{n}' is marked skip:true (schema will be included, data extraction skipped)") }
+    end
+
+    private def validate_rails_managed_target!(configs)
+      return if @dump_target.table_name.nil?
+
+      target = configs.find { |c| c.name == @dump_target.table_name }
+      return if target.nil?
+      return unless target.respond_to?(:rails_managed?) && target.rails_managed?
+
+      raise ArgumentError,
+            "--target-table '#{@dump_target.table_name}' is a Rails-managed table (type=#{target.type}) and cannot be used as a dump target."
     end
   end
 end

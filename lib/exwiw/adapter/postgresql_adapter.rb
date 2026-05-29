@@ -84,13 +84,22 @@ module Exwiw
         end
         values = value_list.join(",\n")
 
-        column_names = table.columns.map(&:name).join(', ')
-        "INSERT INTO #{table_name} (#{column_names}) VALUES\n#{values};"
+        if table.rails_managed?
+          "INSERT INTO #{table_name} VALUES\n#{values};"
+        else
+          column_names = table.columns.map(&:name).join(', ')
+          "INSERT INTO #{table_name} (#{column_names}) VALUES\n#{values};"
+        end
       end
 
       def to_copy_from_stdin(results, table)
-        column_names = table.columns.map(&:name).join(', ')
-        lines = ["COPY #{table.name} (#{column_names}) FROM stdin;"]
+        header = if table.rails_managed?
+                   "COPY #{table.name} FROM stdin;"
+                 else
+                   column_names = table.columns.map(&:name).join(', ')
+                   "COPY #{table.name} (#{column_names}) FROM stdin;"
+                 end
+        lines = [header]
         results.each do |row|
           lines << row.map { |v| escape_copy_value(v) }.join("\t")
         end
@@ -178,7 +187,11 @@ module Exwiw
         raise NotImplementedError unless query_ast.is_a?(Exwiw::QueryAst::Select)
 
         sql = "SELECT "
-        sql += query_ast.columns.map { |col| compile_column_name(query_ast, col) }.join(', ')
+        sql += if query_ast.select_all
+                 "*"
+               else
+                 query_ast.columns.map { |col| compile_column_name(query_ast, col) }.join(', ')
+               end
         sql += " FROM #{query_ast.from_table_name}"
 
         query_ast.join_clauses.each do |join|
