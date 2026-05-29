@@ -39,8 +39,17 @@ else
   docker compose exec postgres psql -U postgres -d "${FROM_DATABASE_NAME}" -f /seed/postgresql-dump.sql > /dev/null
 fi
 
+# Clean output dir so stale insert-*.sql from a previous run (e.g. before the
+# numbering changed when rails_managed entries were added) does not leak in
+# via the glob loop below.
+rm -rf tmp/postgresql-clean
+
 # run exwiw — output to a dedicated dir so we don't collide with the other
-# scenario's artifacts.
+# scenario's artifacts. Uses `postgresql-schema-from-clean` which augments the
+# regular config dir with rails_managed_* entries (schema_migrations etc).
+# Those are only safe to import into a fresh DB; the standard
+# test_with_postgresql.sh seeds the target with the same dump as the source,
+# so applying schema_migrations there would hit duplicate-key errors.
 export DATABASE_PASSWORD="test_password"
 bundle exec exe/exwiw \
   --adapter=postgresql \
@@ -48,7 +57,7 @@ bundle exec exe/exwiw \
   --port=5432 \
   --user=postgres \
   --database="${FROM_DATABASE_NAME}" \
-  --config-dir=scenario/postgresql-schema \
+  --config-dir=scenario/postgresql-schema-from-clean \
   --target-table=shops \
   --ids=1 \
   --output-dir=tmp/postgresql-clean
@@ -73,6 +82,19 @@ if [ "$COUNT" -eq "1" ]; then
   echo "✓ Schema + data imported successfully into clean DB"
 else
   echo "✗ Import into clean DB failed (expected 1 shop with id=1, got ${COUNT})"
+  exit 1
+fi
+
+# Verify rails_managed (type=rails_managed_schema_migrations) extraction:
+# the source seed has 3 migration versions, and the rails_managed dump path
+# uses SELECT * with no WHERE clause, so all 3 should land regardless of the
+# --target-table / --ids scoping.
+echo "Verifying rails_managed schema_migrations import..."
+SM_COUNT=$($PSQL_CMD -d "${TO_DATABASE_NAME}" -t -c "SELECT COUNT(*) FROM schema_migrations;" | tr -d ' ')
+if [ "$SM_COUNT" -eq "3" ]; then
+  echo "✓ schema_migrations: all 3 versions imported"
+else
+  echo "✗ schema_migrations expected 3 rows, got ${SM_COUNT}"
   exit 1
 fi
 

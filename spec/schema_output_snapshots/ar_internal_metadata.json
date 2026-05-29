@@ -1,0 +1,5 @@
+{
+  "name": "ar_internal_metadata",
+  "type": "rails_managed_internal_metadata",
+  "comment": "Managed internally by Rails. Stores environment and schema metadata."
+}

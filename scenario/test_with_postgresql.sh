@@ -32,6 +32,10 @@ else
   docker compose exec postgres psql -U postgres -d "${TO_DATABASE_NAME}" -f /seed/postgresql-dump.sql > /dev/null
 fi
 
+# Clean output dir so stale insert-*.sql / delete-*.sql from previous runs do
+# not leak in via the glob loops below.
+rm -rf tmp/postgresql
+
 # run exwiw
 export DATABASE_PASSWORD="test_password"
 bundle exec exe/exwiw \

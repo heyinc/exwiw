@@ -1,0 +1,5 @@
+{
+  "name": "schema_migrations",
+  "type": "rails_managed_schema_migrations",
+  "comment": "Managed internally by Rails. Tracks applied schema migrations."
+}

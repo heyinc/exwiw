@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- `schema:generate` now auto-emits config entries for Rails-managed tables (`schema_migrations` and `ar_internal_metadata`), tagged `type: "rails_managed_schema_migrations"` / `"rails_managed_internal_metadata"`. Extraction uses `SELECT *`, INSERT omits the column list, and DELETE is not generated. Defining `primary_key`, `columns`, or `belongs_tos` on such an entry is rejected at load time, and these tables cannot be used as `--target-table`.
+- Added optional `type` and `comment` fields to `TableConfig`. `primary_key` is now optional in JSON (still required for non-rails-managed tables, enforced at load time).
+
 ## [0.2.4] - 2026-05-28
 
 ### Added

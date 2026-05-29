@@ -91,6 +91,7 @@ module Exwiw
         expect(tables_by_name.keys).to contain_exactly(
           "shops", "users", "products", "orders", "order_items",
           "transactions", "reviews", "system_announcements",
+          "schema_migrations", "ar_internal_metadata",
         )
       end
 
@@ -188,6 +189,7 @@ module Exwiw
         expect(Dir[File.join(output_dir, "*.json")].map { |p| File.basename(p) }).to contain_exactly(
           "shops.json", "users.json", "products.json", "orders.json", "order_items.json",
           "transactions.json", "reviews.json", "system_announcements.json",
+          "schema_migrations.json", "ar_internal_metadata.json",
         )
       end
 

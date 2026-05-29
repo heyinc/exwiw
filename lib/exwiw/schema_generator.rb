@@ -27,7 +27,7 @@ module Exwiw
       models = concrete_models
       validate_single_database!(models)
 
-      models.group_by(&:table_name).map do |table_name, model_group|
+      tables_from_models = models.group_by(&:table_name).map do |table_name, model_group|
         representative = model_group.first
         TableConfig.from_symbol_keys(
           name: table_name,
@@ -36,6 +36,8 @@ module Exwiw
           columns: representative.column_names.map { |name| { name: name } },
         )
       end
+
+      tables_from_models + build_rails_managed_tables
     end
 
     def write_files(tables)
@@ -55,6 +57,43 @@ module Exwiw
 
     private def concrete_models
       @models.reject(&:abstract_class?).select(&:table_exists?)
+    end
+
+    # NOTE: multi-database setup には未対応。`ActiveRecord::Base.schema_migrations_table_name`
+    # と `internal_metadata_table_name` はクラスレベルのグローバル設定を返すため、
+    # connection 毎にテーブル名が違うケース (`connects_to` で別 DB を扱う場合や
+    # `ActiveRecord::Base` 以外で `connection.schema_migration.table_name` を上書きしている場合)
+    # を拾えない。現状は `validate_single_database!` で multi-DB を弾いているので
+    # ここに到達するのは単一 DB 構成のみという前提で動いている。
+    # multi-DB 対応する際は、対象の connection に紐づく schema_migration から
+    # テーブル名を取り、connection 毎にエントリを生成する必要がある。
+    private def build_rails_managed_tables
+      conn = ActiveRecord::Base.connection
+      result = []
+
+      schema_migrations_name = ActiveRecord::Base.schema_migrations_table_name
+      if conn.table_exists?(schema_migrations_name)
+        result << TableConfig.from_symbol_keys(
+          name: schema_migrations_name,
+          type: TableConfig::RAILS_MANAGED_SCHEMA_MIGRATIONS,
+          comment: "Managed internally by Rails. Tracks applied schema migrations.",
+          belongs_tos: [],
+          columns: [],
+        )
+      end
+
+      internal_metadata_name = ActiveRecord::Base.internal_metadata_table_name
+      if conn.table_exists?(internal_metadata_name)
+        result << TableConfig.from_symbol_keys(
+          name: internal_metadata_name,
+          type: TableConfig::RAILS_MANAGED_INTERNAL_METADATA,
+          comment: "Managed internally by Rails. Stores environment and schema metadata.",
+          belongs_tos: [],
+          columns: [],
+        )
+      end
+
+      result
     end
 
     private def aggregate_belongs_tos(models)

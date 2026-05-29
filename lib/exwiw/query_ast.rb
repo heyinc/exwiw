@@ -45,13 +45,14 @@ module Exwiw
     end
 
     class Select
-      attr_reader :from_table_name, :columns, :where_clauses, :join_clauses
+      attr_reader :from_table_name, :columns, :where_clauses, :join_clauses, :select_all
 
       def initialize
         @from_table_name = nil
         @columns = []
         @where_clauses = []
         @join_clauses = []
+        @select_all = false
       end
 
       def from(table)
@@ -60,6 +61,10 @@ module Exwiw
 
       def select(columns)
         @columns = map_column_value(columns)
+      end
+
+      def select_all!
+        @select_all = true
       end
 
       def where(where_clause)
