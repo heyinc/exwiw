@@ -128,15 +128,6 @@ ALTER SEQUENCE public.products_id_seq OWNED BY public.products.id;
 
 
 --
--- Name: schema_migrations; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE IF NOT EXISTS public.schema_migrations (
-    version character varying NOT NULL
-);
-
-
---
 -- Name: shops; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -344,17 +335,6 @@ END $exwiw$;
 DO $exwiw$ BEGIN
   ALTER TABLE ONLY public.products
     ADD CONSTRAINT products_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $exwiw$;
-
-
---
--- Name: schema_migrations schema_migrations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-DO $exwiw$ BEGIN
-  ALTER TABLE ONLY public.schema_migrations
-    ADD CONSTRAINT schema_migrations_pkey PRIMARY KEY (version);
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $exwiw$;
 
