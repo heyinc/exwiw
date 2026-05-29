@@ -59,6 +59,14 @@ module Exwiw
       @models.reject(&:abstract_class?).select(&:table_exists?)
     end
 
+    # NOTE: multi-database setup には未対応。`ActiveRecord::Base.schema_migrations_table_name`
+    # と `internal_metadata_table_name` はクラスレベルのグローバル設定を返すため、
+    # connection 毎にテーブル名が違うケース (`connects_to` で別 DB を扱う場合や
+    # `ActiveRecord::Base` 以外で `connection.schema_migration.table_name` を上書きしている場合)
+    # を拾えない。現状は `validate_single_database!` で multi-DB を弾いているので
+    # ここに到達するのは単一 DB 構成のみという前提で動いている。
+    # multi-DB 対応する際は、対象の connection に紐づく schema_migration から
+    # テーブル名を取り、connection 毎にエントリを生成する必要がある。
     private def build_rails_managed_tables
       conn = ActiveRecord::Base.connection
       result = []
