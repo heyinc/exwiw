@@ -67,8 +67,11 @@ module Exwiw
         CREATE TABLE shops (id INTEGER PRIMARY KEY, name TEXT);
         CREATE TABLE schema_migrations (version TEXT NOT NULL PRIMARY KEY);
       SQL
+      # Each database in a Rails multi-DB setup keeps its own migration
+      # history, so analytics also gets a schema_migrations table.
       SQLite3::Database.new(ANALYTICS_DB_PATH).execute_batch(<<~SQL)
         CREATE TABLE analytics_events (id INTEGER PRIMARY KEY);
+        CREATE TABLE schema_migrations (version TEXT NOT NULL PRIMARY KEY);
       SQL
 
       define_models!
@@ -216,12 +219,12 @@ module Exwiw
 
         it "places each model's table in its own database group" do
           expect(groups["primary"].map(&:name)).to include("shops")
-          expect(groups["analytics"].map(&:name)).to contain_exactly("analytics_events")
+          expect(groups["analytics"].map(&:name)).to include("analytics_events")
         end
 
-        it "emits rails-managed tables under the database that owns them" do
+        it "emits each database's own rails-managed schema_migrations table" do
           expect(groups["primary"].map(&:name)).to include("schema_migrations")
-          expect(groups["analytics"].map(&:name)).not_to include("schema_migrations")
+          expect(groups["analytics"].map(&:name)).to include("schema_migrations")
         end
 
         it "collapses into a single nil-keyed group for a single-database setup" do
@@ -237,7 +240,7 @@ module Exwiw
           expect(Dir[File.join(output_dir, "primary", "*.json")].map { |p| File.basename(p) })
             .to contain_exactly("shops.json", "schema_migrations.json")
           expect(Dir[File.join(output_dir, "analytics", "*.json")].map { |p| File.basename(p) })
-            .to contain_exactly("analytics_events.json")
+            .to contain_exactly("analytics_events.json", "schema_migrations.json")
         end
       end
     end
