@@ -151,6 +151,11 @@ CREATE TABLE IF NOT EXISTS "reviews" ("id" integer PRIMARY KEY AUTOINCREMENT NOT
 FOREIGN KEY ("user_id")
   REFERENCES "users" ("id")
 );
+INSERT INTO reviews VALUES(1,'Product',1,1,5,'Great product','2025-01-01 00:00:00','2025-01-01 00:00:00');
+INSERT INTO reviews VALUES(2,'Product',2,2,4,'Good product','2025-01-01 00:00:00','2025-01-01 00:00:00');
+INSERT INTO reviews VALUES(3,'Product',3,1,3,'Ok product','2025-01-01 00:00:00','2025-01-01 00:00:00');
+INSERT INTO reviews VALUES(4,'Product',4,3,5,'Other shop product','2025-01-01 00:00:00','2025-01-01 00:00:00');
+INSERT INTO reviews VALUES(5,'Shop',1,1,5,'A shop review, not a product','2025-01-01 00:00:00','2025-01-01 00:00:00');
 CREATE TABLE IF NOT EXISTS "system_announcements" ("id" integer PRIMARY KEY AUTOINCREMENT NOT NULL, "title" varchar NOT NULL, "content" text NOT NULL, "created_at" datetime(6) NOT NULL, "updated_at" datetime(6) NOT NULL);
 INSERT INTO system_announcements VALUES(1,'Announcement 1','This is the content of announcement 1.','2025-01-01 00:00:00','2025-01-01 00:00:00');
 INSERT INTO system_announcements VALUES(2,'Announcement 2','This is the content of announcement 2.','2025-01-01 00:00:00','2025-01-01 00:00:00');
@@ -166,6 +171,7 @@ INSERT INTO sqlite_sequence VALUES('orders',30);
 INSERT INTO sqlite_sequence VALUES('order_items',30);
 INSERT INTO sqlite_sequence VALUES('transactions',30);
 INSERT INTO sqlite_sequence VALUES('system_announcements',3);
+INSERT INTO sqlite_sequence VALUES('reviews',5);
 CREATE INDEX "index_users_on_shop_id" ON "users" ("shop_id");
 CREATE INDEX "index_products_on_shop_id" ON "products" ("shop_id");
 CREATE INDEX "index_orders_on_shop_id" ON "orders" ("shop_id");
