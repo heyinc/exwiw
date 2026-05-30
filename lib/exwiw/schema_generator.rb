@@ -145,14 +145,40 @@ module Exwiw
     end
 
     private def aggregate_belongs_tos(models)
-      pairs = models
-        .flat_map { |m| m.reflect_on_all_associations(:belongs_to) }
-        .reject(&:polymorphic?) # XXX: Support polymorphic
-        .map { |assoc| [assoc.table_name, assoc.foreign_key] }
-        .uniq
+      belongs_to_assocs = models.flat_map { |m| m.reflect_on_all_associations(:belongs_to) }
 
-      pairs.map do |table_name, foreign_key|
-        { table_name: table_name, foreign_key: foreign_key }
+      non_polymorphic = belongs_to_assocs
+        .reject(&:polymorphic?)
+        .map { |assoc| { table_name: assoc.table_name, foreign_key: assoc.foreign_key } }
+
+      # polymorphic な belongs_to (`belongs_to :reviewable, polymorphic: true`) は
+      # 単一の対象テーブルを持たない。対象になりうるテーブルは、他モデルで
+      # `has_many/has_one ..., as: <association_name>` と宣言されている側から逆引き
+      # する。各候補テーブルごとに、型カラム (`foreign_type`) と格納される型の値
+      # (`type_value`) を添えた belongs_to を 1 件ずつ展開する。
+      polymorphic = belongs_to_assocs
+        .select(&:polymorphic?)
+        .flat_map do |assoc|
+          polymorphic_target_models(assoc.name).map do |target_model|
+            {
+              table_name: target_model.table_name,
+              foreign_key: assoc.foreign_key,
+              foreign_type: assoc.foreign_type,
+              type_value: target_model.polymorphic_name,
+            }
+          end
+        end
+
+      (non_polymorphic + polymorphic).uniq
+    end
+
+    # polymorphic 関連 `association_name` の対象となりうる具象モデルを、全モデルの
+    # `has_many` / `has_one` の `as:` オプションから逆引きして列挙する。
+    private def polymorphic_target_models(association_name)
+      concrete_models.select do |model|
+        (model.reflect_on_all_associations(:has_many) +
+         model.reflect_on_all_associations(:has_one))
+          .any? { |reflection| reflection.options[:as] == association_name }
       end
     end
 
