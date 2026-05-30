@@ -76,12 +76,31 @@ module Exwiw
     private def build_tables_for(models, conn)
       tables_from_models = models.group_by(&:table_name).map do |table_name, model_group|
         representative = model_group.first
-        TableConfig.from_symbol_keys(
-          name: table_name,
-          primary_key: representative.primary_key,
-          belongs_tos: aggregate_belongs_tos(model_group),
-          columns: representative.column_names.map { |name| { name: name } },
-        )
+        primary_key = representative.primary_key
+
+        # 複合主キー (`representative.primary_key` が Array) のテーブルは現状未対応。
+        # primary_key を省略し、type で非対応である旨を明示したうえで skip:true を
+        # 付与して出力する。type を付けておくことで将来対応する際の目印になる。
+        # 利用者が必要に応じて手動で skip を外して設定し直せるよう、設定ファイル
+        # 自体は生成しておく。
+        if primary_key.is_a?(Array)
+          TableConfig.from_symbol_keys(
+            name: table_name,
+            type: TableConfig::UNSUPPORTED_COMPOSITE_PRIMARY_KEY,
+            skip: true,
+            comment: "exwiw does not support composite primary keys " \
+                     "(#{primary_key.join(', ')}); data extraction is skipped.",
+            belongs_tos: aggregate_belongs_tos(model_group),
+            columns: representative.column_names.map { |name| { name: name } },
+          )
+        else
+          TableConfig.from_symbol_keys(
+            name: table_name,
+            primary_key: primary_key,
+            belongs_tos: aggregate_belongs_tos(model_group),
+            columns: representative.column_names.map { |name| { name: name } },
+          )
+        end
       end
 
       tables_from_models + build_rails_managed_tables(conn)

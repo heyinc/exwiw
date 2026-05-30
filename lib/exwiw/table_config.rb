@@ -11,6 +11,11 @@ module Exwiw
       RAILS_MANAGED_INTERNAL_METADATA,
     ].freeze
 
+    # exwiw が現状サポートしていない複合主キーのテーブルを表す type。
+    # schema:generate が skip:true と併せて付与する。将来サポートする際の
+    # 目印になるよう、rails-managed とは異なり columns/belongs_tos は保持する。
+    UNSUPPORTED_COMPOSITE_PRIMARY_KEY = "unsupported_composite_primary_key"
+
     attribute :name, String
     attribute :primary_key, optional(String), skip_serializing_if_nil: true
     attribute :type, optional(String), skip_serializing_if_nil: true
@@ -138,7 +143,9 @@ module Exwiw
                 "Table '#{name}' has type=#{type}; columns must not be defined."
         end
       else
-        if primary_key.nil?
+        # skip:true のテーブルはデータ抽出を行わないため primary_key を要求しない。
+        # (例: exwiw 非対応の複合主キーテーブル)
+        if primary_key.nil? && !skip
           raise ArgumentError, "Table '#{name}' requires primary_key."
         end
       end
