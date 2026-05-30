@@ -174,12 +174,15 @@ module Exwiw
 
     # polymorphic 関連 `association_name` の対象となりうる具象モデルを、全モデルの
     # `has_many` / `has_one` の `as:` オプションから逆引きして列挙する。
+    # `concrete_models` の並びは `ActiveRecord::Base.descendants` の順に依存し、
+    # Ruby バージョンによって変わりうるため、生成される belongs_to の並びが安定する
+    # よう `table_name` でソートして決定的に返す。
     private def polymorphic_target_models(association_name)
       concrete_models.select do |model|
         (model.reflect_on_all_associations(:has_many) +
          model.reflect_on_all_associations(:has_one))
           .any? { |reflection| reflection.options[:as] == association_name }
-      end
+      end.sort_by(&:table_name)
     end
 
     # Identifies which database a model belongs to. With Rails multi-DB
