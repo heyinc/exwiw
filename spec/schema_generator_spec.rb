@@ -154,8 +154,14 @@ module Exwiw
         poly = review.belongs_tos.select(&:polymorphic?)
           .map { |b| [b.table_name, b.foreign_key, b.foreign_type, b.type_value] }
 
+        # `reviewable` is registered on both Product and Shop (`has_many :reviews,
+        # as: :reviewable`), so a single polymorphic association expands into one
+        # belongs_to per target, each carrying its own type_value.
         expect(non_poly).to contain_exactly(["users", "user_id"])
-        expect(poly).to contain_exactly(["products", "reviewable_id", "reviewable_type", "Product"])
+        expect(poly).to contain_exactly(
+          ["products", "reviewable_id", "reviewable_type", "Product"],
+          ["shops", "reviewable_id", "reviewable_type", "Shop"],
+        )
       end
     end
 
