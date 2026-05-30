@@ -174,6 +174,65 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
     end
 
+    context 'when the table joins through an intermediate polymorphic belongs_to to the dump target table' do
+      let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'products', ids: [1]) }
+      let(:reviews_table) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'reviews',
+          primary_key: 'id',
+          belongs_tos: [
+            {
+              table_name: 'products',
+              foreign_key: 'reviewable_id',
+              foreign_type: 'reviewable_type',
+              type_value: 'Product',
+            },
+          ],
+          columns: [
+            { name: 'id' },
+            { name: 'reviewable_type' },
+            { name: 'reviewable_id' },
+          ],
+        )
+      end
+      let(:comments_table) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'comments',
+          primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'reviews', foreign_key: 'review_id' },
+          ],
+          columns: [
+            { name: 'id' },
+            { name: 'review_id' },
+          ],
+        )
+      end
+      let(:all_tables) do
+        [
+          comments_table,
+          reviews_table,
+          products_table(:sqlite3),
+        ]
+      end
+      let(:table) { comments_table }
+
+      it 'adds the polymorphic type filter to the join clause against the intermediate table' do
+        expect(built_query_ast.from_table_name).to eq('comments')
+        join_clauses = built_query_ast.join_clauses.map(&:to_h)
+        expect(join_clauses.size).to eq(1)
+        expect(join_clauses[0][:base_table_name]).to eq('comments')
+        expect(join_clauses[0][:foreign_key]).to eq('review_id')
+        expect(join_clauses[0][:join_table_name]).to eq('reviews')
+        expect(join_clauses[0][:primary_key]).to eq('id')
+        expect(join_clauses[0][:where_clauses]).to eq([
+          { column_name: 'reviewable_id', operator: :eq, value: [1] },
+          { column_name: 'reviewable_type', operator: :eq, value: ['Product'] },
+        ])
+        expect(built_query_ast.where_clauses.map(&:to_h)).to eq([])
+      end
+    end
+
     context 'when the table has no relation with dump target table' do
       let(:table) { system_announcements_table(:sqlite3) }
 

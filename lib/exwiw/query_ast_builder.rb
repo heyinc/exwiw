@@ -63,6 +63,18 @@ module Exwiw
             operator: :eq,
             value: dump_target.ids
           )
+
+          # 中間テーブルが dump target へ polymorphic belongs_to している場合は、
+          # 型カラム (foreign_type) も join 条件に追加する。型カラムは to_table
+          # (= join_table_name) 上に存在するため、JoinClause の where_clauses が
+          # join_table_name に対してコンパイルされる仕組みにそのまま乗せられる。
+          if relation_to_dump_target.polymorphic?
+            join_clause.where_clauses.push QueryAst::WhereClause.new(
+              column_name: relation_to_dump_target.foreign_type,
+              operator: :eq,
+              value: [relation_to_dump_target.type_value]
+            )
+          end
         end
 
         # Add filter from intermediate table to join clause
