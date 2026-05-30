@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- `schema:generate` no longer crashes on models with a composite primary key (`primary_key` returns an Array). Such tables are emitted with `skip: true`, tagged `type: "unsupported_composite_primary_key"`, and annotated with a `comment` listing the key columns. `columns` / `belongs_tos` are retained so the entry can be wired up once composite-key support lands; for now `skip: true` excludes it from extraction. `skip: true` tables no longer require `primary_key` at load time.
+
+### Notes
+
+- `schema:generate` multi-database support: each database keeps its own Rails migration history, so a per-database `schema_migrations` / `ar_internal_metadata` entry is emitted for every database that has one. Known limitation: the rails-managed table *name* is resolved from the global `ActiveRecord::Base.schema_migrations_table_name` / `internal_metadata_table_name` accessors, so a per-database override of those names is not detected and the table will be missing from that database's generated configs.
+
 ## [0.2.6] - 2026-05-29
 
 ### Added

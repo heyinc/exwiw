@@ -142,7 +142,11 @@ exwiw/
     analytics_events.json
 ```
 
-Rails-managed tables (`schema_migrations` / `ar_internal_metadata`) are emitted under whichever database actually contains them. Single-database applications are unaffected and continue to write files flat into the output directory.
+Each database keeps its own Rails migration history, so a `schema_migrations` (and `ar_internal_metadata`) entry is emitted under every database that contains one — the example above shows `primary/schema_migrations.json` and would also produce `analytics/schema_migrations.json` when the analytics database has its own migration table. Single-database applications are unaffected and continue to write files flat into the output directory.
+
+**Limitations**
+
+- The rails-managed table *names* are resolved from the global `ActiveRecord::Base.schema_migrations_table_name` / `internal_metadata_table_name` accessors, which are shared across all connections. A per-database override of these names is not detected, so such a table will be missing from that database's generated configs.
 
 ### Configuration
 
@@ -267,6 +271,23 @@ Constraints:
 - Defining `primary_key`, `columns`, or `belongs_tos` on a rails-managed entry is rejected with `ArgumentError` on load.
 - A rails-managed table cannot be used as `--target-table`.
 - In multi-database setups, the rails-managed entry is emitted under whichever database's connection actually contains the table (see [Multiple databases](#multiple-databases)). The table name itself is still derived from the global `ActiveRecord::Base.schema_migrations_table_name` / `internal_metadata_table_name` (prefix/suffix) accessors.
+
+### Composite primary keys (unsupported)
+
+exwiw does not yet support tables with a composite primary key. When `exwiw:schema:generate` encounters a model whose `primary_key` is an array, it still emits a config entry so the table is not silently dropped, but marks it `skip: true`, tags it `type: "unsupported_composite_primary_key"`, and records the key columns in a `comment`:
+
+```json
+{
+  "name": "composite_pk_records",
+  "type": "unsupported_composite_primary_key",
+  "skip": true,
+  "comment": "exwiw does not support composite primary keys (organization_id, location_id); data extraction is skipped.",
+  "belongs_tos": [],
+  "columns": [{ "name": "organization_id" }, { "name": "location_id" }, { "name": "name" }]
+}
+```
+
+Unlike rails-managed entries, `columns` and `belongs_tos` are retained so the entry is ready to wire up once composite-key support lands. The `type` is purely a marker — `skip: true` is what actually excludes the table from extraction, so removing `skip` (and supplying a workable `primary_key`) lets you opt the table back in manually.
 
 ### Bulk insert chunk size
 
