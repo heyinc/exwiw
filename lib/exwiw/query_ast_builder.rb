@@ -98,6 +98,17 @@ module Exwiw
         value: dump_target.ids
       )
 
+      # polymorphic belongs_to の場合は外部キーだけでは型を区別できないため
+      # (例: reviewable_id=1 が Product なのか別モデルなのか判別できない)、
+      # 型カラム (foreign_type) を type_value で絞り込む条件を追加する。
+      if belongs_to.polymorphic?
+        clauses.push Exwiw::QueryAst::WhereClause.new(
+          column_name: belongs_to.foreign_type,
+          operator: :eq,
+          value: [belongs_to.type_value]
+        )
+      end
+
       if table.filter
         clauses.push table.filter
       end

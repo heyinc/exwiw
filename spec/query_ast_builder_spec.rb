@@ -131,6 +131,49 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
     end
 
+    context 'when the table has a polymorphic belongs_to to the dump target table' do
+      let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'products', ids: [1]) }
+      let(:reviews_table) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'reviews',
+          primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'users', foreign_key: 'user_id' },
+            {
+              table_name: 'products',
+              foreign_key: 'reviewable_id',
+              foreign_type: 'reviewable_type',
+              type_value: 'Product',
+            },
+          ],
+          columns: [
+            { name: 'id' },
+            { name: 'reviewable_type' },
+            { name: 'reviewable_id' },
+            { name: 'user_id' },
+          ],
+        )
+      end
+      let(:all_tables) do
+        [
+          reviews_table,
+          users_table(:sqlite3),
+          shops_table(:sqlite3),
+          products_table(:sqlite3),
+        ]
+      end
+      let(:table) { reviews_table }
+
+      it 'filters by both the foreign key and the polymorphic type column' do
+        expect(built_query_ast.from_table_name).to eq('reviews')
+        expect(built_query_ast.join_clauses).to eq([])
+        expect(built_query_ast.where_clauses.map(&:to_h)).to eq([
+          { column_name: 'reviewable_id', operator: :eq, value: [1] },
+          { column_name: 'reviewable_type', operator: :eq, value: ['Product'] },
+        ])
+      end
+    end
+
     context 'when the table has no relation with dump target table' do
       let(:table) { system_announcements_table(:sqlite3) }
 
