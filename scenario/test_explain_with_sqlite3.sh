@@ -27,8 +27,8 @@ bundle exec exe/exwiw explain \
   | tee "$EXPLAIN_OUT"
 
 # Structural markers — one block per dumped table.
-grep -q '^-- \[1/7\] shops$'             "$EXPLAIN_OUT" || { echo "✗ missing shops header";        exit 1; }
-grep -q '^-- \[7/7\] transactions$'      "$EXPLAIN_OUT" || { echo "✗ missing transactions header"; exit 1; }
+grep -q '^-- \[1/8\] shops$'             "$EXPLAIN_OUT" || { echo "✗ missing shops header";        exit 1; }
+grep -q '^-- \[8/8\] transactions$'      "$EXPLAIN_OUT" || { echo "✗ missing transactions header"; exit 1; }
 grep -q '^-- EXPLAIN:$'                  "$EXPLAIN_OUT" || { echo "✗ missing EXPLAIN marker";      exit 1; }
 
 # The compiled SELECT for the dump_target must appear verbatim.
