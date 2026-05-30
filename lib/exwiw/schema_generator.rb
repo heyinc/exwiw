@@ -79,11 +79,14 @@ module Exwiw
         primary_key = representative.primary_key
 
         # 複合主キー (`representative.primary_key` が Array) のテーブルは現状未対応。
-        # primary_key を省略し skip:true を付与して出力する。利用者が必要に応じて
-        # 手動で skip を外して設定し直せるよう、設定ファイル自体は生成しておく。
+        # primary_key を省略し、type で非対応である旨を明示したうえで skip:true を
+        # 付与して出力する。type を付けておくことで将来対応する際の目印になる。
+        # 利用者が必要に応じて手動で skip を外して設定し直せるよう、設定ファイル
+        # 自体は生成しておく。
         if primary_key.is_a?(Array)
           TableConfig.from_symbol_keys(
             name: table_name,
+            type: TableConfig::UNSUPPORTED_COMPOSITE_PRIMARY_KEY,
             skip: true,
             comment: "exwiw does not support composite primary keys " \
                      "(#{primary_key.join(', ')}); data extraction is skipped.",

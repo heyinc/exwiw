@@ -225,6 +225,10 @@ module Exwiw
         expect(table.primary_key).to be_nil
       end
 
+      it "tags the table with the unsupported_composite_primary_key type" do
+        expect(table.type).to eq(TableConfig::UNSUPPORTED_COMPOSITE_PRIMARY_KEY)
+      end
+
       it "records that exwiw does not support composite primary keys in the comment" do
         expect(table.comment).to include("does not support composite primary keys")
         expect(table.comment).to include("organization_id", "location_id")
