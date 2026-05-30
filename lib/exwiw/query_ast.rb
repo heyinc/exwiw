@@ -3,14 +3,20 @@
 module Exwiw
   module QueryAst
     class JoinClause
-      attr_reader :base_table_name, :foreign_key, :join_table_name, :primary_key, :where_clauses
+      # `where_clauses` はこの join の join_table_name (= 結合先テーブル) に対して
+      # コンパイルされる。一方 `base_where_clauses` は base_table_name (= 結合元
+      # テーブル) に対してコンパイルされる。後者は、結合元テーブルが結合先へ
+      # polymorphic belongs_to していて型カラム (foreign_type) が結合元テーブル
+      # 側に存在するケースのために使う。
+      attr_reader :base_table_name, :foreign_key, :join_table_name, :primary_key, :where_clauses, :base_where_clauses
 
-      def initialize(base_table_name:, foreign_key:, join_table_name:, primary_key:, where_clauses: [])
+      def initialize(base_table_name:, foreign_key:, join_table_name:, primary_key:, where_clauses: [], base_where_clauses: [])
         @base_table_name = base_table_name
         @foreign_key = foreign_key
         @join_table_name = join_table_name
         @primary_key = primary_key
         @where_clauses = where_clauses
+        @base_where_clauses = base_where_clauses
       end
 
       def to_h
@@ -22,6 +28,9 @@ module Exwiw
         }
         if where_clauses.size.positive?
           hash[:where_clauses] = where_clauses.map { |wc| wc.is_a?(String) ? wc : wc.to_h }
+        end
+        if base_where_clauses.size.positive?
+          hash[:base_where_clauses] = base_where_clauses.map { |wc| wc.is_a?(String) ? wc : wc.to_h }
         end
         hash
       end

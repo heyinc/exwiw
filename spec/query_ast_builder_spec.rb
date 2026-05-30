@@ -233,6 +233,69 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
     end
 
+    context 'when the table itself polymorphically belongs_to an intermediate table on the path' do
+      let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'users', ids: [1]) }
+      let(:comments_table) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'comments',
+          primary_key: 'id',
+          belongs_tos: [
+            {
+              table_name: 'posts',
+              foreign_key: 'commentable_id',
+              foreign_type: 'commentable_type',
+              type_value: 'Post',
+            },
+          ],
+          columns: [
+            { name: 'id' },
+            { name: 'commentable_type' },
+            { name: 'commentable_id' },
+          ],
+        )
+      end
+      let(:posts_table) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'posts',
+          primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'users', foreign_key: 'user_id' },
+          ],
+          columns: [
+            { name: 'id' },
+            { name: 'user_id' },
+          ],
+        )
+      end
+      let(:all_tables) do
+        [
+          comments_table,
+          posts_table,
+          users_table(:sqlite3),
+        ]
+      end
+      let(:table) { comments_table }
+
+      it 'filters the base table by the polymorphic type column via base_where_clauses' do
+        expect(built_query_ast.from_table_name).to eq('comments')
+        join_clauses = built_query_ast.join_clauses.map(&:to_h)
+        expect(join_clauses.size).to eq(1)
+        expect(join_clauses[0][:base_table_name]).to eq('comments')
+        expect(join_clauses[0][:foreign_key]).to eq('commentable_id')
+        expect(join_clauses[0][:join_table_name]).to eq('posts')
+        expect(join_clauses[0][:primary_key]).to eq('id')
+        # The type column lives on the base table (comments), so it goes to base_where_clauses.
+        expect(join_clauses[0][:base_where_clauses]).to eq([
+          { column_name: 'commentable_type', operator: :eq, value: ['Post'] },
+        ])
+        # The regular FK constraint to the dump target lives on the join table (posts).
+        expect(join_clauses[0][:where_clauses]).to eq([
+          { column_name: 'user_id', operator: :eq, value: [1] },
+        ])
+        expect(built_query_ast.where_clauses.map(&:to_h)).to eq([])
+      end
+    end
+
     context 'when the table has no relation with dump target table' do
       let(:table) { system_announcements_table(:sqlite3) }
 

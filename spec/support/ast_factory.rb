@@ -95,6 +95,38 @@ module AstFactory
     end
   end
 
+  # comments が posts へ polymorphic belongs_to (commentable) しているケース。
+  # 型カラム commentable_type は結合元テーブル (comments) 側にあるため
+  # base_where_clauses に乗る。posts への FK 絞り込みは where_clauses (= 結合先)。
+  def build_comments_polymorphic_join_ast
+    QueryAst::Select.new.tap do |ast|
+      ast.from("comments")
+      ast.select_all!
+      ast.join(
+        QueryAst::JoinClause.new(
+          base_table_name: "comments",
+          foreign_key: "commentable_id",
+          join_table_name: "posts",
+          primary_key: "id",
+          where_clauses: [
+            QueryAst::WhereClause.new(
+              column_name: "user_id",
+              operator: :eq,
+              value: [1],
+            ),
+          ],
+          base_where_clauses: [
+            QueryAst::WhereClause.new(
+              column_name: "commentable_type",
+              operator: :eq,
+              value: ["Post"],
+            ),
+          ],
+        )
+      )
+    end
+  end
+
   def build_order_items_ast(order_items_filter_opt = nil, orders_filter_opt = nil)
     order_items_table = order_items_table(adapter_name)
 

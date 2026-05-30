@@ -54,8 +54,23 @@ module Exwiw
           foreign_key: relation.foreign_key,
           join_table_name: to_table.name,
           primary_key: to_table.primary_key,
-          where_clauses: []
+          where_clauses: [],
+          base_where_clauses: []
         )
+
+        # この hop 自体が polymorphic belongs_to の場合 (例: comments が
+        # commentable として posts へ polymorphic belongs_to)、型カラム
+        # (foreign_type) は結合元テーブル (from_table = base_table_name) 側に
+        # 存在する。外部キーだけでは reviewable_id=1 のような値が別モデルの
+        # 行と衝突しうるため、base_where_clauses に型条件を追加して結合元
+        # テーブルを絞り込む。
+        if relation.polymorphic?
+          join_clause.base_where_clauses.push QueryAst::WhereClause.new(
+            column_name: relation.foreign_type,
+            operator: :eq,
+            value: [relation.type_value]
+          )
+        end
         relation_to_dump_target = to_table.belongs_to(dump_target.table_name)
         if relation_to_dump_target
           join_clause.where_clauses.push QueryAst::WhereClause.new(
