@@ -53,10 +53,10 @@ adapter spelling, the following aliases are also accepted (case-insensitive):
 
 So `--adapter=mysql2` and `--adapter=mysql` both select the same MySQL adapter.
 
-Note: exwiw connects to MySQL using the `mysql2` gem regardless of which driver
-your source app uses. There is no `trilogy` alias — if your app uses the trilogy
-driver, pass `--adapter=mysql` (the `mysql2` gem still needs to be available for
-exwiw to connect).
+For MySQL, exwiw connects through whichever of the `mysql2` or `trilogy` gem is
+available (preferring `mysql2`), so an app on either driver works without any
+extra setup. There is no separate `trilogy` adapter name — pass `--adapter=mysql`
+either way.
 
 ## Usage
 

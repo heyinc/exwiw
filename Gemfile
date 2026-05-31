@@ -16,3 +16,5 @@ gem "mongo"
 gem "mongoid"
 
 gem "activerecord"
+
+gem "trilogy", group: :test

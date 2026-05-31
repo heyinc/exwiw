@@ -11,17 +11,17 @@ module Exwiw
         sql = commented_sql(query_ast)
 
         @logger.debug("  Executing SQL: \n#{sql}")
-        connection.query(sql, cast: false, as: :array).to_a
+        connection.query(sql).rows
       end
 
       def explain(query_ast)
         sql = commented_sql(query_ast)
 
         @logger.debug("  Executing EXPLAIN: \n#{sql}")
-        rows = connection.query("EXPLAIN #{sql}", cast: false).to_a
-        rows.each_with_index.flat_map do |row, i|
+        result = connection.query("EXPLAIN #{sql}")
+        result.rows.each_with_index.flat_map do |row, i|
           ["*************************** #{i + 1}. row ***************************"] +
-            row.map { |k, v| "#{k}: #{v}" }
+            result.fields.zip(row).map { |k, v| "#{k}: #{v}" }
         end.join("\n")
       end
 
@@ -257,17 +257,7 @@ module Exwiw
       end
 
       private def connection
-        @connection ||=
-          begin
-            require 'mysql2'
-            Mysql2::Client.new(
-              host: @connection_config.host,
-              port: @connection_config.port,
-              username: @connection_config.user,
-              password: @connection_config.password,
-              database: @connection_config.database_name
-            )
-          end
+        @connection ||= MysqlClient.new(@connection_config)
       end
     end
   end
