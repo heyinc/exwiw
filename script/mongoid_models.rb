@@ -63,6 +63,12 @@
 #   embedding parent collection and is therefore UNREPRESENTABLE as an exwiw
 #   `embedded_in` config; the generator must raise a clear error rather than
 #   crash. It is kept out of `MODELS`/`SEED` and exercised in isolation.
+# - a *self-referential / cyclic* embedding via `recursively_embeds_many`
+#   (TreeNode), which makes a collection BOTH top-level AND embedded inside
+#   documents of its own type. exwiw represents a collection as either top-level
+#   or embedded, not both, so this is UNREPRESENTABLE: the generator must raise a
+#   clear error rather than emit an `embedded_in` config that would silently make
+#   the collection undumpable. Also kept out of `MODELS`/`SEED`.
 #
 # Everything lives under the `MongoidDummy` namespace (with explicit
 # `store_in collection:` and `class_name:`) so these models can coexist in the
@@ -329,6 +335,29 @@ module MongoidDummy
     field :street, type: String
 
     embedded_in :addressable, polymorphic: true
+  end
+
+  # Self-referential / cyclic embedding via `recursively_embeds_many`. Mongoid
+  # declares a `cyclic: true` pair — `embeds_many :child_tree_nodes` and
+  # `embedded_in :parent_tree_node`, both `class_name: "MongoidDummy::TreeNode"`
+  # — so a TreeNode is BOTH a top-level document in "tree_nodes" AND embedded
+  # inside documents of its own type (its children). exwiw represents a
+  # collection as either top-level (dumpable on its own) or embedded (masked
+  # through its parent), NEVER both: emitting `embedded_in` for this would mark
+  # the whole "tree_nodes" collection embedded, so `MongodbAdapter#dumpable?`
+  # would silently never dump the root nodes. The generator must therefore raise
+  # a clear, actionable error rather than emit a config that loses data.
+  #
+  # Like `PolymorphicAddress`, this model is deliberately kept OUT of
+  # `MODELS`/`SEED` (feeding it through `build_collections` aborts the run) and
+  # is exercised in isolation by the spec.
+  class TreeNode
+    include Mongoid::Document
+    store_in collection: "tree_nodes"
+
+    field :name, type: String
+
+    recursively_embeds_many
   end
 
   # All concrete document models in this dummy app, in a deterministic order.

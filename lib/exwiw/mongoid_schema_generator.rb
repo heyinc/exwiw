@@ -179,6 +179,27 @@ module Exwiw
       end
 
       parent = assoc.klass
+
+      # A self-referential / cyclic `embedded_in` — Mongoid's
+      # `recursively_embeds_many` / `recursively_embeds_one` (which declare a
+      # `cyclic: true` `embedded_in`/`embeds_*` pair pointing at the same model),
+      # or any hand-rolled self-embedding — makes a collection BOTH a top-level
+      # document AND embedded inside documents of its own type. exwiw represents
+      # a collection as either top-level (dumpable on its own) or embedded
+      # (masked through its parent at `path`), never both: emitting an
+      # `embedded_in` here would mark the whole collection embedded, so
+      # `MongodbAdapter#dumpable?` (`!embedded?`) would silently never dump the
+      # collection's root documents. Fail loudly instead.
+      if parent.collection_name.to_s == model.collection_name.to_s
+        raise ArgumentError,
+              "MongoidSchemaGenerator: '#{model.name}' (collection '#{model.collection_name}') " \
+              "declares a self-referential (cyclic) `embedded_in :#{assoc.name}` that embeds the " \
+              "collection inside documents of its own type (e.g. `recursively_embeds_many`). " \
+              "exwiw represents a collection as either top-level or embedded, not both, so this " \
+              "cannot be expressed as an exwiw `embedded_in` config. Define the collection's config " \
+              "by hand."
+      end
+
       # `store_as` defaults to the relation name and is the actual document key
       # the subdocuments are stored under inside the immediate parent.
       parent_relation = parent.relations[assoc.inverse.to_s]

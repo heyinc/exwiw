@@ -218,6 +218,19 @@ module Exwiw
           ArgumentError, /polymorphic `embedded_in :addressable`/,
         )
       end
+
+      it "raises a clear error for a self-referential cyclic embedded_in instead of silently making it undumpable" do
+        # TreeNode uses `recursively_embeds_many`, so it is BOTH a top-level
+        # "tree_nodes" document AND embedded inside documents of its own type.
+        # exwiw represents a collection as either top-level or embedded, not
+        # both; emitting `embedded_in` would mark the whole collection embedded
+        # and MongodbAdapter#dumpable? (`!embedded?`) would silently never dump
+        # the root nodes. The generator must raise an actionable error instead.
+        gen = described_class.new(models: [MongoidDummy::TreeNode], output_dir: output_dir)
+        expect { gen.build_collections }.to raise_error(
+          ArgumentError, /self-referential \(cyclic\) `embedded_in :parent_tree_node`/,
+        )
+      end
     end
 
     describe "#generate!" do
