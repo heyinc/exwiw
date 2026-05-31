@@ -2,6 +2,36 @@
 
 module Exwiw
   module Adapter
+    # The adapter names exwiw uses internally. Deliberately driver-agnostic
+    # (e.g. `mysql`, not `mysql2`) so they describe the database, not the Ruby
+    # driver or Rails ActiveRecord adapter that happens to talk to it.
+    CANONICAL_ADAPTERS = %w[mysql sqlite postgresql mongodb].freeze
+
+    # Maps the older driver-flavored spellings onto exwiw's canonical adapter
+    # name, so the CLI stays backward compatible (`--adapter=mysql2` still works)
+    # and a Rails app's `connection.adapter_name` (e.g. "Mysql2", "SQLite") is
+    # absorbed — lookup is case-insensitive (see .normalize_name).
+    #
+    # NOTE: this only normalizes the *name*; exwiw always connects with the
+    # `mysql2` gem (see MysqlAdapter#connection). It is deliberately not aliased
+    # from `trilogy`: a source app using the trilogy driver still needs the
+    # `mysql2` gem available for exwiw to connect, so accepting `--adapter=trilogy`
+    # would falsely imply trilogy support. Use `--adapter=mysql` in that case.
+    ADAPTER_ALIASES = {
+      "mysql2" => "mysql",
+      "sqlite3" => "sqlite",
+    }.freeze
+
+    # Normalize an adapter name to its canonical form. Unknown names are passed
+    # through (downcased) so the caller can reject them with a clear message.
+    # Returns nil for nil input.
+    def self.normalize_name(name)
+      return nil if name.nil?
+
+      key = name.to_s.downcase
+      ADAPTER_ALIASES.fetch(key, key)
+    end
+
     class Base
       attr_reader :connection_config
 
@@ -129,17 +159,17 @@ module Exwiw
     end
 
     def self.build(connection_config, logger)
-      case connection_config.adapter
-      when 'sqlite3'
-        Adapter::Sqlite3Adapter.new(connection_config, logger)
-      when 'mysql2'
-        Adapter::Mysql2Adapter.new(connection_config, logger)
+      case normalize_name(connection_config.adapter)
+      when 'sqlite'
+        Adapter::SqliteAdapter.new(connection_config, logger)
+      when 'mysql'
+        Adapter::MysqlAdapter.new(connection_config, logger)
       when 'postgresql'
         Adapter::PostgresqlAdapter.new(connection_config, logger)
       when 'mongodb'
         Adapter::MongodbAdapter.new(connection_config, logger)
       else
-        raise 'Unsupported adapter'
+        raise "Unsupported adapter: #{connection_config.adapter.inspect}"
       end
     end
   end

@@ -85,7 +85,7 @@ module Exwiw
       let(:cli_options) do
         {
           ids: ['1', '2'], target_table: 'shops', config_dir: '/cfg',
-          database_adapter: 'sqlite3', database_host: nil, database_port: nil,
+          database_adapter: 'sqlite', database_host: nil, database_port: nil,
           database_user: nil, database_name: 'db', output_format: 'insert',
         }
       end
@@ -115,7 +115,7 @@ module Exwiw
         out = File.read(File.join(output_dir, 'shell_out.txt'))
         expect(out).to include('ids=1,2')
         expect(out).to include('table=shops')
-        expect(out).to include('adapter=sqlite3')
+        expect(out).to include('adapter=sqlite')
       end
 
       it 'raises when the shell hook exits non-zero' do

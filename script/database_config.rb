@@ -1,9 +1,13 @@
 DATABASE_CONFIGS = {
-  sqlite3: {
+  # NOTE: the `adapter:` value is the Rails/ActiveRecord adapter name (consumed by
+  # ActiveRecord::Base.establish_connection in the schema-generator specs and the
+  # seed scripts), so it stays as the driver spelling (sqlite3 / mysql2). The hash
+  # key is exwiw's canonical name — this map is exactly the alias relationship.
+  sqlite: {
     adapter: "sqlite3",
     database: ENV.fetch("DATABASE_NAME", "tmp/test.sqlite3"),
   },
-  mysql2: {
+  mysql: {
     adapter: "mysql2",
     host: ENV.fetch("MYSQL_HOST", "127.0.0.1"),
     port: ENV.fetch("MYSQL_PORT", 3306),

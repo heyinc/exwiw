@@ -99,6 +99,19 @@ module Exwiw
     end
 
     private def validate_options!
+      # Fold driver/Rails adapter spellings (mysql2, sqlite3) into exwiw's
+      # canonical names up front, so every check below — and the
+      # EXWIW_DATABASE_ADAPTER passed to hooks — sees the canonical name.
+      @database_adapter = Adapter.normalize_name(@database_adapter)
+
+      # Reject an unknown adapter up front, before checking adapter-specific
+      # options like host/port/password, so the error points at the real problem.
+      unless Adapter::CANONICAL_ADAPTERS.include?(@database_adapter)
+        $stderr.puts "Invalid adapter. Available options are: #{Adapter::CANONICAL_ADAPTERS.join(', ')} " \
+                     "(aliases also accepted: #{Adapter::ADAPTER_ALIASES.keys.join(', ')})"
+        exit 1
+      end
+
       resolve_target_collection_alias!
       resolve_ids_column_alias!
 
@@ -106,7 +119,7 @@ module Exwiw
         validate_explain_only!
       end
 
-      if @database_adapter != "sqlite3"
+      if @database_adapter != "sqlite"
         required_options = {
           "Target database host" => @database_host,
           "Target database port" => @database_port,
@@ -124,12 +137,6 @@ module Exwiw
           $stderr.puts "environment variable 'DATABASE_PASSWORD' is required"
           exit 1
         end
-      end
-
-      valid_adapters = ["mysql2", "postgresql", "sqlite3", "mongodb"]
-      unless valid_adapters.include?(@database_adapter)
-        $stderr.puts "Invalid adapter. Available options are: #{valid_adapters.join(', ')}"
-        exit 1
       end
 
       if @subcommand == "export"
@@ -227,7 +234,7 @@ module Exwiw
       end
 
       if @ids_column
-        sql_adapters = ["mysql2", "postgresql", "sqlite3"]
+        sql_adapters = ["mysql", "postgresql", "sqlite"]
         unless sql_adapters.include?(@database_adapter)
           $stderr.puts "--ids-column is only supported by the sql adapters (use --ids-field)"
           exit 1
@@ -323,7 +330,7 @@ module Exwiw
           v = v.end_with?("/") ? v[0..-2] : v
           @config_dir = File.expand_path(v)
         end
-        opts.on("-a", "--adapter=ADAPTER", "Database adapter") { |v| @database_adapter = v }
+        opts.on("-a", "--adapter=ADAPTER", "Database adapter: mysql, sqlite, postgresql, mongodb (aliases: mysql2, sqlite3)") { |v| @database_adapter = v }
         opts.on("--database=DATABASE", "Target database name") { |v| @database_name = v }
         opts.on("--target-table=[TABLE]", "Target table for extraction. If omitted, dump all tables.") { |v| @target_table_name = v }
         opts.on("--target-collection=[COLLECTION]", "Alias of --target-table for the mongodb adapter.") { |v| @target_collection_name = v }

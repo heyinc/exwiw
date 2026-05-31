@@ -8,7 +8,7 @@ module Exwiw
   RSpec.describe ExplainRunner do
     let(:connection_config) do
       ConnectionConfig.new(
-        adapter: 'sqlite3',
+        adapter: 'sqlite',
         database_name: 'tmp/test.sqlite3',
         host: nil,
         port: nil,
@@ -41,7 +41,7 @@ module Exwiw
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1']) }
 
       before do
-        FileUtils.cp('scenario/sqlite3-schema/shops.json', File.join(config_dir, 'shops.json'))
+        FileUtils.cp('scenario/sqlite-schema/shops.json', File.join(config_dir, 'shops.json'))
       end
 
       it 'prints compiled SQL and EXPLAIN output for the target table' do
@@ -68,7 +68,7 @@ module Exwiw
       let(:runner) do
         ExplainRunner.new(
           connection_config: connection_config,
-          config_dir: 'scenario/sqlite3-schema',
+          config_dir: 'scenario/sqlite-schema',
           dump_target: dump_target,
           logger: logger,
           io: io,
@@ -89,7 +89,7 @@ module Exwiw
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1']) }
 
       before do
-        shops = JSON.parse(File.read('scenario/sqlite3-schema/shops.json'))
+        shops = JSON.parse(File.read('scenario/sqlite-schema/shops.json'))
         shops['skip'] = true
         File.write(File.join(config_dir, 'shops.json'), JSON.dump(shops))
       end

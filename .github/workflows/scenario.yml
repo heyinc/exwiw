@@ -8,10 +8,10 @@ on:
   pull_request:
 
 jobs:
-  with_sqlite3:
+  with_sqlite:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    name: Scenario with sqlite3
+    name: Scenario with sqlite
 
     steps:
       - uses: actions/checkout@v4
@@ -22,13 +22,13 @@ jobs:
           bundler-cache: true
 
       - name: Run exwiw
-        run: scenario/test_with_sqlite3.sh
+        run: scenario/test_with_sqlite.sh
 
       - name: Run exwiw (from clean target DB)
-        run: scenario/test_with_sqlite3_from_clean.sh
+        run: scenario/test_with_sqlite_from_clean.sh
 
       - name: Run exwiw (explain)
-        run: scenario/test_explain_with_sqlite3.sh
+        run: scenario/test_explain_with_sqlite.sh
 
   with_mysql:
     runs-on: ubuntu-latest
@@ -62,13 +62,13 @@ jobs:
           bundler-cache: true
 
       - name: Run exwiw
-        run: scenario/test_with_mysql2.sh
+        run: scenario/test_with_mysql.sh
 
       - name: Run exwiw (from clean target DB)
-        run: scenario/test_with_mysql2_from_clean.sh
+        run: scenario/test_with_mysql_from_clean.sh
 
       - name: Run exwiw (explain)
-        run: scenario/test_explain_with_mysql2.sh
+        run: scenario/test_explain_with_mysql.sh
 
   with_postgres:
     runs-on: ubuntu-latest

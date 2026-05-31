@@ -3,7 +3,7 @@
 set -eo pipefail
 
 export FROM_DATABASE_NAME="exwiw_scenario_explain_db"
-EXPLAIN_OUT="tmp/mysql2-explain.out"
+EXPLAIN_OUT="tmp/mysql-explain.out"
 
 # Determine MySQL command based on environment
 if [ -n "$CI" ]; then
@@ -14,11 +14,11 @@ fi
 
 # Clean up
 mkdir -p tmp
-rm -f "$EXPLAIN_OUT" tmp/mysql2-explain.err
+rm -f "$EXPLAIN_OUT" tmp/mysql-explain.err
 $MYSQL_CMD -e "DROP DATABASE IF EXISTS ${FROM_DATABASE_NAME}; CREATE DATABASE ${FROM_DATABASE_NAME};"
 
 # Setup db
-$MYSQL_CMD "${FROM_DATABASE_NAME}" < seed/mysql2-dump.sql
+$MYSQL_CMD "${FROM_DATABASE_NAME}" < seed/mysql-dump.sql
 
 # Snapshot tmp/ contents before running, so we can detect any unintended file
 # creation by `exwiw explain`.
@@ -28,12 +28,12 @@ tmp_before=$(ls -1 tmp 2>/dev/null | sort)
 # keeping stdout visible in CI logs.
 export DATABASE_PASSWORD="rootpassword"
 bundle exec exe/exwiw explain \
-  --adapter=mysql2 \
+  --adapter=mysql \
   --host=127.0.0.1 \
   --port=3306 \
   --user=root \
   --database="${FROM_DATABASE_NAME}" \
-  --config-dir=scenario/mysql2-schema \
+  --config-dir=scenario/mysql-schema \
   --target-table=shops \
   --ids=1 \
   | tee "$EXPLAIN_OUT"
@@ -62,29 +62,29 @@ if [ "$tmp_after" != "$expected" ]; then
   exit 1
 fi
 
-echo "✓ mysql2 explain produced expected output and wrote no extra files"
+echo "✓ mysql explain produced expected output and wrote no extra files"
 
 # Rejection case: dump-only flag must be refused.
 echo "Testing explain rejection of --insert-only..."
 set +e
 bundle exec exe/exwiw explain \
-    --adapter=mysql2 \
+    --adapter=mysql \
     --host=127.0.0.1 \
     --port=3306 \
     --user=root \
     --database="${FROM_DATABASE_NAME}" \
-    --config-dir=scenario/mysql2-schema \
+    --config-dir=scenario/mysql-schema \
     --insert-only \
-    2>&1 | tee tmp/mysql2-explain.err
+    2>&1 | tee tmp/mysql-explain.err
 rejection_exit=${PIPESTATUS[0]}
 set -e
 if [ "$rejection_exit" -eq 0 ]; then
   echo "✗ explain should have rejected --insert-only (exit 0)"
   exit 1
 fi
-grep -q "not applicable in 'explain'" tmp/mysql2-explain.err || {
+grep -q "not applicable in 'explain'" tmp/mysql-explain.err || {
   echo "✗ unexpected rejection message:"
-  cat tmp/mysql2-explain.err
+  cat tmp/mysql-explain.err
   exit 1
 }
-echo "✓ mysql2 explain rejects --insert-only with the expected message"
+echo "✓ mysql explain rejects --insert-only with the expected message"

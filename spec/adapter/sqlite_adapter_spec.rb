@@ -4,32 +4,54 @@ require 'tempfile'
 
 module Exwiw
   module Adapter
-    RSpec.describe Mysql2Adapter do
-      let(:adapter_name) { 'mysql2' }
+    RSpec.describe SqliteAdapter do
+      let(:adapter_name) { 'sqlite' }
       let(:connection_config) do
         ConnectionConfig.new(
           adapter: adapter_name,
-          database_name: 'exwiw_test',
-          host: '127.0.0.1',
-          port: 3306,
-          user: 'root',
-          password: 'rootpassword',
+          database_name: 'tmp/test.sqlite3',
+          host: nil,
+          port: nil,
+          user: nil,
+          password: nil,
         )
       end
       let(:logger) { Logger.new(nil) }
       let(:adapter) { described_class.new(connection_config, logger) }
 
-      describe "#dump_schema" do
-        let(:schema_path) { Tempfile.new(['mysql2_schema', '.sql']).path }
+      describe "#schema_output_extension" do
+        it { expect(adapter.schema_output_extension).to eq('sql') }
+      end
 
-        it "writes CREATE TABLE IF NOT EXISTS for the requested tables" do
+      describe "#dump_schema" do
+        let(:schema_path) { Tempfile.new(['sqlite_schema', '.sql']).path }
+
+        it "writes idempotent CREATE TABLE/INDEX statements for the given tables" do
           tables = [shops_table(adapter_name), users_table(adapter_name)]
           adapter.dump_schema(tables, schema_path)
 
           sql = File.read(schema_path)
-          expect(sql).to match(/CREATE TABLE IF NOT EXISTS `shops`/i)
-          expect(sql).to match(/CREATE TABLE IF NOT EXISTS `users`/i)
-          expect(sql).not_to match(/`products`/) # not in scope
+          expect(sql).to include('CREATE TABLE IF NOT EXISTS "shops"')
+          expect(sql).to include('CREATE TABLE IF NOT EXISTS "users"')
+          expect(sql).to include('CREATE INDEX IF NOT EXISTS "index_users_on_shop_id"')
+          # Tables not in ordered_tables are not emitted
+          expect(sql).not_to include('"products"')
+        end
+
+        it "emits tables in the provided order" do
+          tables = [users_table(adapter_name), shops_table(adapter_name)]
+          adapter.dump_schema(tables, schema_path)
+
+          sql = File.read(schema_path)
+          expect(sql.index('CREATE TABLE IF NOT EXISTS "users"')).to be < sql.index('CREATE TABLE IF NOT EXISTS "shops"')
+        end
+
+        it "is idempotent — re-running the produced SQL against the same DB does not raise" do
+          tables = [shops_table(adapter_name)]
+          adapter.dump_schema(tables, schema_path)
+          sql = File.read(schema_path)
+          # Strip comment lines (SQLite's execute_batch doesn't handle leading `--` cleanly in all versions but it's tolerant; keep raw).
+          expect { ::SQLite3::Database.new(connection_config.database_name).execute_batch(sql) }.not_to raise_error
         end
       end
 
@@ -46,7 +68,7 @@ module Exwiw
           let(:sql) { adapter.compile_ast(build_select_users_ast) }
 
           it "builds sql" do
-            expect(sql).to eq("SELECT users.id, CONCAT('masked', users.id), CONCAT('masked', users.id, '@example.com'), users.shop_id, users.updated_at, users.created_at FROM users WHERE users.shop_id = 1")
+            expect(sql).to eq("SELECT users.id, ('masked' || users.id), ('masked' || users.id || '@example.com'), users.shop_id, users.updated_at, users.created_at FROM users WHERE users.shop_id = 1")
           end
         end
 
@@ -54,7 +76,7 @@ module Exwiw
           let(:sql) { adapter.compile_ast(build_select_users_ast("users.id > 1")) }
 
           it "builds sql" do
-            expect(sql).to eq("SELECT users.id, CONCAT('masked', users.id), CONCAT('masked', users.id, '@example.com'), users.shop_id, users.updated_at, users.created_at FROM users WHERE users.shop_id = 1 AND users.id > 1")
+            expect(sql).to eq("SELECT users.id, ('masked' || users.id), ('masked' || users.id || '@example.com'), users.shop_id, users.updated_at, users.created_at FROM users WHERE users.shop_id = 1 AND users.id > 1")
           end
         end
 
@@ -107,6 +129,35 @@ module Exwiw
             )
           end
         end
+
+        context "select query with a polymorphic join (base_where_clauses)" do
+          let(:sql) { adapter.compile_ast(build_comments_polymorphic_join_ast) }
+
+          it "compiles where_clauses against the join table and base_where_clauses against the base table" do
+            expect(sql).to eq(
+              "SELECT * FROM comments JOIN posts ON comments.commentable_id = posts.id AND posts.user_id = 1 AND comments.commentable_type = 'Post'"
+            )
+          end
+        end
+      end
+
+      describe "#commented_sql" do
+        it "prefixes the compiled SELECT with an exwiw identifier comment" do
+          ast = build_select_shops_ast
+          expect(adapter.commented_sql(ast)).to eq(
+            "/* exwiw table=shops */ #{adapter.compile_ast(ast)}"
+          )
+        end
+
+        it "leaves the bare compile_ast output free of comments (subquery/DELETE reuse)" do
+          expect(adapter.compile_ast(build_select_shops_ast)).not_to include('exwiw')
+        end
+      end
+
+      describe "#query_comment_text" do
+        it "strips comment terminators to prevent breaking out of the comment" do
+          expect(adapter.query_comment_text("table=foo*/DROP")).not_to include('*/')
+        end
       end
 
       describe "#execute" do
@@ -115,7 +166,7 @@ module Exwiw
 
           it "returns correct results" do
             expect(results).to eq([
-              ["1", "Shop 1", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
+              [1, "Shop 1", "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
             ])
           end
         end
@@ -125,8 +176,8 @@ module Exwiw
 
           it "returns correct results" do
             expect(results).to eq([
-              ["1", "masked1", "masked1@example.com", "1", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["2", "masked2", "masked2@example.com", "1", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
+              [1, "masked1", "masked1@example.com", 1, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [2, "masked2", "masked2@example.com", 1, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
             ])
           end
         end
@@ -136,7 +187,7 @@ module Exwiw
 
           it "returns correct results" do
             expect(results).to eq([
-              ["2", "masked2", "masked2@example.com", "1", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
+              [2, "masked2", "masked2@example.com", 1, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
             ])
           end
         end
@@ -146,12 +197,12 @@ module Exwiw
 
           it "returns correct results" do
             expect(results).to eq([
-              ["1", "1", "1", "1", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["2", "1", "2", "2", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["3", "1", "3", "3", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["4", "1", "4", "1", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["5", "1", "5", "2", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["6", "1", "6", "3", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
+              [1, 1, 1, 1, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [2, 1, 2, 2, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [3, 1, 3, 3, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [4, 1, 4, 1, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [5, 1, 5, 2, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [6, 1, 6, 3, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
             ])
           end
         end
@@ -160,12 +211,12 @@ module Exwiw
           let(:results) { adapter.execute(build_order_items_ast("order_items.id > 1", nil)) }
 
           it "returns correct results" do
-            expect(results.to_a).to eq([
-              ["2", "1", "2", "2", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["3", "1", "3", "3", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["4", "1", "4", "1", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["5", "1", "5", "2", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["6", "1", "6", "3", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
+            expect(results).to eq([
+              [2, 1, 2, 2, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [3, 1, 3, 3, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [4, 1, 4, 1, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [5, 1, 5, 2, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [6, 1, 6, 3, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
             ])
           end
         end
@@ -175,11 +226,11 @@ module Exwiw
 
           it "returns correct results" do
             expect(results).to eq([
-              ["1", "1", "1", "1", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["2", "1", "2", "2", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["3", "1", "3", "3", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["4", "1", "4", "1", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["5", "1", "5", "2", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
+              [1, 1, 1, 1, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [2, 1, 2, 2, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [3, 1, 3, 3, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [4, 1, 4, 1, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [5, 1, 5, 2, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
             ])
           end
         end
@@ -189,26 +240,28 @@ module Exwiw
 
           it "returns correct results" do
             expect(results).to eq([
-              ["2", "1", "2", "2", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["3", "1", "3", "3", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["4", "1", "4", "1", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["5", "1", "5", "2", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
+              [2, 1, 2, 2, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [3, 1, 3, 3, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [4, 1, 4, 1, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [5, 1, 5, 2, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
             ])
           end
         end
       end
 
       describe "#explain" do
-        it "returns EXPLAIN output for a simple select" do
+        it "returns EXPLAIN QUERY PLAN output for a simple select" do
           output = adapter.explain(build_select_shops_ast)
           expect(output).to be_a(String)
           expect(output).not_to be_empty
-          # Output is formatted as vertical rows; assert that header markers and
-          # at least one key/value pair are present. MySQL 5.7/8.0 return classic
-          # table columns (id/select_type/table/...); MySQL 8.0.16+ returns a
-          # single EXPLAIN column with tree-format text. Both are acceptable.
-          expect(output).to include('1. row')
-          expect(output).to match(/(table|EXPLAIN):/i)
+          expect(output).to match(/shops/i)
+        end
+
+        it "returns EXPLAIN QUERY PLAN output for a join query" do
+          output = adapter.explain(build_order_items_ast)
+          expect(output).to be_a(String)
+          expect(output).not_to be_empty
+          expect(output).to match(/order_items|orders/i)
         end
       end
 
@@ -218,20 +271,18 @@ module Exwiw
         context "simple select query" do
           let(:results) do
             [
-              ["1", "Shop 1", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["2", "Shop 2", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["3", "Shop 3", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
+              [1, "Shop 1", "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [2, "Shop 2", "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [3, "Shop 3", "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
             ]
           end
-
-          let(:bulk_insert_sql) { adapter.to_bulk_insert(results, shops_table(adapter_name)) }
 
           it "returns correct bulk insert sql" do
             expect(bulk_insert_sql.strip).to eq(<<~SQL.strip)
               INSERT INTO shops (id, name, updated_at, created_at) VALUES
-              ('1', 'Shop 1', '2025-01-01 00:00:00.000000', '2025-01-01 00:00:00.000000'),
-              ('2', 'Shop 2', '2025-01-01 00:00:00.000000', '2025-01-01 00:00:00.000000'),
-              ('3', 'Shop 3', '2025-01-01 00:00:00.000000', '2025-01-01 00:00:00.000000');
+              (1, 'Shop 1', '2025-01-01 00:00:00', '2025-01-01 00:00:00'),
+              (2, 'Shop 2', '2025-01-01 00:00:00', '2025-01-01 00:00:00'),
+              (3, 'Shop 3', '2025-01-01 00:00:00', '2025-01-01 00:00:00');
             SQL
           end
         end
@@ -239,9 +290,9 @@ module Exwiw
         context "has single quote" do
           let(:results) do
             [
-              ["1", "Shop' 1", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["2", "Shop 2", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
-              ["3", "Shop 3", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
+              [1, "Shop' 1", "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [2, "Shop 2", "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+              [3, "Shop 3", "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
             ]
           end
 
@@ -250,9 +301,9 @@ module Exwiw
           it "returns correct bulk insert sql" do
             expect(bulk_insert_sql.strip).to eq(<<~SQL.strip)
               INSERT INTO shops (id, name, updated_at, created_at) VALUES
-              ('1', 'Shop'' 1', '2025-01-01 00:00:00.000000', '2025-01-01 00:00:00.000000'),
-              ('2', 'Shop 2', '2025-01-01 00:00:00.000000', '2025-01-01 00:00:00.000000'),
-              ('3', 'Shop 3', '2025-01-01 00:00:00.000000', '2025-01-01 00:00:00.000000');
+              (1, 'Shop'' 1', '2025-01-01 00:00:00', '2025-01-01 00:00:00'),
+              (2, 'Shop 2', '2025-01-01 00:00:00', '2025-01-01 00:00:00'),
+              (3, 'Shop 3', '2025-01-01 00:00:00', '2025-01-01 00:00:00');
             SQL
           end
         end
@@ -332,6 +383,25 @@ module Exwiw
             expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
               DELETE FROM order_items
               WHERE order_items.order_id IN (SELECT orders.id FROM orders WHERE orders.shop_id = 1);
+            SQL
+          end
+        end
+
+        context "select query with a polymorphic join (base_where_clauses)" do
+          let(:comments_table) do
+            Exwiw::TableConfig.from_symbol_keys(
+              name: 'comments',
+              primary_key: 'id',
+              belongs_tos: [],
+              columns: [{ name: 'id' }, { name: 'commentable_type' }, { name: 'commentable_id' }],
+            )
+          end
+          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_comments_polymorphic_join_ast, comments_table) }
+
+          it "keeps the polymorphic type filter on the outer delete to avoid deleting other types" do
+            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
+              DELETE FROM comments
+              WHERE comments.commentable_id IN (SELECT posts.id FROM posts WHERE posts.user_id = 1) AND comments.commentable_type = 'Post';
             SQL
           end
         end

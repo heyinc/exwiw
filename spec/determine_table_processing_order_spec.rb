@@ -12,7 +12,7 @@ RSpec.describe Exwiw::DetermineTableProcessingOrder do
 
     context 'when there are only shops' do
       let(:tables) do
-        [shops_table(:sqlite3)]
+        [shops_table(:sqlite)]
       end
 
       it 'returns shops' do
@@ -23,8 +23,8 @@ RSpec.describe Exwiw::DetermineTableProcessingOrder do
     context 'when there are independent' do
       let(:tables) do
         [
-          system_announcements_table(:sqlite3),
-          shops_table(:sqlite3),
+          system_announcements_table(:sqlite),
+          shops_table(:sqlite),
         ]
       end
 
@@ -36,11 +36,11 @@ RSpec.describe Exwiw::DetermineTableProcessingOrder do
     context 'when there are just belongs_to' do
       let(:tables) do
         [
-          orders_table(:sqlite3),
-          users_table(:sqlite3),
-          products_table(:sqlite3),
-          system_announcements_table(:sqlite3),
-          shops_table(:sqlite3),
+          orders_table(:sqlite),
+          users_table(:sqlite),
+          products_table(:sqlite),
+          system_announcements_table(:sqlite),
+          shops_table(:sqlite),
         ]
       end
 
@@ -58,11 +58,11 @@ RSpec.describe Exwiw::DetermineTableProcessingOrder do
     context 'when there are belongs_to, n:m' do
       let(:tables) do
         [
-          order_items_table(:sqlite3),
-          orders_table(:sqlite3),
-          users_table(:sqlite3),
-          products_table(:sqlite3),
-          shops_table(:sqlite3),
+          order_items_table(:sqlite),
+          orders_table(:sqlite),
+          users_table(:sqlite),
+          products_table(:sqlite),
+          shops_table(:sqlite),
         ]
       end
 
@@ -78,7 +78,7 @@ RSpec.describe Exwiw::DetermineTableProcessingOrder do
     end
 
     context 'when there is polymorphic' do
-      # No scenario/sqlite3-schema/reviews.json fixture exists on purpose (it would
+      # No scenario/sqlite-schema/reviews.json fixture exists on purpose (it would
       # be consumed by the full-dump snapshot specs), so the polymorphic reviews
       # config is built inline. The polymorphic belongs_to is expanded into one
       # regular table_name dependency per target (here products), exactly as
@@ -107,10 +107,10 @@ RSpec.describe Exwiw::DetermineTableProcessingOrder do
 
       let(:tables) do
         [
-          users_table(:sqlite3),
-          products_table(:sqlite3),
+          users_table(:sqlite),
+          products_table(:sqlite),
           reviews_table,
-          shops_table(:sqlite3),
+          shops_table(:sqlite),
         ]
       end
 
@@ -127,11 +127,11 @@ RSpec.describe Exwiw::DetermineTableProcessingOrder do
     context 'when there is sti' do
       let(:tables) do
         [
-          transactions_table(:sqlite3),
-          orders_table(:sqlite3),
-          users_table(:sqlite3),
-          products_table(:sqlite3),
-          shops_table(:sqlite3),
+          transactions_table(:sqlite),
+          orders_table(:sqlite),
+          users_table(:sqlite),
+          products_table(:sqlite),
+          shops_table(:sqlite),
         ]
       end
 
@@ -149,13 +149,13 @@ RSpec.describe Exwiw::DetermineTableProcessingOrder do
     context 'when full tables' do
       let(:tables) do
         [
-          order_items_table(:sqlite3),
-          transactions_table(:sqlite3),
-          orders_table(:sqlite3),
-          users_table(:sqlite3),
-          products_table(:sqlite3),
-          system_announcements_table(:sqlite3),
-          shops_table(:sqlite3),
+          order_items_table(:sqlite),
+          transactions_table(:sqlite),
+          orders_table(:sqlite),
+          users_table(:sqlite),
+          products_table(:sqlite),
+          system_announcements_table(:sqlite),
+          shops_table(:sqlite),
         ]
       end
 

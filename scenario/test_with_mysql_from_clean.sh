@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Variant of test_with_mysql2.sh that exercises the "fresh target DB" path.
+# Variant of test_with_mysql.sh that exercises the "fresh target DB" path.
 # The TO database is created empty (no tables), so the run must succeed purely
 # on the strength of insert-000-schema.sql creating the schema before the
 # subsequent insert-*.sql statements run.
@@ -25,27 +25,27 @@ $MYSQL_CMD -e "DROP DATABASE IF EXISTS ${TO_DATABASE_NAME}; CREATE DATABASE ${TO
 
 # Seed only the FROM database. TO is left empty on purpose to validate that
 # insert-000-schema.sql can stand up the schema from scratch.
-$MYSQL_CMD "${FROM_DATABASE_NAME}" < seed/mysql2-dump.sql
+$MYSQL_CMD "${FROM_DATABASE_NAME}" < seed/mysql-dump.sql
 
 # run exwiw — output to a dedicated dir so we don't collide with the other
 # scenario's artifacts.
 export DATABASE_PASSWORD="rootpassword"
 bundle exec exe/exwiw \
-  --adapter=mysql2 \
+  --adapter=mysql \
   --host=127.0.0.1 \
   --port=3306 \
   --user=root \
   --database="${FROM_DATABASE_NAME}" \
-  --config-dir=scenario/mysql2-schema \
+  --config-dir=scenario/mysql-schema \
   --target-table=shops \
   --ids=1 \
-  --output-dir=tmp/mysql2-clean \
+  --output-dir=tmp/mysql-clean \
   --log-level=debug
 
 # Apply insert-*.sql against the empty TO database. insert-000-schema.sql is
 # expected to be the first file and to create every table referenced by the
 # subsequent insert-*.sql statements.
-for file in tmp/mysql2-clean/insert-*.sql; do
+for file in tmp/mysql-clean/insert-*.sql; do
   echo "Run ${file}"
   $MYSQL_CMD "${TO_DATABASE_NAME}" < "${file}"
 done

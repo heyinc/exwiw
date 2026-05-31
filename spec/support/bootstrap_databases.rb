@@ -12,36 +12,36 @@ module BootstrapDatabases
   module_function
 
   def run
-    setup_sqlite3
-    setup_mysql2
+    setup_sqlite
+    setup_mysql
     setup_postgres
     setup_mongodb
   end
 
-  private def setup_sqlite3
-    sqlite3_config = database_config("sqlite3")
-    database_name = sqlite3_config.fetch(:database)
+  private def setup_sqlite
+    sqlite_config = database_config("sqlite")
+    database_name = sqlite_config.fetch(:database)
     File.delete(database_name) if File.exist?(database_name)
 
     conn = SQLite3::Database.new(database_name)
-    sql = File.read("seed/sqlite3-dump.sql")
+    sql = File.read("seed/sqlite-dump.sql")
     conn.execute_batch(sql)
   end
 
-  private def setup_mysql2
-    mysql2_config = database_config("mysql2")
-    database_name = mysql2_config.fetch(:database)
-    username = mysql2_config.fetch(:username)
-    password = mysql2_config.fetch(:password)
-    host = mysql2_config.fetch(:host)
-    port = mysql2_config.fetch(:port)
+  private def setup_mysql
+    mysql_config = database_config("mysql")
+    database_name = mysql_config.fetch(:database)
+    username = mysql_config.fetch(:username)
+    password = mysql_config.fetch(:password)
+    host = mysql_config.fetch(:host)
+    port = mysql_config.fetch(:port)
 
-    conn = Mysql2::Client.new(mysql2_config.except(:database))
+    conn = Mysql2::Client.new(mysql_config.except(:database))
     conn.query("DROP DATABASE IF EXISTS #{database_name}")
     conn.query("CREATE DATABASE #{database_name}")
 
-    ret = system({"MYSQL_PWD" => password.to_s}, "mysql -h #{host} -P #{port} -u #{username} #{database_name} < seed/mysql2-dump.sql")
-    raise "Failed to setup mysql2 database" unless ret
+    ret = system({"MYSQL_PWD" => password.to_s}, "mysql -h #{host} -P #{port} -u #{username} #{database_name} < seed/mysql-dump.sql")
+    raise "Failed to setup mysql database" unless ret
   end
 
   private def setup_postgres

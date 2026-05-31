@@ -105,7 +105,7 @@ module Exwiw
 
   RSpec.describe SchemaGenerator do
     before(:all) do
-      ActiveRecord::Base.establish_connection(database_config(:sqlite3))
+      ActiveRecord::Base.establish_connection(database_config(:sqlite))
       require_relative "../script/models"
     end
 
