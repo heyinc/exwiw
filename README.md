@@ -148,6 +148,25 @@ Each database keeps its own Rails migration history, so a `schema_migrations` (a
 
 - The rails-managed table *names* are resolved from the global `ActiveRecord::Base.schema_migrations_table_name` / `internal_metadata_table_name` accessors, which are shared across all connections. A per-database override of these names is not detected, so such a table will be missing from that database's generated configs.
 
+#### Mongoid applications
+
+For MongoDB applications backed by [Mongoid](https://www.mongodb.com/docs/mongoid/), a separate rake task introspects Mongoid document models and emits `MongodbCollectionConfig` files (the `fields` / `_id` / `embedded_in` shape described under [MongoDB notes](#mongodb-notes)):
+
+```bash
+bundle exec rake exwiw:schema:generate_mongoid
+```
+
+It is a distinct task and class (`Exwiw::MongoidSchemaGenerator`) from the ActiveRecord generator because the two ORMs expose entirely different metadata. From each model it derives:
+
+- the collection name and the `_id` primary key,
+- `fields` from the declared Mongoid fields (referenced `belongs_to` foreign keys such as `shop_id`, and the `created_at` / `updated_at` columns added by `Mongoid::Timestamps`, are ordinary fields — their BSON `ObjectId` / `Date` values serialize as MongoDB Extended JSON at dump time). For an aliased field (`field :ctry, as: :country`), the generator emits the **stored** document key (`ctry`), never the Ruby accessor (`country`), so masking and projection target the key that actually appears in the document, and additionally records the accessor as `mongoid_field_name` on that field so the short key stays understandable (association aliases such as `shop => shop_id` and the built-in `id => _id` are not field renames and are not annotated),
+- `belongs_tos` from referenced `belongs_to` associations (`{ table_name, foreign_key }`). A referenced `belongs_to` declared on an *embedded* document is dropped (cross-collection refs from inside embedded subdocuments are unsupported — see [MongoDB notes](#mongodb-notes)), but its foreign-key column is still kept as an ordinary field. A `has_and_belongs_to_many` association is also dropped (its foreign keys are stored as an array field, e.g. `tag_ids`, which exwiw cannot follow as a single-valued foreign key), while that `*_ids` array column is kept as an ordinary field,
+- `embedded_in` from `embedded_in` / `embeds_many` / `embeds_one` associations. Each embedded config names its *immediate* parent collection and the document key it lives under (`store_as`, defaulting to the relation name); nested embedding is represented as a chain (`comments` → `embedded_in` `posts`, `posts` → `embedded_in` `users`) rather than a flattened dot-path, matching how the adapter recurses through array and Hash subdocuments. A *polymorphic* `embedded_in` (`embedded_in :addressable, polymorphic: true`) has no single embedding parent collection and so cannot be expressed as an `embedded_in` config; the generator raises a clear error pointing you to define that collection's config by hand. A *self-referential / cyclic* embedding (Mongoid's `recursively_embeds_many` / `recursively_embeds_one`) makes a collection both a top-level document and embedded inside documents of its own type; exwiw represents a collection as either top-level or embedded, not both, so the generator likewise raises a clear error rather than emit a config that would silently make the collection undumpable.
+
+Models in an inheritance hierarchy whose subclasses share the base's collection (Mongoid STI, distinguished by the auto-added `_type` discriminator) collapse into a single config: the generator discovers the subclasses via `descendants` (Mongoid registers only the base class in `Mongoid.models`) and unions every class's `fields` and `belongs_tos` into the collection config, so subclass-only fields and associations are not lost.
+
+Regeneration preserves hand-edited `replace_with`, `filter`, `skip`, and `bulk_insert_chunk_size` values, like the ActiveRecord generator. Indexes are not written to the config — they are introspected from the live database at dump time (see [MongoDB notes](#mongodb-notes)). Polymorphic `belongs_to` is not yet expanded by this task.
+
 ### Configuration
 
 This is an example of the one table schema:
@@ -391,6 +410,9 @@ The MongoDB adapter is experimental. To use it:
 - Add `gem "mongo"` to your Gemfile in addition to `exwiw` (it is not declared as a runtime dependency of the gem).
 - Set `--adapter=mongodb`. `--user` / `DATABASE_PASSWORD` are optional and only needed when your MongoDB requires authentication.
 - The MongoDB adapter consumes a separate config type, `MongodbCollectionConfig`, with MongoDB-native naming. Use `fields` (instead of the SQL adapters' `columns`), and set `"primary_key": "_id"`. Foreign keys (`shop_id`, `user_id`, ...) stay as ordinary fields.
+- `--ids` values are coerced to the type actually stored in `_id` before filtering: integer-looking ids become `Integer`, 24-char hex ids become `BSON::ObjectId` (Mongoid's default `_id` type — a plain String would never match an ObjectId), and any other string is left as-is.
+- `--target-collection=COLLECTION` is a mongodb-only alias of `--target-table` (use whichever reads better for MongoDB). Specifying both, or using `--target-collection` with a non-mongodb adapter, is an error.
+- `--ids-field=FIELD` matches `--ids` against `FIELD` on the target collection instead of its primary key (e.g. `--target-collection=users --ids=a@example.com --ids-field=email`). Downstream foreign-key propagation still keys off the primary key, so only the target collection's filter changes. Unlike the primary-key path, the supplied ids are **not** type-coerced (the stored type of a custom field is unknown), so pass values matching the field's actual type. This flag is currently **mongodb-only** (the SQL adapters reject it; supporting them is a TODO).
 - Output is JSON Lines (`insert-{idx}-{collection}.jsonl`) using MongoDB Extended JSON (relaxed mode). Import with `mongoimport`:
   ```bash
   mongoimport --db app_dev --collection users --file dump/insert-002-users.jsonl

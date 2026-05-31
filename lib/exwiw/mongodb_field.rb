@@ -6,6 +6,11 @@ module Exwiw
 
     attribute :name, String
     attribute :replace_with, optional(String), skip_serializing_if_nil: true
+    # The Mongoid model's Ruby accessor when the stored document key (`name`)
+    # was renamed via `field :ctry, as: :country`. Purely informational — exwiw
+    # masks/projects by `name` (the storage key) — but surfacing the accessor
+    # keeps an otherwise cryptic short key understandable in the config.
+    attribute :mongoid_field_name, optional(String), skip_serializing_if_nil: true
 
     def self.from_symbol_keys(hash)
       from(hash.transform_keys(&:to_s))

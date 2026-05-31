@@ -1,10 +1,10 @@
-{"_id":1,"name":"User 1","email":"user1@example.com","shop_id":1,"posts":[{"_id":101,"title":"First post"},{"_id":102,"title":"Second post"}],"created_at":"2025-01-01T00:00:00.000Z","updated_at":"2025-01-01T00:00:00.000Z"}
-{"_id":2,"name":"User 2","email":"user2@example.com","shop_id":1,"posts":[{"_id":201,"title":"Hello"}],"created_at":"2025-01-01T00:00:00.000Z","updated_at":"2025-01-01T00:00:00.000Z"}
-{"_id":3,"name":"User 1","email":"user1@example.com","shop_id":2,"posts":[],"created_at":"2025-01-01T00:00:00.000Z","updated_at":"2025-01-01T00:00:00.000Z"}
-{"_id":4,"name":"User 2","email":"user2@example.com","shop_id":2,"created_at":"2025-01-01T00:00:00.000Z","updated_at":"2025-01-01T00:00:00.000Z"}
-{"_id":5,"name":"User 1","email":"user1@example.com","shop_id":3,"created_at":"2025-01-01T00:00:00.000Z","updated_at":"2025-01-01T00:00:00.000Z"}
-{"_id":6,"name":"User 2","email":"user2@example.com","shop_id":3,"created_at":"2025-01-01T00:00:00.000Z","updated_at":"2025-01-01T00:00:00.000Z"}
-{"_id":7,"name":"User 1","email":"user1@example.com","shop_id":4,"created_at":"2025-01-01T00:00:00.000Z","updated_at":"2025-01-01T00:00:00.000Z"}
-{"_id":8,"name":"User 2","email":"user2@example.com","shop_id":4,"created_at":"2025-01-01T00:00:00.000Z","updated_at":"2025-01-01T00:00:00.000Z"}
-{"_id":9,"name":"User 1","email":"user1@example.com","shop_id":5,"created_at":"2025-01-01T00:00:00.000Z","updated_at":"2025-01-01T00:00:00.000Z"}
-{"_id":10,"name":"User 2","email":"user2@example.com","shop_id":5,"created_at":"2025-01-01T00:00:00.000Z","updated_at":"2025-01-01T00:00:00.000Z"}
+{"_id":{"$oid":"b00200000000000000000001"},"name":"User 1","email":"user1@example.com","shop_id":{"$oid":"a00100000000000000000001"},"posts":[{"_id":{"$oid":"b00800000000000000000065"},"title":"First post"},{"_id":{"$oid":"b00800000000000000000066"},"title":"Second post"}],"created_at":"2025-01-01T00:00:00.000Z","updated_at":"2025-01-01T00:00:00.000Z"}
+{"_id":{"$oid":"b00200000000000000000002"},"name":"User 2","email":"user2@example.com","shop_id":{"$oid":"a00100000000000000000001"},"posts":[{"_id":{"$oid":"b008000000000000000000c9"},"title":"Hello"}],"created_at":"2025-01-01T00:00:00.000Z","updated_at":"2025-01-01T00:00:00.000Z"}
+{"_id":{"$oid":"b00200000000000000000003"},"name":"User 1","email":"user1@example.com","shop_id":{"$oid":"a00100000000000000000002"},"posts":[],"created_at":"2025-01-01T00:00:00.000Z","updated_at":"2025-01-01T00:00:00.000Z"}
+{"_id":{"$oid":"b00200000000000000000004"},"name":"User 2","email":"user2@example.com","shop_id":{"$oid":"a00100000000000000000002"},"created_at":"2025-01-01T00:00:00.000Z","updated_at":"2025-01-01T00:00:00.000Z"}
+{"_id":{"$oid":"b00200000000000000000005"},"name":"User 1","email":"user1@example.com","shop_id":{"$oid":"a00100000000000000000003"},"created_at":"2025-01-01T00:00:00.000Z","updated_at":"2025-01-01T00:00:00.000Z"}
+{"_id":{"$oid":"b00200000000000000000006"},"name":"User 2","email":"user2@example.com","shop_id":{"$oid":"a00100000000000000000003"},"created_at":"2025-01-01T00:00:00.000Z","updated_at":"2025-01-01T00:00:00.000Z"}
+{"_id":{"$oid":"b00200000000000000000007"},"name":"User 1","email":"user1@example.com","shop_id":{"$oid":"a00100000000000000000004"},"created_at":"2025-01-01T00:00:00.000Z","updated_at":"2025-01-01T00:00:00.000Z"}
+{"_id":{"$oid":"b00200000000000000000008"},"name":"User 2","email":"user2@example.com","shop_id":{"$oid":"a00100000000000000000004"},"created_at":"2025-01-01T00:00:00.000Z","updated_at":"2025-01-01T00:00:00.000Z"}
+{"_id":{"$oid":"b00200000000000000000009"},"name":"User 1","email":"user1@example.com","shop_id":{"$oid":"a00100000000000000000005"},"created_at":"2025-01-01T00:00:00.000Z","updated_at":"2025-01-01T00:00:00.000Z"}
+{"_id":{"$oid":"b0020000000000000000000a"},"name":"User 2","email":"user2@example.com","shop_id":{"$oid":"a00100000000000000000005"},"created_at":"2025-01-01T00:00:00.000Z","updated_at":"2025-01-01T00:00:00.000Z"}

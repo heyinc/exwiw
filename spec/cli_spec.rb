@@ -65,5 +65,60 @@ module Exwiw
         expect { run_cli(argv) }.to raise_error(SystemExit).and output(/mongodb adapter is not yet supported by 'explain'/).to_stderr
       end
     end
+
+    describe '--ids-field validation' do
+      def run_cli(argv)
+        CLI.new(argv).run
+      end
+
+      it 'parses --ids-field onto the dump target' do
+        cli = CLI.new(['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                       '--config-dir=scenario/mongodb-schema', '--target-table=users',
+                       '--ids=a@example.com', '--ids-field=email'])
+        expect(cli.instance_variable_get(:@ids_field)).to eq('email')
+      end
+
+      it 'rejects --ids-field without --target-table' do
+        argv = ['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                '--config-dir=scenario/mongodb-schema', '--ids-field=email']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--target-table is required when --ids-field is specified/).to_stderr
+      end
+
+      it 'rejects --ids-field for non-mongodb adapters' do
+        argv = ['--adapter=sqlite3', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite3-schema',
+                '--target-table=users', '--ids=1', '--ids-field=email']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--ids-field is currently only supported by the mongodb adapter/).to_stderr
+      end
+    end
+
+    describe '--target-collection alias' do
+      def run_cli(argv)
+        CLI.new(argv).run
+      end
+
+      it 'folds --target-collection into the target table for the mongodb adapter' do
+        cli = CLI.new(['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                       '--config-dir=scenario/mongodb-schema', '--target-collection=users', '--ids=1'])
+        cli.send(:resolve_target_collection_alias!)
+        expect(cli.instance_variable_get(:@target_table_name)).to eq('users')
+      end
+
+      it 'rejects --target-collection for non-mongodb adapters' do
+        argv = ['--adapter=sqlite3', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite3-schema',
+                '--target-collection=users', '--ids=1']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--target-collection is only supported by the mongodb adapter/).to_stderr
+      end
+
+      it 'rejects specifying both --target-table and --target-collection' do
+        argv = ['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                '--config-dir=scenario/mongodb-schema', '--target-table=users',
+                '--target-collection=users', '--ids=1']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/Specify only one of --target-table and --target-collection/).to_stderr
+      end
+    end
   end
 end

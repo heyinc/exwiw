@@ -72,6 +72,53 @@ module Exwiw
           end
         end
 
+        context "when dump_target.ids_field overrides the filter field" do
+          it "filters the target collection by the given field instead of the primary key" do
+            # `--ids-field=email` matches --ids against `email`, not `_id`. The
+            # primary_key is still reported on the query (it drives downstream
+            # foreign-key propagation), but the WHERE filter keys off the
+            # overridden field.
+            users = config_by_name.fetch("users")
+            dump_target = Exwiw::DumpTarget.new(table_name: "users", ids: ["a@example.com"], ids_field: "email")
+            query = adapter.build_query(users, dump_target, config_by_name)
+            expect(query.primary_key).to eq("_id")
+            expect(query.filter).to eq("email" => { "$in" => ["a@example.com"] })
+          end
+
+          it "does not coerce the textual --ids against a custom field (unknown stored type)" do
+            # Unlike the primary-key path, a custom field's stored type is
+            # unknown, so the textual --ids are left as Strings rather than
+            # guessed into Integer/ObjectId (which could break matching, e.g. a
+            # zero-padded code or a hex string stored as a String).
+            users = config_by_name.fetch("users")
+            dump_target = Exwiw::DumpTarget.new(table_name: "users", ids: ["7", "5f5e7c1e1c9d440000000001"], ids_field: "legacy_id")
+            query = adapter.build_query(users, dump_target, config_by_name)
+            expect(query.filter).to eq("legacy_id" => { "$in" => ["7", "5f5e7c1e1c9d440000000001"] })
+          end
+        end
+
+        context "coercing the textual --ids to the stored _id type" do
+          it "coerces a 24-char hex --ids into a BSON::ObjectId so it matches an ObjectId _id" do
+            # Mongoid's default `_id` is a BSON::ObjectId. `--ids` arrives as a
+            # String, and Mongo compares types strictly, so a plain hex String
+            # would never match an ObjectId in the `$in` filter. The adapter must
+            # coerce it to BSON::ObjectId.
+            shops = config_by_name.fetch("shops")
+            dump_target = Exwiw::DumpTarget.new(table_name: "shops", ids: ["5f5e7c1e1c9d440000000001"])
+            query = adapter.build_query(shops, dump_target, config_by_name)
+            coerced = query.filter.fetch("_id").fetch("$in").first
+            expect(coerced).to be_a(BSON::ObjectId)
+            expect(coerced.to_s).to eq("5f5e7c1e1c9d440000000001")
+          end
+
+          it "coerces an integer-looking --ids to Integer and leaves other strings as-is" do
+            shops = config_by_name.fetch("shops")
+            dump_target = Exwiw::DumpTarget.new(table_name: "shops", ids: ["42", "abc-123"])
+            query = adapter.build_query(shops, dump_target, config_by_name)
+            expect(query.filter.fetch("_id").fetch("$in")).to eq([42, "abc-123"])
+          end
+        end
+
         context "for a related collection with no upstream state" do
           let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: [1]) }
 
@@ -92,7 +139,9 @@ module Exwiw
         end
 
         context "for a related collection after upstream state is populated" do
-          let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: [1]) }
+          # Shop 1's seeded ObjectId (`_id`); see seed/mongodb.
+          let(:shop1_oid) { BSON::ObjectId.from_string("a00100000000000000000001") }
+          let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: ["a00100000000000000000001"]) }
 
           it "filters by foreign_key with $in using state from previous execute" do
             shops = config_by_name.fetch("shops")
@@ -102,7 +151,7 @@ module Exwiw
             adapter.execute(shops_query)
 
             users_query = adapter.build_query(users, dump_target, config_by_name)
-            expect(users_query.filter).to eq("shop_id" => { "$in" => [1] })
+            expect(users_query.filter).to eq("shop_id" => { "$in" => [shop1_oid] })
           end
         end
 
@@ -119,21 +168,24 @@ module Exwiw
       end
 
       describe "#execute" do
+        # Shop 1's seeded ObjectId (`_id`); see seed/mongodb.
+        let(:shop1_oid) { BSON::ObjectId.from_string("a00100000000000000000001") }
+
         context "for the dump_target collection" do
-          let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: [1]) }
+          let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: ["a00100000000000000000001"]) }
 
           it "returns matching documents" do
             shops = config_by_name.fetch("shops")
             query = adapter.build_query(shops, dump_target, config_by_name)
             results = adapter.execute(query)
             expect(results.size).to eq(1)
-            expect(results.first["_id"]).to eq(1)
+            expect(results.first["_id"]).to eq(shop1_oid)
             expect(results.first["name"]).to eq("Shop 1")
           end
         end
 
         context "for a related collection after running the dump_target collection" do
-          let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: [1]) }
+          let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: ["a00100000000000000000001"]) }
 
           it "limits results via state-driven $in filter" do
             shops = config_by_name.fetch("shops")
@@ -143,7 +195,7 @@ module Exwiw
             users = adapter.execute(adapter.build_query(users_t, dump_target, config_by_name))
 
             expect(users.size).to eq(2)
-            expect(users.map { |u| u["shop_id"] }.uniq).to eq([1])
+            expect(users.map { |u| u["shop_id"] }.uniq).to eq([shop1_oid])
           end
         end
       end

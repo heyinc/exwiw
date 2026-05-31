@@ -80,7 +80,10 @@ module BootstrapDatabases
 
     Dir.glob("seed/mongodb/*.jsonl").each do |path|
       collection_name = File.basename(path, ".jsonl")
-      docs = File.readlines(path, chomp: true).reject(&:empty?).map { |line| JSON.parse(line) }
+      # Seed lines are MongoDB Extended JSON ($oid for ObjectId `_id`/foreign
+      # keys), so parse with BSON::ExtJSON — plain JSON.parse would store the
+      # `{ "$oid" => ... }` wrapper as a subdocument instead of an ObjectId.
+      docs = File.readlines(path, chomp: true).reject(&:empty?).map { |line| BSON::ExtJSON.parse(line) }
       client[collection_name].insert_many(docs) unless docs.empty?
     end
 

@@ -1,0 +1,17 @@
+{
+  "name": "posts",
+  "primary_key": "_id",
+  "belongs_tos": [],
+  "fields": [
+    {
+      "name": "_id"
+    },
+    {
+      "name": "title"
+    }
+  ],
+  "embedded_in": {
+    "collection_name": "users",
+    "path": "posts"
+  }
+}

@@ -35,6 +35,39 @@ module Exwiw
       !embedded_in.nil?
     end
 
+    # Merge an auto-generated config (`passed`) into this user-maintained one so
+    # that `MongoidSchemaGenerator` regenerations preserve hand-edited values.
+    #
+    # - structural facts come from the freshly generated config: primary_key,
+    #   belongs_tos, embedded_in.
+    # - user customizations are kept from the receiver: filter, skip,
+    #   bulk_insert_chunk_size, and each field's `replace_with` masking rule.
+    # - generated fields drive the field list (so added/removed fields track the
+    #   model), but a matching receiver field wins to retain its masking.
+    def merge(passed)
+      return passed if passed.to_hash == to_hash
+
+      MongodbCollectionConfig.new.tap do |merged|
+        merged.name = name
+        merged.primary_key = passed.primary_key
+        merged.filter = filter
+        merged.belongs_tos = passed.belongs_tos
+        merged.bulk_insert_chunk_size = bulk_insert_chunk_size
+        merged.skip = skip
+        merged.embedded_in = passed.embedded_in
+
+        # Take each field from the freshly generated config (so structural facts
+        # like `mongoid_field_name` track the model) but carry over the user's
+        # hand-edited `replace_with` masking when the field still exists.
+        receiver_field_by_name = fields.each_with_object({}) { |f, h| h[f.name] = f }
+        merged.fields = passed.fields.map do |pf|
+          receiver = receiver_field_by_name[pf.name]
+          pf.replace_with = receiver.replace_with if receiver&.replace_with
+          pf
+        end
+      end
+    end
+
     private def validate_embedded!
       return unless embedded?
       return if belongs_tos.empty?

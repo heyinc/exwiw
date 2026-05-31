@@ -25,6 +25,7 @@ require_relative "exwiw/after_insert_hook"
 require_relative "exwiw/runner"
 require_relative "exwiw/explain_runner"
 require_relative "exwiw/schema_generator"
+require_relative "exwiw/mongoid_schema_generator"
 
 begin
   require 'rails'
@@ -34,6 +35,9 @@ else
 end
 
 module Exwiw
-  DumpTarget = Struct.new(:table_name, :ids, keyword_init: true)
+  # `ids_field` optionally overrides which field `--ids` is matched against on
+  # the target table. When nil the table's primary key is used (the historical
+  # behavior). Currently only honored by the mongodb adapter.
+  DumpTarget = Struct.new(:table_name, :ids, :ids_field, keyword_init: true)
   ConnectionConfig = Struct.new(:adapter, :host, :port, :user, :password, :database_name, keyword_init: true)
 end

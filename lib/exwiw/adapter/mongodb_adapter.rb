@@ -47,7 +47,22 @@ module Exwiw
 
         filter =
           if config.name == dump_target.table_name
-            { config.primary_key => { "$in" => coerce_ids(dump_target.ids) } }
+            # `--ids-field` may override which field --ids is matched against;
+            # otherwise fall back to the primary key. Note this only changes the
+            # WHERE filter on the target collection — downstream foreign-key
+            # propagation still keys off `primary_key` (see #execute, which
+            # stashes doc[primary_key] into @state).
+            #
+            # Type coercion is only applied to the primary key (`_id`), whose
+            # stored type we know (Mongoid's default ObjectId). For a custom
+            # `ids_field` the stored type is unknown, so the textual --ids are
+            # left as Strings rather than guessed at — the caller passes values
+            # matching the field's actual type.
+            if dump_target.ids_field
+              { dump_target.ids_field => { "$in" => dump_target.ids } }
+            else
+              { config.primary_key => { "$in" => coerce_ids(dump_target.ids) } }
+            end
           else
             constrained = config.belongs_tos.select do |relation|
               @state.key?(relation.table_name) && !@state[relation.table_name].empty?
@@ -155,16 +170,40 @@ module Exwiw
       end
 
       # `--ids` from the CLI arrives as Strings. Mongo compares types strictly,
-      # so integer-looking ids are coerced to Integer. Other strings (e.g. ObjectId
-      # hex) are left as-is.
+      # so the textual ids must be coerced to the type actually stored in `_id`:
+      #
+      # - integer-looking ids -> Integer
+      # - 24-char hex ids -> BSON::ObjectId (Mongoid's default `_id` type; a
+      #   plain String would never match an ObjectId in a `$in` filter)
+      # - anything else (e.g. a String/UUID `_id`) is left as-is
+      #
+      # Only used for the primary-key filter; a custom `--ids-field` skips this
+      # because its stored type is unknown (see build_query).
       private def coerce_ids(ids)
-        Array(ids).map do |id|
-          if id.is_a?(String) && id.match?(/\A-?\d+\z/)
-            id.to_i
-          else
-            id
-          end
+        Array(ids).map { |id| coerce_id(id) }
+      end
+
+      private def coerce_id(id)
+        return id unless id.is_a?(String)
+
+        if id.match?(/\A-?\d+\z/)
+          id.to_i
+        elsif object_id_hex?(id)
+          BSON::ObjectId.from_string(id)
+        else
+          id
         end
+      end
+
+      # True when `str` is a canonical 24-char hex ObjectId. `bson` ships with
+      # `mongo`/`mongoid` but may not be loaded yet when build_query runs before
+      # any db access, so require it lazily; if it is genuinely unavailable we
+      # fall back to leaving the id as a String.
+      private def object_id_hex?(str)
+        require 'bson' unless defined?(::BSON::ObjectId)
+        ::BSON::ObjectId.legal?(str)
+      rescue LoadError
+        false
       end
 
       private def reject_filter!(config)

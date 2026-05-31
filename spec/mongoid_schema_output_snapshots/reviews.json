@@ -1,0 +1,33 @@
+{
+  "name": "reviews",
+  "primary_key": "_id",
+  "belongs_tos": [
+    {
+      "foreign_key": "user_id",
+      "table_name": "users"
+    }
+  ],
+  "fields": [
+    {
+      "name": "_id"
+    },
+    {
+      "name": "created_at"
+    },
+    {
+      "name": "updated_at"
+    },
+    {
+      "name": "rating"
+    },
+    {
+      "name": "user_id"
+    },
+    {
+      "name": "reviewable_type"
+    },
+    {
+      "name": "reviewable_id"
+    }
+  ]
+}

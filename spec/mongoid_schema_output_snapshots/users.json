@@ -1,0 +1,30 @@
+{
+  "name": "users",
+  "primary_key": "_id",
+  "belongs_tos": [
+    {
+      "foreign_key": "shop_id",
+      "table_name": "shops"
+    }
+  ],
+  "fields": [
+    {
+      "name": "_id"
+    },
+    {
+      "name": "created_at"
+    },
+    {
+      "name": "updated_at"
+    },
+    {
+      "name": "name"
+    },
+    {
+      "name": "email"
+    },
+    {
+      "name": "shop_id"
+    }
+  ]
+}
