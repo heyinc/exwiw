@@ -295,6 +295,40 @@ module Exwiw
 
         expect(JSON.parse(File.read(path))["skip"]).to eq(true)
       end
+
+      it "preserves bulk_insert_chunk_size and drops fields no longer on the model across regeneration" do
+        # The full regeneration contract beyond replace_with/skip: a
+        # user-tuned `bulk_insert_chunk_size` survives, while the field list
+        # tracks the model — a field that no longer exists on the model is
+        # dropped (not retained as a stale entry) even if it carried a
+        # `replace_with`, and surviving fields keep their masking.
+        path = File.join(output_dir, "products.json")
+        existing = {
+          "name" => "products",
+          "primary_key" => "_id",
+          "bulk_insert_chunk_size" => 250,
+          "belongs_tos" => [{ "table_name" => "shops", "foreign_key" => "shop_id" }],
+          "fields" => [
+            { "name" => "_id" },
+            { "name" => "name", "replace_with" => "masked-{_id}" },
+            { "name" => "legacy_removed_field", "replace_with" => "should-disappear" },
+          ],
+        }
+        File.write(path, JSON.pretty_generate(existing))
+
+        described_class.new(models: [MongoidDummy::Product], output_dir: output_dir).generate!
+
+        result = JSON.parse(File.read(path))
+        expect(result["bulk_insert_chunk_size"]).to eq(250)
+
+        field_names = result["fields"].map { |f| f["name"] }
+        # The model field keeps its masking...
+        expect(result["fields"].find { |f| f["name"] == "name" }["replace_with"]).to eq("masked-{_id}")
+        # ...the stale field (gone from the model) is dropped...
+        expect(field_names).not_to include("legacy_removed_field")
+        # ...and fields the model declares are present.
+        expect(field_names).to include("price", "ctry", "shop_id")
+      end
     end
 
     # End-to-end check that the *generated* configs are actually consumable by
