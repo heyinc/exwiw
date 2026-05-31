@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-05-31
+
 ### Changed
 
 - **Breaking:** the table/collection-level config attribute `skip` is renamed to `ignore`. There is no alias — config files using `"skip": true` must be updated to `"ignore": true` (`exwiw:schema:generate` / `exwiw:mongoid:schema:generate` now emit `ignore`, e.g. for composite-primary-key tables). The library accessors are renamed accordingly (`TableConfig#skip` → `#ignore`, `MongodbCollectionConfig#skip` → `#ignore`).
