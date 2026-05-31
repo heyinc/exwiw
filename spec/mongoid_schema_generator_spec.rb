@@ -268,5 +268,59 @@ module Exwiw
         ])
       end
     end
+
+    # End-to-end check that the *generated* `belongs_tos` actually drive
+    # MongodbAdapter's cross-collection extraction filters — the FK-following
+    # heart of exwiw. The masking block above proves embedded subdocuments are
+    # reached; this proves *referenced* documents are reached via the foreign
+    # keys the generator derived. `@state` (normally filled by `execute`, which
+    # needs a live MongoDB) is primed directly so the assertion stays offline.
+    describe "generated belongs_tos drive MongodbAdapter cross-collection extraction" do
+      let(:logger) { Logger.new(nil) }
+      let(:connection_config) do
+        ConnectionConfig.new(
+          adapter: "mongodb",
+          database_name: "exwiw_test",
+          host: "127.0.0.1",
+          port: 27017,
+          user: nil,
+          password: nil,
+        )
+      end
+      let(:adapter) { Adapter::MongodbAdapter.new(connection_config, logger) }
+      let(:config_by_name) do
+        described_class.new(models: models, output_dir: output_dir)
+          .build_collections
+          .each_with_object({}) { |c, h| h[c.name] = c }
+      end
+
+      it "filters a child collection by the generated foreign_key against upstream ids" do
+        # dump_target is a *different* collection, so `users` is reached only via
+        # its generated belongs_to (shops/shop_id). Prime the state `execute`
+        # would have set after dumping shops.
+        adapter.instance_variable_set(:@state, { "shops" => [1] })
+        dump_target = Exwiw::DumpTarget.new(table_name: "shops", ids: [1])
+
+        query = adapter.build_query(config_by_name.fetch("users"), dump_target, config_by_name)
+        expect(query.filter).to eq("shop_id" => { "$in" => [1] })
+      end
+
+      it "emits independent $in filters for two belongs_tos targeting the same collection" do
+        # transactions has TWO belongs_to -> users (paid_by_id, reviewer_id) plus
+        # one -> orders. Each generated foreign_key must produce its own filter
+        # key, the two user-targeting ones both constrained by the single
+        # upstream "users" id set — proving the custom/relation-derived FKs the
+        # generator emitted extract independently.
+        adapter.instance_variable_set(:@state, { "users" => [10], "orders" => [30] })
+        dump_target = Exwiw::DumpTarget.new(table_name: "users", ids: [10])
+
+        query = adapter.build_query(config_by_name.fetch("transactions"), dump_target, config_by_name)
+        expect(query.filter).to eq(
+          "order_id" => { "$in" => [30] },
+          "paid_by_id" => { "$in" => [10] },
+          "reviewer_id" => { "$in" => [10] },
+        )
+      end
+    end
   end
 end
