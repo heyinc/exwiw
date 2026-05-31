@@ -383,6 +383,37 @@ module Exwiw
         expect(address["city"]).to eq("masked-city-400")
       end
 
+      it "projects the embedded child paths (incl. a custom store_as) so the subdocuments survive to be masked" do
+        # The test above feeds the FULL seed document straight into
+        # `to_bulk_insert`, bypassing the projection step `execute` performs
+        # (`find().projection(build_projection(config))`). A real dump only sees
+        # the keys the projection requested, so an embedded child is masked ONLY
+        # if its `embedded_in.path` is in the projection. This is the one place
+        # the embeds_one's custom `store_as` ("user_profile", not the relation
+        # name "profile") has to flow all the way through: if the generator
+        # emitted "profile", projection would request a key the document does not
+        # have and the profile would silently never be fetched or masked.
+        dump_target = Exwiw::DumpTarget.new(table_name: "users", ids: [10])
+        users_config = config_by_name.fetch("users")
+        query = adapter.build_query(users_config, dump_target, config_by_name)
+
+        # Generated config drives projection of both embedded children: the
+        # relation-name path ("posts") and the custom store_as path
+        # ("user_profile"), never the relation name "profile".
+        expect(query.projection).to include("posts" => 1, "user_profile" => 1)
+        expect(query.projection).not_to have_key("profile")
+
+        # Simulate what MongoDB returns: only the projected keys survive.
+        full = Marshal.load(Marshal.dump(seed.fetch("users").first))
+        projected = full.slice(*query.projection.keys)
+        # The embeds_one subdocument is reachable only because projection kept it.
+        expect(projected).to have_key("user_profile")
+
+        masked = JSON.parse(adapter.to_bulk_insert([projected], users_config))
+        expect(masked.fetch("user_profile")["phone"]).to eq("masked-phone")
+        expect(masked.fetch("posts").first["title"]).to eq("masked-title-100")
+      end
+
       it "masks an aliased field by its stored document key, not the accessor" do
         # Product stores `field :ctry, as: :country`. The generated config masks
         # by the stored key `ctry`; the document carries `ctry` (not `country`),
