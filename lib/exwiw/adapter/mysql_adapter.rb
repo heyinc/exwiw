@@ -34,8 +34,16 @@ module Exwiw
           return
         end
 
+        # The mysqldump binary is invoked directly (not via the mysql2/trilogy
+        # driver), so point EXWIW_MYSQLDUMP at a specific binary when the one on
+        # PATH is incompatible with the server — e.g. a MySQL 9.x client whose
+        # mysqldump cannot load `mysql_native_password` ("plugin ... cannot be
+        # loaded", exit 2) against a server still using that auth plugin.
+        mysqldump_bin = ENV['EXWIW_MYSQLDUMP']
+        mysqldump_bin = 'mysqldump' if mysqldump_bin.nil? || mysqldump_bin.empty?
+
         cmd = [
-          'mysqldump',
+          mysqldump_bin,
           "--host=#{@connection_config.host}",
           "--port=#{@connection_config.port}",
           "--user=#{@connection_config.user}",
@@ -58,11 +66,18 @@ module Exwiw
         ]
         env = { 'MYSQL_PWD' => @connection_config.password.to_s }
 
-        @logger.debug("  Running mysqldump for #{table_names.size} table(s)...")
-        stdout, stderr, status = Open3.capture3(env, *cmd)
+        @logger.debug("  Running #{mysqldump_bin} for #{table_names.size} table(s)...")
+        stdout, stderr, status =
+          begin
+            Open3.capture3(env, *cmd)
+          rescue Errno::ENOENT
+            raise "Failed to run `#{mysqldump_bin}`. Ensure the mysql client is installed and on PATH, " \
+                  "or set EXWIW_MYSQLDUMP to a mysqldump binary."
+          end
         unless status.success?
           if stderr.include?('command not found') || stderr.empty?
-            raise "Failed to run `mysqldump`. Ensure the mysql client is installed and on PATH. stderr: #{stderr}"
+            raise "Failed to run `#{mysqldump_bin}`. Ensure the mysql client is installed and on PATH, " \
+                  "or set EXWIW_MYSQLDUMP to a mysqldump binary. stderr: #{stderr}"
           end
           raise "mysqldump failed (exit #{status.exitstatus}): #{stderr}"
         end

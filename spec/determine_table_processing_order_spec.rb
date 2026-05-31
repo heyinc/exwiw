@@ -146,6 +146,29 @@ RSpec.describe Exwiw::DetermineTableProcessingOrder do
       end
     end
 
+    context 'when there is a circular belongs_to dependency' do
+      let(:tables) do
+        [
+          Exwiw::TableConfig.from_symbol_keys(
+            name: 'binders',
+            primary_key: 'id',
+            belongs_tos: [{ table_name: 'responses', foreign_key: 'response_id' }],
+            columns: [{ name: 'id' }, { name: 'response_id' }],
+          ),
+          Exwiw::TableConfig.from_symbol_keys(
+            name: 'responses',
+            primary_key: 'id',
+            belongs_tos: [{ table_name: 'binders', foreign_key: 'binder_id' }],
+            columns: [{ name: 'id' }, { name: 'binder_id' }],
+          ),
+        ]
+      end
+
+      it 'raises with the offending tables instead of hanging' do
+        expect { sorted_table_names }.to raise_error(ArgumentError, /Circular belongs_to dependency.*binders, responses/m)
+      end
+    end
+
     context 'when full tables' do
       let(:tables) do
         [

@@ -28,8 +28,39 @@ module Exwiw
       end
 
       describe '.detect_driver' do
-        it 'prefers mysql2 when it is available' do
+        around do |example|
+          original = ENV['EXWIW_MYSQL_DRIVER']
+          example.run
+          if original.nil?
+            ENV.delete('EXWIW_MYSQL_DRIVER')
+          else
+            ENV['EXWIW_MYSQL_DRIVER'] = original
+          end
+        end
+
+        it 'prefers mysql2 when it is available and no override is set' do
+          ENV.delete('EXWIW_MYSQL_DRIVER')
           expect(MysqlClient.detect_driver).to eq(:mysql2)
+        end
+
+        it 'honors EXWIW_MYSQL_DRIVER=trilogy' do
+          ENV['EXWIW_MYSQL_DRIVER'] = 'trilogy'
+          expect(MysqlClient.detect_driver).to eq(:trilogy)
+        end
+
+        it 'honors EXWIW_MYSQL_DRIVER=mysql2' do
+          ENV['EXWIW_MYSQL_DRIVER'] = 'mysql2'
+          expect(MysqlClient.detect_driver).to eq(:mysql2)
+        end
+
+        it 'ignores an empty EXWIW_MYSQL_DRIVER and falls back to detection' do
+          ENV['EXWIW_MYSQL_DRIVER'] = ''
+          expect(MysqlClient.detect_driver).to eq(:mysql2)
+        end
+
+        it 'raises on an unknown EXWIW_MYSQL_DRIVER' do
+          ENV['EXWIW_MYSQL_DRIVER'] = 'bogus'
+          expect { MysqlClient.detect_driver }.to raise_error(ArgumentError, /EXWIW_MYSQL_DRIVER/)
         end
       end
 
