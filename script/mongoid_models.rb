@@ -49,6 +49,10 @@
 #   subclass-only fields and belongs_tos into one "events" config
 # - indexes (unique / plain / compound), which the dump path introspects from
 #   the live database via listIndexes rather than from the generated config
+# - a *polymorphic* `embedded_in` (PolymorphicAddress), which has no single
+#   embedding parent collection and is therefore UNREPRESENTABLE as an exwiw
+#   `embedded_in` config; the generator must raise a clear error rather than
+#   crash. It is kept out of `MODELS`/`SEED` and exercised in isolation.
 #
 # Everything lives under the `MongoidDummy` namespace (with explicit
 # `store_in collection:` and `class_name:`) so these models can coexist in the
@@ -287,6 +291,26 @@ module MongoidDummy
 
     field :title, type: String
     field :content, type: String
+  end
+
+  # Polymorphic `embedded_in`. A `PolymorphicAddress` can be embedded inside
+  # ANY parent type (a Shop or an Order here), so it has no single embedding
+  # parent collection. exwiw's `embedded_in` names exactly one parent
+  # collection + path, so this shape is UNREPRESENTABLE: the generator must
+  # raise a clear, actionable error rather than crash on `assoc.klass` (which
+  # raises a cryptic "uninitialized constant ...::Addressable" NameError while
+  # trying to resolve the nonexistent single parent class).
+  #
+  # This model is deliberately kept OUT of `MODELS`/`SEED`: feeding it through
+  # `build_collections` aborts the whole run, so the unsupported case is
+  # exercised in isolation by the spec instead.
+  class PolymorphicAddress
+    include Mongoid::Document
+    store_in collection: "polymorphic_addresses"
+
+    field :street, type: String
+
+    embedded_in :addressable, polymorphic: true
   end
 
   # All concrete document models in this dummy app, in a deterministic order.

@@ -188,6 +188,18 @@ module Exwiw
         ).build_collections
         expect(collections.map(&:name)).to eq(["events"])
       end
+
+      it "raises a clear error for a polymorphic embedded_in instead of crashing" do
+        # PolymorphicAddress declares `embedded_in :addressable, polymorphic: true`,
+        # which has no single embedding parent collection. exwiw's `embedded_in`
+        # names exactly one parent, so this is unrepresentable: the generator must
+        # raise an actionable ArgumentError rather than let `assoc.klass` blow up
+        # with a cryptic "uninitialized constant ...::Addressable" NameError.
+        gen = described_class.new(models: [MongoidDummy::PolymorphicAddress], output_dir: output_dir)
+        expect { gen.build_collections }.to raise_error(
+          ArgumentError, /polymorphic `embedded_in :addressable`/,
+        )
+      end
     end
 
     describe "#generate!" do

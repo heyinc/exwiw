@@ -163,6 +163,21 @@ module Exwiw
     # `posts.comments` path would stop at the `posts` array boundary.
     private def embedded_in_for(model)
       assoc = embedded_in_association(model)
+
+      # A polymorphic `embedded_in` (`embedded_in :addressable, polymorphic: true`)
+      # can live inside several different parent collections, so it has no single
+      # embedding parent and `assoc.klass` would raise a cryptic NameError
+      # (uninitialized constant) trying to resolve one. exwiw's `embedded_in`
+      # names exactly one parent collection + path, so this shape cannot be
+      # represented; fail loudly with an actionable message instead of crashing.
+      if assoc.polymorphic?
+        raise ArgumentError,
+              "MongoidSchemaGenerator: '#{model.name}' (collection '#{model.collection_name}') " \
+              "declares a polymorphic `embedded_in :#{assoc.name}`, which has no single embedding " \
+              "parent collection and cannot be expressed as an exwiw `embedded_in` config. " \
+              "Define the collection's config by hand, or make the relation non-polymorphic."
+      end
+
       parent = assoc.klass
       # `store_as` defaults to the relation name and is the actual document key
       # the subdocuments are stored under inside the immediate parent.
