@@ -7,6 +7,11 @@
 # - top-level collections with the `_id` primary key (Shop, User, ...)
 # - referenced `belongs_to` associations, whose foreign keys (`shop_id`,
 #   `user_id`, ...) become ordinary fields exwiw tracks for FK-based extraction
+# - referenced `belongs_to` associations whose relation name differs from the
+#   target class and/or override the foreign key (Transaction#payer ->
+#   "users"/"paid_by_id", Transaction#reviewer -> "users"/"reviewer_id"),
+#   exercising that table_name comes from the target collection and foreign_key
+#   from the association, never from the relation name itself
 # - a collection with no relations at all (SystemAnnouncement)
 # - embedded subdocuments via `embeds_many` / `embedded_in` (User embeds Posts)
 # - *nested* embedded subdocuments (Post embeds Comments), represented as an
@@ -143,6 +148,19 @@ module MongoidDummy
     field :amount, type: Integer
 
     belongs_to :order, class_name: "MongoidDummy::Order"
+
+    # belongs_to whose relation name (`payer`) differs from the target class
+    # (User / "users") AND overrides the foreign key. The generator must derive
+    # table_name "users" from the target *collection* (not the relation name)
+    # and foreign_key "paid_by_id" from the association's declared key (not the
+    # default "payer_id").
+    belongs_to :payer, class_name: "MongoidDummy::User", foreign_key: "paid_by_id"
+
+    # belongs_to whose relation name (`reviewer`) differs from the target class
+    # (User / "users") with the default foreign key. The generator must derive
+    # table_name "users" from the target collection and foreign_key
+    # "reviewer_id" from the relation name (not the class name).
+    belongs_to :reviewer, class_name: "MongoidDummy::User"
   end
 
   class SystemAnnouncement
@@ -207,7 +225,7 @@ module MongoidDummy
       { "_id" => 40, "quantity" => 2, "order_id" => 30, "product_id" => 20 },
     ],
     "transactions" => [
-      { "_id" => 50, "kind" => "charge", "amount" => 1000, "order_id" => 30 },
+      { "_id" => 50, "kind" => "charge", "amount" => 1000, "order_id" => 30, "paid_by_id" => 10, "reviewer_id" => 10 },
     ],
     "system_announcements" => [
       { "_id" => 60, "title" => "Maintenance", "content" => "Down at midnight" },

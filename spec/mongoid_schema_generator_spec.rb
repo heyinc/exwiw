@@ -46,6 +46,24 @@ module Exwiw
         expect(by_name["system_announcements"].belongs_tos).to be_empty
       end
 
+      it "derives table_name from the target collection and foreign_key from the association" do
+        # Transaction#payer and Transaction#reviewer both point at the User
+        # model but under relation names that differ from the class. The
+        # generator must NOT use the relation name for either side: table_name
+        # comes from the target collection ("users") and foreign_key from the
+        # association (custom "paid_by_id"; relation-derived "reviewer_id").
+        belongs_tos = by_name["transactions"].belongs_tos.map { |b| [b.table_name, b.foreign_key] }
+        expect(belongs_tos).to contain_exactly(
+          ["orders", "order_id"],
+          ["users", "paid_by_id"],
+          ["users", "reviewer_id"],
+        )
+      end
+
+      it "tracks overridden/relation-derived foreign keys as ordinary fields" do
+        expect(by_name["transactions"].fields.map(&:name)).to include("paid_by_id", "reviewer_id")
+      end
+
       it "marks a single-level embedded collection with embedded_in" do
         posts = by_name["posts"]
         expect(posts.embedded?).to eq(true)
