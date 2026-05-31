@@ -5,6 +5,18 @@
     {
       "foreign_key": "user_id",
       "table_name": "users"
+    },
+    {
+      "foreign_key": "reviewable_id",
+      "table_name": "products",
+      "foreign_type": "reviewable_type",
+      "type_value": "Product"
+    },
+    {
+      "foreign_key": "reviewable_id",
+      "table_name": "shops",
+      "foreign_type": "reviewable_type",
+      "type_value": "Shop"
     }
   ],
   "columns": [

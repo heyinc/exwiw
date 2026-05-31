@@ -54,8 +54,23 @@ module Exwiw
           foreign_key: relation.foreign_key,
           join_table_name: to_table.name,
           primary_key: to_table.primary_key,
-          where_clauses: []
+          where_clauses: [],
+          base_where_clauses: []
         )
+
+        # この hop 自体が polymorphic belongs_to の場合 (例: comments が
+        # commentable として posts へ polymorphic belongs_to)、型カラム
+        # (foreign_type) は結合元テーブル (from_table = base_table_name) 側に
+        # 存在する。外部キーだけでは reviewable_id=1 のような値が別モデルの
+        # 行と衝突しうるため、base_where_clauses に型条件を追加して結合元
+        # テーブルを絞り込む。
+        if relation.polymorphic?
+          join_clause.base_where_clauses.push QueryAst::WhereClause.new(
+            column_name: relation.foreign_type,
+            operator: :eq,
+            value: [relation.type_value]
+          )
+        end
         relation_to_dump_target = to_table.belongs_to(dump_target.table_name)
         if relation_to_dump_target
           join_clause.where_clauses.push QueryAst::WhereClause.new(
@@ -63,6 +78,18 @@ module Exwiw
             operator: :eq,
             value: dump_target.ids
           )
+
+          # 中間テーブルが dump target へ polymorphic belongs_to している場合は、
+          # 型カラム (foreign_type) も join 条件に追加する。型カラムは to_table
+          # (= join_table_name) 上に存在するため、JoinClause の where_clauses が
+          # join_table_name に対してコンパイルされる仕組みにそのまま乗せられる。
+          if relation_to_dump_target.polymorphic?
+            join_clause.where_clauses.push QueryAst::WhereClause.new(
+              column_name: relation_to_dump_target.foreign_type,
+              operator: :eq,
+              value: [relation_to_dump_target.type_value]
+            )
+          end
         end
 
         # Add filter from intermediate table to join clause
@@ -97,6 +124,17 @@ module Exwiw
         operator: :eq,
         value: dump_target.ids
       )
+
+      # polymorphic belongs_to の場合は外部キーだけでは型を区別できないため
+      # (例: reviewable_id=1 が Product なのか別モデルなのか判別できない)、
+      # 型カラム (foreign_type) を type_value で絞り込む条件を追加する。
+      if belongs_to.polymorphic?
+        clauses.push Exwiw::QueryAst::WhereClause.new(
+          column_name: belongs_to.foreign_type,
+          operator: :eq,
+          value: [belongs_to.type_value]
+        )
+      end
 
       if table.filter
         clauses.push table.filter

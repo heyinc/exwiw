@@ -78,17 +78,43 @@ RSpec.describe Exwiw::DetermineTableProcessingOrder do
     end
 
     context 'when there is polymorphic' do
+      # No scenario/sqlite3-schema/reviews.json fixture exists on purpose (it would
+      # be consumed by the full-dump snapshot specs), so the polymorphic reviews
+      # config is built inline. The polymorphic belongs_to is expanded into one
+      # regular table_name dependency per target (here products), exactly as
+      # schema:generate emits it.
+      let(:reviews_table) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'reviews',
+          primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'users', foreign_key: 'user_id' },
+            {
+              table_name: 'products',
+              foreign_key: 'reviewable_id',
+              foreign_type: 'reviewable_type',
+              type_value: 'Product',
+            },
+          ],
+          columns: [
+            { name: 'id' },
+            { name: 'reviewable_type' },
+            { name: 'reviewable_id' },
+            { name: 'user_id' },
+          ],
+        )
+      end
+
       let(:tables) do
         [
           users_table(:sqlite3),
           products_table(:sqlite3),
-          reviews_table(:sqlite3),
+          reviews_table,
           shops_table(:sqlite3),
         ]
       end
 
       it 'returns ordered names' do
-        skip 'support polymorphic'
         expect(sorted_table_names).to eq([
           'shops',
           'users',

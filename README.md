@@ -241,6 +241,47 @@ Constraints:
 - Specifying a skipped table as `--target-table` raises `ArgumentError`.
 - `skip: true` is preserved by `exwiw:schema:generate` regenerations (the receiver value wins over the auto-generated config).
 
+### Polymorphic `belongs_to`
+
+A Rails polymorphic association (`belongs_to :reviewable, polymorphic: true`) does not point at a single table — the target row is selected at runtime by a type column. exwiw models this as **one `belongs_to` entry per concrete target table**, each carrying two extra fields:
+
+- `foreign_type` — the type column on *this* table (e.g. `reviewable_type`).
+- `type_value` — the value stored in that column for this target (e.g. `"Product"`), i.e. the target model's `polymorphic_name`.
+
+```json
+{
+  "name": "reviews",
+  "primary_key": "id",
+  "belongs_tos": [
+    {
+      "table_name": "products",
+      "foreign_key": "reviewable_id",
+      "foreign_type": "reviewable_type",
+      "type_value": "Product"
+    },
+    {
+      "table_name": "shops",
+      "foreign_key": "reviewable_id",
+      "foreign_type": "reviewable_type",
+      "type_value": "Shop"
+    }
+  ],
+  "columns": [{ "name": "id" }, { "name": "reviewable_type" }, { "name": "reviewable_id" }]
+}
+```
+
+`exwiw:schema:generate` expands a polymorphic `belongs_to` automatically: it finds every model that registers the association as a target via `has_many` / `has_one ..., as: :reviewable` and emits one entry per target table (ordered by table name so the output is stable across Ruby versions). A plain (non-polymorphic) `belongs_to` simply omits `foreign_type` / `type_value`.
+
+At dump time, when a polymorphic `belongs_to` lies on the path to the dump target, exwiw constrains **both** the foreign key and the type column, so only rows of the matching type are extracted. For example, dumping `products` pulls only reviews whose `reviewable_type = 'Product'`:
+
+```sql
+SELECT reviews.* FROM reviews
+WHERE reviews.reviewable_id IN (/* products subquery */)
+  AND reviews.reviewable_type = 'Product'
+```
+
+The same type filter is applied on the join path — and in the matching `delete-*.sql` bulk-delete subquery — when the polymorphic table is an intermediate hop rather than the directly-dumped table.
+
 ### Rails-managed tables (special `type` values)
 
 Some tables are owned by Rails itself rather than the application — they have no ActiveRecord model and Rails reserves the right to evolve their column shape between versions (e.g. `schema_migrations`, `ar_internal_metadata`). exwiw treats them as a distinct category via the `type` field on a table config:

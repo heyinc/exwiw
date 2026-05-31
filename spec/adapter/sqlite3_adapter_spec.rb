@@ -129,6 +129,16 @@ module Exwiw
             )
           end
         end
+
+        context "select query with a polymorphic join (base_where_clauses)" do
+          let(:sql) { adapter.compile_ast(build_comments_polymorphic_join_ast) }
+
+          it "compiles where_clauses against the join table and base_where_clauses against the base table" do
+            expect(sql).to eq(
+              "SELECT * FROM comments JOIN posts ON comments.commentable_id = posts.id AND posts.user_id = 1 AND comments.commentable_type = 'Post'"
+            )
+          end
+        end
       end
 
       describe "#commented_sql" do
@@ -373,6 +383,25 @@ module Exwiw
             expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
               DELETE FROM order_items
               WHERE order_items.order_id IN (SELECT orders.id FROM orders WHERE orders.shop_id = 1);
+            SQL
+          end
+        end
+
+        context "select query with a polymorphic join (base_where_clauses)" do
+          let(:comments_table) do
+            Exwiw::TableConfig.from_symbol_keys(
+              name: 'comments',
+              primary_key: 'id',
+              belongs_tos: [],
+              columns: [{ name: 'id' }, { name: 'commentable_type' }, { name: 'commentable_id' }],
+            )
+          end
+          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_comments_polymorphic_join_ast, comments_table) }
+
+          it "keeps the polymorphic type filter on the outer delete to avoid deleting other types" do
+            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
+              DELETE FROM comments
+              WHERE comments.commentable_id IN (SELECT posts.id FROM posts WHERE posts.user_id = 1) AND comments.commentable_type = 'Post';
             SQL
           end
         end

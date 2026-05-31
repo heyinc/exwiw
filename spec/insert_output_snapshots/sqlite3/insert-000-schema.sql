@@ -20,6 +20,12 @@ FOREIGN KEY ("user_id")
 );
 CREATE INDEX IF NOT EXISTS "index_orders_on_shop_id" ON "orders" ("shop_id");
 CREATE INDEX IF NOT EXISTS "index_orders_on_user_id" ON "orders" ("user_id");
+CREATE TABLE IF NOT EXISTS "reviews" ("id" integer PRIMARY KEY AUTOINCREMENT NOT NULL, "reviewable_type" varchar NOT NULL, "reviewable_id" integer NOT NULL, "user_id" integer NOT NULL, "rating" integer NOT NULL, "content" text NOT NULL, "created_at" datetime(6) NOT NULL, "updated_at" datetime(6) NOT NULL, CONSTRAINT "fk_rails_74a66bd6c5"
+FOREIGN KEY ("user_id")
+  REFERENCES "users" ("id")
+);
+CREATE INDEX IF NOT EXISTS "index_reviews_on_reviewable" ON "reviews" ("reviewable_type", "reviewable_id");
+CREATE INDEX IF NOT EXISTS "index_reviews_on_user_id" ON "reviews" ("user_id");
 CREATE TABLE IF NOT EXISTS "order_items" ("id" integer PRIMARY KEY AUTOINCREMENT NOT NULL, "order_id" integer NOT NULL, "product_id" integer NOT NULL, "quantity" integer DEFAULT 1 NOT NULL, "created_at" datetime(6) NOT NULL, "updated_at" datetime(6) NOT NULL, CONSTRAINT "fk_rails_e3cb28f071"
 FOREIGN KEY ("order_id")
   REFERENCES "orders" ("id")

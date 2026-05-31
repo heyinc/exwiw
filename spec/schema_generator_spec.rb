@@ -148,9 +148,20 @@ module Exwiw
         expect(tables_by_name["shops"].column_names).to include("id", "name")
       end
 
-      it "skips polymorphic belongs_to but keeps non-polymorphic peers" do
-        belongs_tos = tables_by_name["reviews"].belongs_tos.map { |b| [b.table_name, b.foreign_key] }
-        expect(belongs_tos).to contain_exactly(["users", "user_id"])
+      it "expands a polymorphic belongs_to into one entry per target table" do
+        review = tables_by_name["reviews"]
+        non_poly = review.belongs_tos.reject(&:polymorphic?).map { |b| [b.table_name, b.foreign_key] }
+        poly = review.belongs_tos.select(&:polymorphic?)
+          .map { |b| [b.table_name, b.foreign_key, b.foreign_type, b.type_value] }
+
+        # `reviewable` is registered on both Product and Shop (`has_many :reviews,
+        # as: :reviewable`), so a single polymorphic association expands into one
+        # belongs_to per target, each carrying its own type_value.
+        expect(non_poly).to contain_exactly(["users", "user_id"])
+        expect(poly).to contain_exactly(
+          ["products", "reviewable_id", "reviewable_type", "Product"],
+          ["shops", "reviewable_id", "reviewable_type", "Shop"],
+        )
       end
     end
 
