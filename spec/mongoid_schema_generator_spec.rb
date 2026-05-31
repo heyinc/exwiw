@@ -25,7 +25,7 @@ module Exwiw
       it "emits one config per collection keyed by collection name" do
         expect(by_name.keys).to contain_exactly(
           "shops", "users", "posts", "comments", "profiles", "contacts", "products",
-          "orders", "order_items", "transactions", "events", "system_announcements",
+          "orders", "order_items", "transactions", "events", "reviews", "system_announcements",
         )
       end
 
@@ -62,6 +62,24 @@ module Exwiw
 
       it "tracks overridden/relation-derived foreign keys as ordinary fields" do
         expect(by_name["transactions"].fields.map(&:name)).to include("paid_by_id", "reviewer_id")
+      end
+
+      it "excludes a polymorphic belongs_to while keeping the regular one" do
+        # Review#reviewable is polymorphic (no single target collection), so it
+        # cannot be expressed as a BelongsTo the MongodbAdapter can follow and
+        # must be dropped. The regular Review#user belongs_to must survive.
+        reviews = by_name["reviews"]
+        belongs_tos = reviews.belongs_tos.map { |b| [b.table_name, b.foreign_key] }
+        expect(belongs_tos).to contain_exactly(["users", "user_id"])
+      end
+
+      it "still tracks the polymorphic id/type columns as ordinary fields" do
+        # Even though the polymorphic association is excluded from belongs_tos,
+        # Mongoid auto-declares reviewable_id/reviewable_type as fields, so the
+        # generator surfaces them as ordinary (maskable) fields.
+        expect(by_name["reviews"].fields.map(&:name)).to include(
+          "user_id", "reviewable_id", "reviewable_type",
+        )
       end
 
       it "marks a single-level embedded collection with embedded_in" do
@@ -150,7 +168,7 @@ module Exwiw
         expect(Dir[File.join(output_dir, "*.json")].map { |p| File.basename(p) }).to contain_exactly(
           "shops.json", "users.json", "posts.json", "comments.json", "profiles.json", "contacts.json",
           "products.json", "orders.json", "order_items.json", "transactions.json", "events.json",
-          "system_announcements.json",
+          "reviews.json", "system_announcements.json",
         )
       end
 

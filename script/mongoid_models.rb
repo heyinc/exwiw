@@ -12,6 +12,10 @@
 #   "users"/"paid_by_id", Transaction#reviewer -> "users"/"reviewer_id"),
 #   exercising that table_name comes from the target collection and foreign_key
 #   from the association, never from the relation name itself
+# - a *polymorphic* `belongs_to` (Review#reviewable), which has no single
+#   target collection and which the generator must EXCLUDE from the emitted
+#   belongs_tos (while keeping the regular Review#user belongs_to and tracking
+#   the auto-added reviewable_id/reviewable_type fields)
 # - a collection with no relations at all (SystemAnnouncement)
 # - embedded subdocuments via `embeds_many` / `embedded_in` (User embeds Posts)
 # - *nested* embedded subdocuments (Post embeds Comments), represented as an
@@ -219,6 +223,26 @@ module MongoidDummy
     field :ip_address, type: String
   end
 
+  # Polymorphic belongs_to. `reviewable` can point at any model (a Product or
+  # an Order here), so it has no single target collection. Mongoid auto-adds
+  # `reviewable_id` and `reviewable_type` discriminator fields. exwiw cannot
+  # represent a multi-target FK in a single BelongsTo (the MongodbAdapter's
+  # build_query keys filters by a single foreign_key/table_name pair and would
+  # clobber the shared FK across the expanded targets), so the generator must
+  # EXCLUDE polymorphic belongs_tos from the emitted config while still tracking
+  # the auto-added `reviewable_id`/`reviewable_type` columns as ordinary fields.
+  # The ordinary `belongs_to :user` on the same model must survive.
+  class Review
+    include Mongoid::Document
+    include Mongoid::Timestamps
+    store_in collection: "reviews"
+
+    field :rating, type: Integer
+
+    belongs_to :user, class_name: "MongoidDummy::User"
+    belongs_to :reviewable, polymorphic: true
+  end
+
   class SystemAnnouncement
     include Mongoid::Document
     include Mongoid::Timestamps
@@ -237,7 +261,7 @@ module MongoidDummy
   # `descendants`.
   MODELS = [
     Shop, User, Post, Comment, Profile, Contact, Product, Order, OrderItem, Transaction, Event,
-    SystemAnnouncement,
+    Review, SystemAnnouncement,
   ].freeze
 
   # Representative seed documents, keyed by collection name. These mirror the
@@ -304,6 +328,11 @@ module MongoidDummy
     "events" => [
       { "_id" => 70, "_type" => "MongoidDummy::PurchaseEvent", "name" => "purchase", "shop_id" => 1, "amount" => 500, "order_id" => 30 },
       { "_id" => 71, "_type" => "MongoidDummy::LoginEvent", "name" => "login", "shop_id" => 1, "ip_address" => "203.0.113.1" },
+    ],
+    # Polymorphic belongs_to: reviewable_id/reviewable_type identify the target
+    # document, while the regular user_id FK is what exwiw actually follows.
+    "reviews" => [
+      { "_id" => 80, "rating" => 5, "user_id" => 10, "reviewable_id" => 20, "reviewable_type" => "MongoidDummy::Product" },
     ],
     "system_announcements" => [
       { "_id" => 60, "title" => "Maintenance", "content" => "Down at midnight" },
