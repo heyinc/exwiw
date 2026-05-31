@@ -24,7 +24,7 @@ module Exwiw
 
       it "emits one config per collection keyed by collection name" do
         expect(by_name.keys).to contain_exactly(
-          "shops", "users", "posts", "comments", "profiles", "contacts", "products",
+          "shops", "users", "posts", "comments", "profiles", "contacts", "products", "tags",
           "orders", "order_items", "transactions", "events", "reviews", "system_announcements",
         )
       end
@@ -80,6 +80,24 @@ module Exwiw
         expect(by_name["reviews"].fields.map(&:name)).to include(
           "user_id", "reviewable_id", "reviewable_type",
         )
+      end
+
+      it "excludes a has_and_belongs_to_many relation from belongs_tos" do
+        # Product <-> Tag is a HABTM. Mongoid stores the related ids as an array
+        # field (`tag_ids` / `product_ids`), which exwiw cannot follow as a
+        # single-valued BelongsTo, so the relation must be dropped. The regular
+        # Product#shop belongs_to must survive; Tag has no single-valued FK.
+        product_belongs_tos = by_name["products"].belongs_tos.map { |b| [b.table_name, b.foreign_key] }
+        expect(product_belongs_tos).to contain_exactly(["shops", "shop_id"])
+        expect(by_name["tags"].belongs_tos).to be_empty
+      end
+
+      it "still tracks the HABTM array foreign-key columns as ordinary fields" do
+        # The HABTM relation is dropped, but Mongoid auto-declares the `*_ids`
+        # array fields, so the generator surfaces them as ordinary (maskable)
+        # fields on both sides.
+        expect(by_name["products"].fields.map(&:name)).to include("tag_ids")
+        expect(by_name["tags"].fields.map(&:name)).to include("product_ids")
       end
 
       it "marks a single-level embedded collection with embedded_in" do
@@ -178,7 +196,7 @@ module Exwiw
 
         expect(Dir[File.join(output_dir, "*.json")].map { |p| File.basename(p) }).to contain_exactly(
           "shops.json", "users.json", "posts.json", "comments.json", "profiles.json", "contacts.json",
-          "products.json", "orders.json", "order_items.json", "transactions.json", "events.json",
+          "products.json", "tags.json", "orders.json", "order_items.json", "transactions.json", "events.json",
           "reviews.json", "system_announcements.json",
         )
       end

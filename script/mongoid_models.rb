@@ -16,6 +16,12 @@
 #   target collection and which the generator must EXCLUDE from the emitted
 #   belongs_tos (while keeping the regular Review#user belongs_to and tracking
 #   the auto-added reviewable_id/reviewable_type fields)
+# - a *referenced* `has_and_belongs_to_many` (Product <-> Tag), whose foreign
+#   keys are stored as an ARRAY field (`tag_ids` / `product_ids`) on each side.
+#   exwiw follows only single-valued foreign keys (a BelongsTo), so the
+#   generator must EXCLUDE the HABTM relation from belongs_tos (it is a
+#   `HasAndBelongsToMany`, not a `BelongsTo`) while still tracking the auto-added
+#   `*_ids` array column as an ordinary field, like the polymorphic case
 # - a collection with no relations at all (SystemAnnouncement)
 # - embedded subdocuments via `embeds_many` / `embedded_in` (User embeds Posts)
 # - *nested* embedded subdocuments (Post embeds Comments), represented as an
@@ -156,6 +162,23 @@ module MongoidDummy
     belongs_to :shop, class_name: "MongoidDummy::Shop"
 
     has_many :order_items, class_name: "MongoidDummy::OrderItem"
+
+    # has_and_belongs_to_many: Mongoid stores the related ids as an ARRAY field
+    # (`tag_ids`) on this side. exwiw cannot follow an array-valued foreign key
+    # as a single BelongsTo, so the generator must drop the HABTM relation from
+    # belongs_tos while keeping `tag_ids` as an ordinary field.
+    has_and_belongs_to_many :tags, class_name: "MongoidDummy::Tag"
+  end
+
+  class Tag
+    include Mongoid::Document
+    include Mongoid::Timestamps
+    store_in collection: "tags"
+
+    field :label, type: String
+
+    # The inverse HABTM side; stores `product_ids` as an array field.
+    has_and_belongs_to_many :products, class_name: "MongoidDummy::Product"
   end
 
   class Order
@@ -274,7 +297,7 @@ module MongoidDummy
   # `LoginEvent` subclasses — the generator must discover them via
   # `descendants`.
   MODELS = [
-    Shop, User, Post, Comment, Profile, Contact, Product, Order, OrderItem, Transaction, Event,
+    Shop, User, Post, Comment, Profile, Contact, Product, Tag, Order, OrderItem, Transaction, Event,
     Review, SystemAnnouncement,
   ].freeze
 
@@ -329,7 +352,13 @@ module MongoidDummy
       },
     ],
     "products" => [
-      { "_id" => 20, "name" => "Widget", "price" => 500, "shop_id" => 1 },
+      # `tag_ids` is the HABTM array foreign key; it rides along as an ordinary
+      # field even though the generator drops the HABTM relation itself.
+      { "_id" => 20, "name" => "Widget", "price" => 500, "shop_id" => 1, "tag_ids" => [90, 91] },
+    ],
+    "tags" => [
+      { "_id" => 90, "label" => "sale", "product_ids" => [20] },
+      { "_id" => 91, "label" => "new", "product_ids" => [20] },
     ],
     "orders" => [
       { "_id" => 30, "shop_id" => 1, "user_id" => 10 },
