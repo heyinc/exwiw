@@ -1,0 +1,34 @@
+{
+  "name": "order_items",
+  "primary_key": "_id",
+  "belongs_tos": [
+    {
+      "foreign_key": "order_id",
+      "table_name": "orders"
+    },
+    {
+      "foreign_key": "product_id",
+      "table_name": "products"
+    }
+  ],
+  "fields": [
+    {
+      "name": "_id"
+    },
+    {
+      "name": "created_at"
+    },
+    {
+      "name": "updated_at"
+    },
+    {
+      "name": "quantity"
+    },
+    {
+      "name": "order_id"
+    },
+    {
+      "name": "product_id"
+    }
+  ]
+}

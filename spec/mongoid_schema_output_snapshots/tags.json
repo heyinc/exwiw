@@ -1,0 +1,22 @@
+{
+  "name": "tags",
+  "primary_key": "_id",
+  "belongs_tos": [],
+  "fields": [
+    {
+      "name": "_id"
+    },
+    {
+      "name": "created_at"
+    },
+    {
+      "name": "updated_at"
+    },
+    {
+      "name": "label"
+    },
+    {
+      "name": "product_ids"
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "name": "events",
+  "primary_key": "_id",
+  "belongs_tos": [
+    {
+      "foreign_key": "shop_id",
+      "table_name": "shops"
+    },
+    {
+      "foreign_key": "order_id",
+      "table_name": "orders"
+    }
+  ],
+  "fields": [
+    {
+      "name": "_id"
+    },
+    {
+      "name": "created_at"
+    },
+    {
+      "name": "updated_at"
+    },
+    {
+      "name": "name"
+    },
+    {
+      "name": "shop_id"
+    },
+    {
+      "name": "_type"
+    },
+    {
+      "name": "ip_address"
+    },
+    {
+      "name": "amount"
+    },
+    {
+      "name": "order_id"
+    }
+  ]
+}

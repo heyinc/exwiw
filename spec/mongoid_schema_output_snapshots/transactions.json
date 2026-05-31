@@ -1,0 +1,44 @@
+{
+  "name": "transactions",
+  "primary_key": "_id",
+  "belongs_tos": [
+    {
+      "foreign_key": "order_id",
+      "table_name": "orders"
+    },
+    {
+      "foreign_key": "paid_by_id",
+      "table_name": "users"
+    },
+    {
+      "foreign_key": "reviewer_id",
+      "table_name": "users"
+    }
+  ],
+  "fields": [
+    {
+      "name": "_id"
+    },
+    {
+      "name": "created_at"
+    },
+    {
+      "name": "updated_at"
+    },
+    {
+      "name": "kind"
+    },
+    {
+      "name": "amount"
+    },
+    {
+      "name": "order_id"
+    },
+    {
+      "name": "paid_by_id"
+    },
+    {
+      "name": "reviewer_id"
+    }
+  ]
+}

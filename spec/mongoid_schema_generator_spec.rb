@@ -2,6 +2,7 @@
 
 require "spec_helper"
 require "tmpdir"
+require "fileutils"
 require "json"
 
 require_relative "../script/mongoid_models"
@@ -369,6 +370,41 @@ module Exwiw
         expect(field_names).not_to include("legacy_removed_field")
         # ...and fields the model declares are present.
         expect(field_names).to include("price", "ctry", "shop_id")
+      end
+
+      # Full-output snapshot of every generated config for the dummy app. The
+      # per-attribute tests above pin individual contracts; this one freezes the
+      # entire emitted JSON so any unintended shape change (field order, a new
+      # collection, a dropped belongs_to, an embedded_in path) shows up as a
+      # diff. Regenerate after an intentional change with `UPDATE_SNAPSHOTS=1`.
+      it "matches the generated-config snapshots" do
+        snapshot_dir = File.expand_path("mongoid_schema_output_snapshots", __dir__)
+
+        described_class.new(models: models, output_dir: output_dir).generate!
+        actual_paths = Dir[File.join(output_dir, "*.json")].sort
+
+        if ENV["UPDATE_SNAPSHOTS"]
+          FileUtils.mkdir_p(snapshot_dir)
+          FileUtils.rm_f(Dir[File.join(snapshot_dir, "*.json")])
+          actual_paths.each do |p|
+            FileUtils.cp(p, File.join(snapshot_dir, File.basename(p)))
+          end
+          skip "snapshots regenerated (#{actual_paths.size} files)"
+        end
+
+        snapshot_paths = Dir[File.join(snapshot_dir, "*.json")].sort
+        expect(snapshot_paths).not_to be_empty,
+          "no snapshots under #{snapshot_dir}. regenerate with UPDATE_SNAPSHOTS=1"
+
+        expect(actual_paths.map { |p| File.basename(p) })
+          .to eq(snapshot_paths.map { |p| File.basename(p) })
+
+        snapshot_paths.each do |snapshot_path|
+          basename = File.basename(snapshot_path)
+          actual = File.read(File.join(output_dir, basename))
+          expect(actual).to eq(File.read(snapshot_path)),
+            "snapshot mismatch in #{basename}"
+        end
       end
     end
 

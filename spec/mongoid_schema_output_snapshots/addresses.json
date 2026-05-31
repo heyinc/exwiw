@@ -1,0 +1,20 @@
+{
+  "name": "addresses",
+  "primary_key": "_id",
+  "belongs_tos": [],
+  "fields": [
+    {
+      "name": "_id"
+    },
+    {
+      "name": "city"
+    },
+    {
+      "name": "zip"
+    }
+  ],
+  "embedded_in": {
+    "collection_name": "profiles",
+    "path": "address"
+  }
+}
