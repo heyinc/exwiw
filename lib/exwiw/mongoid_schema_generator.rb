@@ -30,10 +30,18 @@ module Exwiw
       collections
     end
 
-    # Returns an array of `MongodbCollectionConfig`, one per concrete model
+    # Returns an array of `MongodbCollectionConfig`, one per *collection*
     # (top-level collections and embedded subdocument configs alike).
+    #
+    # Models are grouped by `collection_name` so an inheritance hierarchy whose
+    # subclasses share the base's collection (Mongoid STI, discriminated by the
+    # auto-added `_type` field) collapses into a single config that aggregates
+    # every class's fields and associations. See `expand_with_descendants`.
     def build_collections
-      concrete_models.map { |model| build_collection_for(model) }
+      models = expand_with_descendants(concrete_models)
+      models
+        .group_by { |model| model.collection_name.to_s }
+        .map { |collection_name, group| build_collection_for(collection_name, group) }
     end
 
     def write_files(dir, collections)
@@ -51,48 +59,92 @@ module Exwiw
       end
     end
 
-    private def build_collection_for(model)
+    # Builds one config for the collection shared by `models` (usually a single
+    # model, but an inheritance hierarchy contributes several). Fields and
+    # belongs_tos are unioned across the group; processing least-derived first
+    # keeps the base's fields leading the list and the output deterministic
+    # regardless of input order or sibling subclasses.
+    private def build_collection_for(collection_name, models)
+      ordered = models.sort_by { |model| [model.fields.size, model.name] }
+
       attrs = {
-        name: model.collection_name.to_s,
+        name: collection_name,
         primary_key: "_id",
-        fields: model.fields.keys.map { |name| { name: name } },
+        fields: aggregate_fields(ordered),
       }
 
-      if model.embedded?
+      if ordered.any?(&:embedded?)
         # Cross-collection references from inside an embedded array are not
         # supported (MongodbCollectionConfig rejects them), so embedded configs
         # always carry an empty belongs_tos and instead declare where they live.
         attrs[:belongs_tos] = []
-        attrs[:embedded_in] = embedded_in_for(model)
+        attrs[:embedded_in] = embedded_in_for(ordered.find(&:embedded?))
       else
-        attrs[:belongs_tos] = aggregate_belongs_tos(model)
+        attrs[:belongs_tos] = aggregate_belongs_tos(ordered)
       end
 
       MongodbCollectionConfig.from_symbol_keys(attrs)
+    end
+
+    # Mongoid registers only the base class of an inheritance hierarchy in
+    # `Mongoid.models`; subclasses that store into the base's collection
+    # (STI-style, distinguished by the auto-added `_type` discriminator) are
+    # reachable only via `descendants`, and the base's own metadata does NOT
+    # include subclass-only fields or associations. Expand the model set with
+    # descendants so each collection's config aggregates every class that
+    # stores into it. (A subclass that overrides `store_in` to a different
+    # collection naturally falls into its own group via the `collection_name`
+    # grouping in `build_collections`.)
+    private def expand_with_descendants(models)
+      concrete((models + models.flat_map(&:descendants)).uniq)
     end
 
     # Mongoid registers internal helper classes (e.g. the discriminator key
     # host) in `Mongoid.models`; those have no usable `collection_name`. Keep
     # only application documents.
     private def concrete_models
-      @models.select do |model|
+      concrete(@models)
+    end
+
+    private def concrete(models)
+      models.select do |model|
         model.respond_to?(:collection_name) &&
           model.name &&
           !model.name.start_with?("Mongoid::")
       end
     end
 
-    private def aggregate_belongs_tos(model)
-      belongs_to_assocs = model.relations.values.select do |assoc|
-        assoc.is_a?(::Mongoid::Association::Referenced::BelongsTo)
+    # Unions the declared field names across `models`, preserving first-seen
+    # order. A subclass's `fields` already includes everything it inherits, so
+    # the base's fields lead and each subclass appends only its own.
+    private def aggregate_fields(models)
+      seen = {}
+      models.each_with_object([]) do |model, fields|
+        model.fields.keys.each do |name|
+          next if seen[name]
+
+          seen[name] = true
+          fields << { name: name }
+        end
+      end
+    end
+
+    private def aggregate_belongs_tos(models)
+      belongs_to_assocs = models.flat_map do |model|
+        model.relations.values.select do |assoc|
+          assoc.is_a?(::Mongoid::Association::Referenced::BelongsTo)
+        end
       end
 
       # polymorphic belongs_to (`belongs_to :reviewable, polymorphic: true`) は
       # 単一の対象コレクションを持たないため現状未対応。誤った FK を出力しないよう
       # ここでは除外する (将来 ActiveRecord 版と同様に展開する余地を残す)。
+      #
+      # 継承階層では基底クラスとサブクラスが同じ belongs_to を二重に持つため uniq する。
       belongs_to_assocs
         .reject(&:polymorphic?)
         .map { |assoc| { table_name: assoc.klass.collection_name.to_s, foreign_key: assoc.foreign_key } }
+        .uniq
     end
 
     # Resolves the `embedded_in` config for an embedded model. Each embedded

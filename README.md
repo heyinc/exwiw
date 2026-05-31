@@ -163,6 +163,8 @@ It is a distinct task and class (`Exwiw::MongoidSchemaGenerator`) from the Activ
 - `belongs_tos` from referenced `belongs_to` associations (`{ table_name, foreign_key }`),
 - `embedded_in` from `embedded_in` / `embeds_many` / `embeds_one` associations. Each embedded config names its *immediate* parent collection and the document key it lives under (`store_as`, defaulting to the relation name); nested embedding is represented as a chain (`comments` → `embedded_in` `posts`, `posts` → `embedded_in` `users`) rather than a flattened dot-path, matching how the adapter recurses through array and Hash subdocuments.
 
+Models in an inheritance hierarchy whose subclasses share the base's collection (Mongoid STI, distinguished by the auto-added `_type` discriminator) collapse into a single config: the generator discovers the subclasses via `descendants` (Mongoid registers only the base class in `Mongoid.models`) and unions every class's `fields` and `belongs_tos` into the collection config, so subclass-only fields and associations are not lost.
+
 Regeneration preserves hand-edited `replace_with`, `filter`, `skip`, and `bulk_insert_chunk_size` values, like the ActiveRecord generator. Indexes are not written to the config — they are introspected from the live database at dump time (see [MongoDB notes](#mongodb-notes)). Polymorphic `belongs_to` is not yet expanded by this task.
 
 ### Configuration

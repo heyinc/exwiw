@@ -27,6 +27,11 @@
 #   (Profile embeds_many Contacts -> users.user_profile.contacts), proving the
 #   embedded chain recurses across a Hash boundary into an array, not just
 #   array-in-array (posts.comments)
+# - a model inheritance hierarchy whose subclasses share the base's collection
+#   (Event / PurchaseEvent / LoginEvent all stored in "events", discriminated
+#   by `_type`). Mongoid registers only the base in `Mongoid.models`, so the
+#   generator must discover subclasses via `descendants` and union their
+#   subclass-only fields and belongs_tos into one "events" config
 # - indexes (unique / plain / compound), which the dump path introspects from
 #   the live database via listIndexes rather than from the generated config
 #
@@ -183,6 +188,37 @@ module MongoidDummy
     belongs_to :reviewer, class_name: "MongoidDummy::User"
   end
 
+  # Inheritance hierarchy. Mongoid stores every subclass in the *base* model's
+  # collection ("events"), distinguished by an auto-added `_type` discriminator
+  # field, and registers ONLY the base class in `Mongoid.models`. The generator
+  # must therefore discover the subclasses via `descendants` and union their
+  # fields/associations into the single "events" collection config:
+  #
+  # - PurchaseEvent contributes a subclass-only field (`amount`) and a
+  #   subclass-only `belongs_to :order` (foreign key "order_id")
+  # - LoginEvent contributes its own field (`ip_address`)
+  # - the base's `belongs_to :shop` (foreign key "shop_id") and `_type` round
+  #   out the unioned field/belongs_to set
+  class Event
+    include Mongoid::Document
+    include Mongoid::Timestamps
+    store_in collection: "events"
+
+    field :name, type: String
+
+    belongs_to :shop, class_name: "MongoidDummy::Shop"
+  end
+
+  class PurchaseEvent < Event
+    field :amount, type: Integer
+
+    belongs_to :order, class_name: "MongoidDummy::Order"
+  end
+
+  class LoginEvent < Event
+    field :ip_address, type: String
+  end
+
   class SystemAnnouncement
     include Mongoid::Document
     include Mongoid::Timestamps
@@ -193,8 +229,15 @@ module MongoidDummy
   end
 
   # All concrete document models in this dummy app, in a deterministic order.
+  #
+  # Mongoid only registers the *base* class of an inheritance hierarchy in
+  # `Mongoid.models` (the source `from_rails_application` introspects), so this
+  # list deliberately includes only `Event` and NOT its `PurchaseEvent` /
+  # `LoginEvent` subclasses — the generator must discover them via
+  # `descendants`.
   MODELS = [
-    Shop, User, Post, Comment, Profile, Contact, Product, Order, OrderItem, Transaction, SystemAnnouncement,
+    Shop, User, Post, Comment, Profile, Contact, Product, Order, OrderItem, Transaction, Event,
+    SystemAnnouncement,
   ].freeze
 
   # Representative seed documents, keyed by collection name. These mirror the
@@ -255,6 +298,12 @@ module MongoidDummy
     ],
     "transactions" => [
       { "_id" => 50, "kind" => "charge", "amount" => 1000, "order_id" => 30, "paid_by_id" => 10, "reviewer_id" => 10 },
+    ],
+    # Inheritance hierarchy: every subclass lives in the same "events"
+    # collection, tagged by the `_type` discriminator Mongoid adds.
+    "events" => [
+      { "_id" => 70, "_type" => "MongoidDummy::PurchaseEvent", "name" => "purchase", "shop_id" => 1, "amount" => 500, "order_id" => 30 },
+      { "_id" => 71, "_type" => "MongoidDummy::LoginEvent", "name" => "login", "shop_id" => 1, "ip_address" => "203.0.113.1" },
     ],
     "system_announcements" => [
       { "_id" => 60, "title" => "Maintenance", "content" => "Down at midnight" },

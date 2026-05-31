@@ -22,10 +22,10 @@ module Exwiw
       let(:collections) { described_class.new(models: models, output_dir: output_dir).build_collections }
       let(:by_name) { collections.each_with_object({}) { |c, h| h[c.name] = c } }
 
-      it "emits one config per model keyed by collection name" do
+      it "emits one config per collection keyed by collection name" do
         expect(by_name.keys).to contain_exactly(
           "shops", "users", "posts", "comments", "profiles", "contacts", "products",
-          "orders", "order_items", "transactions", "system_announcements",
+          "orders", "order_items", "transactions", "events", "system_announcements",
         )
       end
 
@@ -105,6 +105,42 @@ module Exwiw
         expect(contacts.embedded_in.path).to eq("contacts")
         expect(contacts.belongs_tos).to be_empty
       end
+
+      it "unions fields and belongs_tos of inheritance subclasses sharing a collection" do
+        # Event / PurchaseEvent / LoginEvent all store into "events". The single
+        # config must aggregate the base's fields plus each subclass's own
+        # (`amount`, `ip_address`, `order_id`) and the auto-added `_type`
+        # discriminator, and union the base + subclass belongs_tos.
+        events = by_name["events"]
+        expect(events.embedded?).to eq(false)
+        expect(events.fields.map(&:name)).to include(
+          "_id", "name", "shop_id", "_type", "amount", "order_id", "ip_address",
+        )
+        belongs_tos = events.belongs_tos.map { |b| [b.table_name, b.foreign_key] }
+        expect(belongs_tos).to contain_exactly(["shops", "shop_id"], ["orders", "order_id"])
+      end
+
+      it "discovers subclasses via descendants when given only the base model" do
+        # `from_rails_application` introspects `Mongoid.models`, which registers
+        # ONLY the base class of a hierarchy. Given just Event, the generator
+        # must still surface the subclass-only fields/associations (and emit a
+        # single "events" config, not one per class).
+        collections = described_class.new(models: [MongoidDummy::Event], output_dir: output_dir).build_collections
+        expect(collections.map(&:name)).to eq(["events"])
+
+        events = collections.first
+        expect(events.fields.map(&:name)).to include("amount", "order_id", "ip_address", "_type")
+        belongs_tos = events.belongs_tos.map { |b| [b.table_name, b.foreign_key] }
+        expect(belongs_tos).to contain_exactly(["shops", "shop_id"], ["orders", "order_id"])
+      end
+
+      it "does not emit a duplicate config when base and subclasses are both passed" do
+        collections = described_class.new(
+          models: [MongoidDummy::Event, MongoidDummy::PurchaseEvent, MongoidDummy::LoginEvent],
+          output_dir: output_dir,
+        ).build_collections
+        expect(collections.map(&:name)).to eq(["events"])
+      end
     end
 
     describe "#generate!" do
@@ -113,7 +149,8 @@ module Exwiw
 
         expect(Dir[File.join(output_dir, "*.json")].map { |p| File.basename(p) }).to contain_exactly(
           "shops.json", "users.json", "posts.json", "comments.json", "profiles.json", "contacts.json",
-          "products.json", "orders.json", "order_items.json", "transactions.json", "system_announcements.json",
+          "products.json", "orders.json", "order_items.json", "transactions.json", "events.json",
+          "system_announcements.json",
         )
       end
 
