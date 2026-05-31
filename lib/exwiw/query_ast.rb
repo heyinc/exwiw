@@ -41,7 +41,26 @@ module Exwiw
         {
           column_name: column_name,
           operator: operator,
-          value: value,
+          value: value.is_a?(Subquery) ? value.to_h : value,
+        }
+      end
+    end
+
+    # Resolves a set of values on `where_column` to the rows' `select_column`
+    # via a nested SELECT. Used as the `value` of a WhereClause whose operator
+    # is `:in_subquery`, so `--ids-column`/`--ids-field` can filter related
+    # tables through the target table's primary key:
+    #
+    #   <table>.<fk> IN (SELECT <table_name>.<select_column>
+    #                    FROM <table_name>
+    #                    WHERE <table_name>.<where_column> IN (<where_values>))
+    Subquery = Struct.new(:table_name, :select_column, :where_column, :where_values, keyword_init: true) do
+      def to_h
+        {
+          table_name: table_name,
+          select_column: select_column,
+          where_column: where_column,
+          where_values: where_values,
         }
       end
     end

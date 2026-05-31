@@ -67,6 +67,8 @@ exwiw \
   --log-level=info
 ```
 
+By default `--ids` are matched against the target table's primary key. `--ids-column=COLUMN` matches them against a different column instead (e.g. `--target-table=users --ids=alice@example.com --ids-column=email`). Related tables are still extracted correctly: their foreign keys are resolved through the target via a subquery (`WHERE fk IN (SELECT pk FROM target WHERE COLUMN IN (...))`), so only the target table's filter column changes. This is the SQL-adapter counterpart of the mongodb `--ids-field`; the two are mutually exclusive and each is rejected by the other adapter family. Note: if `COLUMN` is itself masked, re-running `delete-*` against an already-imported (masked) dump won't match, so prefer a stable natural key.
+
 When `--target-table` and `--ids` are omitted, exwiw dumps all tables defined in `--config-dir`:
 
 ```bash
@@ -412,7 +414,7 @@ The MongoDB adapter is experimental. To use it:
 - The MongoDB adapter consumes a separate config type, `MongodbCollectionConfig`, with MongoDB-native naming. Use `fields` (instead of the SQL adapters' `columns`), and set `"primary_key": "_id"`. Foreign keys (`shop_id`, `user_id`, ...) stay as ordinary fields.
 - `--ids` values are coerced to the type actually stored in `_id` before filtering: integer-looking ids become `Integer`, 24-char hex ids become `BSON::ObjectId` (Mongoid's default `_id` type — a plain String would never match an ObjectId), and any other string is left as-is.
 - `--target-collection=COLLECTION` is a mongodb-only alias of `--target-table` (use whichever reads better for MongoDB). Specifying both, or using `--target-collection` with a non-mongodb adapter, is an error.
-- `--ids-field=FIELD` matches `--ids` against `FIELD` on the target collection instead of its primary key (e.g. `--target-collection=users --ids=a@example.com --ids-field=email`). Downstream foreign-key propagation still keys off the primary key, so only the target collection's filter changes. Unlike the primary-key path, the supplied ids are **not** type-coerced (the stored type of a custom field is unknown), so pass values matching the field's actual type. This flag is currently **mongodb-only** (the SQL adapters reject it; supporting them is a TODO).
+- `--ids-field=FIELD` matches `--ids` against `FIELD` on the target collection instead of its primary key (e.g. `--target-collection=users --ids=a@example.com --ids-field=email`). Downstream foreign-key propagation still keys off the primary key, so only the target collection's filter changes. Unlike the primary-key path, the supplied ids are **not** type-coerced (the stored type of a custom field is unknown), so pass values matching the field's actual type. This flag is **mongodb-only**; the SQL adapters use `--ids-column` instead (see below).
 - Output is JSON Lines (`insert-{idx}-{collection}.jsonl`) using MongoDB Extended JSON (relaxed mode). Import with `mongoimport`:
   ```bash
   mongoimport --db app_dev --collection users --file dump/insert-002-users.jsonl

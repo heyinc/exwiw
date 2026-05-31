@@ -40,6 +40,7 @@ module Exwiw
       @target_collection_name = nil
       @ids = []
       @ids_field = nil
+      @ids_column = nil
       @output_format = nil
       @insert_only = nil
       @after_insert_hook_path = nil
@@ -99,6 +100,7 @@ module Exwiw
 
     private def validate_options!
       resolve_target_collection_alias!
+      resolve_ids_column_alias!
 
       if @subcommand == "explain"
         validate_explain_only!
@@ -172,23 +174,6 @@ module Exwiw
         exit 1
       end
 
-      if @ids_field
-        # --ids-field overrides the field --ids filters against on the target
-        # table; it is meaningless without a target table to constrain.
-        if !@target_table_name
-          $stderr.puts "--target-table is required when --ids-field is specified"
-          exit 1
-        end
-
-        # TODO: support --ids-field for the sql adapters (mysql2/postgresql/
-        # sqlite3) by threading dump_target.ids_field through QueryAstBuilder's
-        # WHERE clause on the target table. For now it is mongodb-only.
-        if @database_adapter != "mongodb"
-          $stderr.puts "--ids-field is currently only supported by the mongodb adapter"
-          exit 1
-        end
-      end
-
       if @after_insert_hook_path
         unless File.file?(@after_insert_hook_path)
           $stderr.puts "--after-insert-hook file not found: #{@after_insert_hook_path}"
@@ -221,6 +206,43 @@ module Exwiw
       end
 
       @target_table_name = @target_collection_name
+    end
+
+    # `--ids-column` is the sql-adapter spelling of `--ids-field` (the mongodb
+    # spelling). Both override which column/field `--ids` is matched against on
+    # the target table; internally they fold into the single @ids_field carried
+    # by DumpTarget. Mirror the --target-table/--target-collection split: each
+    # flag is restricted to its adapter family and the two are mutually
+    # exclusive. Runs after resolve_target_collection_alias! so
+    # @target_table_name already reflects the collection alias.
+    private def resolve_ids_column_alias!
+      if @ids_field && @ids_column
+        $stderr.puts "Specify only one of --ids-field and --ids-column"
+        exit 1
+      end
+
+      if @ids_field && @database_adapter != "mongodb"
+        $stderr.puts "--ids-field is only supported by the mongodb adapter (use --ids-column)"
+        exit 1
+      end
+
+      if @ids_column
+        sql_adapters = ["mysql2", "postgresql", "sqlite3"]
+        unless sql_adapters.include?(@database_adapter)
+          $stderr.puts "--ids-column is only supported by the sql adapters (use --ids-field)"
+          exit 1
+        end
+
+        @ids_field = @ids_column
+      end
+
+      # --ids-field/--ids-column override the column --ids filters against on
+      # the target table; meaningless without a target table to constrain.
+      if @ids_field && !@target_table_name
+        flag = @ids_column ? "--ids-column" : "--ids-field"
+        $stderr.puts "--target-table is required when #{flag} is specified"
+        exit 1
+      end
     end
 
     private def validate_explain_only!
@@ -306,7 +328,8 @@ module Exwiw
         opts.on("--target-table=[TABLE]", "Target table for extraction. If omitted, dump all tables.") { |v| @target_table_name = v }
         opts.on("--target-collection=[COLLECTION]", "Alias of --target-table for the mongodb adapter.") { |v| @target_collection_name = v }
         opts.on("--ids=[IDS]", "Comma-separated list of identifiers. Required when --target-table is given.") { |v| @ids = v.split(',') }
-        opts.on("--ids-field=[FIELD]", "Field on the target table that --ids is matched against. Defaults to the primary key. (mongodb adapter only)") { |v| @ids_field = v }
+        opts.on("--ids-field=[FIELD]", "Field on the target collection that --ids is matched against. Defaults to the primary key. (mongodb adapter only)") { |v| @ids_field = v }
+        opts.on("--ids-column=[COLUMN]", "Column on the target table that --ids is matched against. Defaults to the primary key. (sql adapters only)") { |v| @ids_column = v }
         opts.on("--output-format=[FORMAT]", "Output format: insert (default) or copy (PostgreSQL only, dump subcommand only)") { |v| @output_format = v }
         opts.on("--insert-only", "Do not generate DELETE SQL files (dump subcommand only)") { @insert_only = true }
         opts.on("--after-insert-hook=PATH", "Path to a .rb or .sh post-processing hook executed after all insert/delete files are written (dump subcommand only)") do |v|
