@@ -78,21 +78,21 @@ module Exwiw
         end
       end
 
-      context 'with skip:true' do
+      context 'with ignore:true' do
         let(:json) do
           {
             "name" => "logs",
             "primary_key" => "_id",
-            "skip" => true,
+            "ignore" => true,
             "belongs_tos" => [],
             "fields" => [{ "name" => "_id" }],
           }
         end
 
-        it 'loads skip and round-trips through to_hash' do
+        it 'loads ignore and round-trips through to_hash' do
           config = described_class.from(json)
-          expect(config.skip).to eq(true)
-          expect(config.to_hash["skip"]).to eq(true)
+          expect(config.ignore).to eq(true)
+          expect(config.to_hash["ignore"]).to eq(true)
         end
       end
 
@@ -112,6 +112,63 @@ module Exwiw
           config = described_class.from(json)
           expect(config.fields.first.to_hash).to eq({ "name" => "raw" })
         end
+      end
+    end
+
+    describe '#merge' do
+      let(:current) do
+        described_class.from_symbol_keys(
+          name: 'orders',
+          primary_key: '_id',
+          belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id', comment: 'bt note', ignore: true }],
+          fields: [
+            { name: '_id' },
+            { name: 'token', comment: 'secret', ignore: true, replace_with: 'X' },
+          ],
+        )
+      end
+      let(:passed) do
+        described_class.from_symbol_keys(
+          name: 'orders',
+          primary_key: '_id',
+          belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id' }],
+          fields: [{ name: '_id' }, { name: 'token' }, { name: 'extra' }],
+        )
+      end
+
+      it 'preserves user-owned comment/ignore on belongs_tos' do
+        merged = current.merge(passed)
+        expect(merged.belongs_tos.map(&:to_hash)).to eq([
+          { 'table_name' => 'shops', 'foreign_key' => 'shop_id', 'comment' => 'bt note', 'ignore' => true },
+        ])
+      end
+
+      it 'preserves user-owned comment/ignore/replace_with on fields while tracking added fields' do
+        merged = current.merge(passed)
+        token = merged.fields.find { |f| f.name == 'token' }
+        expect(token.to_hash).to eq({ 'name' => 'token', 'replace_with' => 'X', 'comment' => 'secret', 'ignore' => true })
+        expect(merged.fields.map(&:name)).to eq(['_id', 'token', 'extra'])
+      end
+    end
+
+    describe '#reject_ignored_members!' do
+      let(:config) do
+        described_class.from_symbol_keys(
+          name: 'orders',
+          primary_key: '_id',
+          belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id', ignore: true }],
+          fields: [{ name: '_id' }, { name: 'token', ignore: true }],
+        )
+      end
+
+      it 'drops belongs_tos and fields flagged ignore:true' do
+        config.reject_ignored_members!
+        expect(config.belongs_tos).to eq([])
+        expect(config.fields.map(&:name)).to eq(['_id'])
+      end
+
+      it 'returns self so it can be chained after load' do
+        expect(config.reject_ignored_members!).to be(config)
       end
     end
 

@@ -13,7 +13,7 @@ module Exwiw
     attribute :belongs_tos, array(BelongsTo)
     attribute :fields, array(MongodbField)
     attribute :bulk_insert_chunk_size, optional(Integer), skip_serializing_if_nil: true
-    attribute :skip, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
+    attribute :ignore, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
 
     # Marks this config as physically embedded inside another collection's
     # documents. When set, this config is not processed as a standalone dump
@@ -35,12 +35,21 @@ module Exwiw
       !embedded_in.nil?
     end
 
+    # Drop the belongs_tos/fields flagged `ignore:true` so they are excluded from
+    # extraction. The config files on disk keep these entries; this is applied to
+    # the runtime config right after it is loaded (see Runner#load_table_config).
+    def reject_ignored_members!
+      self.belongs_tos = belongs_tos.reject(&:ignore)
+      self.fields = fields.reject(&:ignore)
+      self
+    end
+
     # Merge an auto-generated config (`passed`) into this user-maintained one so
     # that `MongoidSchemaGenerator` regenerations preserve hand-edited values.
     #
     # - structural facts come from the freshly generated config: primary_key,
     #   belongs_tos, embedded_in.
-    # - user customizations are kept from the receiver: filter, skip,
+    # - user customizations are kept from the receiver: filter, ignore,
     #   bulk_insert_chunk_size, and each field's `replace_with` masking rule.
     # - generated fields drive the field list (so added/removed fields track the
     #   model), but a matching receiver field wins to retain its masking.
@@ -51,18 +60,34 @@ module Exwiw
         merged.name = name
         merged.primary_key = passed.primary_key
         merged.filter = filter
-        merged.belongs_tos = passed.belongs_tos
         merged.bulk_insert_chunk_size = bulk_insert_chunk_size
-        merged.skip = skip
+        merged.ignore = ignore
         merged.embedded_in = passed.embedded_in
+
+        # Structural facts of each belongs_to come from the freshly generated
+        # config, but the user-owned `comment`/`ignore` carry over when the same
+        # relation still exists.
+        receiver_belongs_to_by_identity = belongs_tos.each_with_object({}) { |bt, h| h[bt.identity] = bt }
+        merged.belongs_tos = passed.belongs_tos.map do |pbt|
+          receiver_bt = receiver_belongs_to_by_identity[pbt.identity]
+          if receiver_bt
+            pbt.comment = receiver_bt.comment if receiver_bt.comment
+            pbt.ignore = receiver_bt.ignore unless receiver_bt.ignore.nil?
+          end
+          pbt
+        end
 
         # Take each field from the freshly generated config (so structural facts
         # like `mongoid_field_name` track the model) but carry over the user's
-        # hand-edited `replace_with` masking when the field still exists.
+        # hand-edited `replace_with`/`comment`/`ignore` when the field still exists.
         receiver_field_by_name = fields.each_with_object({}) { |f, h| h[f.name] = f }
         merged.fields = passed.fields.map do |pf|
           receiver = receiver_field_by_name[pf.name]
-          pf.replace_with = receiver.replace_with if receiver&.replace_with
+          if receiver
+            pf.replace_with = receiver.replace_with if receiver.replace_with
+            pf.comment = receiver.comment if receiver.comment
+            pf.ignore = receiver.ignore unless receiver.ignore.nil?
+          end
           pf
         end
       end

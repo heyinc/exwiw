@@ -39,7 +39,7 @@ module Exwiw
 
     # Composite primary key model. `representative.primary_key` returns an Array
     # for these, which exwiw does not support; the generator must mark them
-    # skip:true instead of raising on the TableConfig type check.
+    # ignore:true instead of raising on the TableConfig type check.
     class CompositePkRecord < ::ActiveRecord::Base
       self.table_name = "composite_pk_records"
       self.primary_key = [:organization_id, :location_id]
@@ -231,8 +231,8 @@ module Exwiw
           .find { |t| t.name == "composite_pk_records" }
       end
 
-      it "emits the table with skip:true and no primary_key" do
-        expect(table.skip).to eq(true)
+      it "emits the table with ignore:true and no primary_key" do
+        expect(table.ignore).to eq(true)
         expect(table.primary_key).to be_nil
       end
 

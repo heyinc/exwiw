@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** the table/collection-level config attribute `skip` is renamed to `ignore`. There is no alias — config files using `"skip": true` must be updated to `"ignore": true` (`exwiw:schema:generate` / `exwiw:mongoid:schema:generate` now emit `ignore`, e.g. for composite-primary-key tables). The library accessors are renamed accordingly (`TableConfig#skip` → `#ignore`, `MongodbCollectionConfig#skip` → `#ignore`).
+
+### Added
+
+- `columns` / `fields` and `belongs_tos` entries now accept optional `comment` (a free-form note) and `ignore: true`. An ignored column/field is excluded from the `SELECT` and generated `INSERT`; an ignored `belongs_to` is removed from dependency ordering and query building. These user-owned values are preserved across `exwiw:schema:generate` / `exwiw:mongoid:schema:generate` regenerations (the hand-edited value wins over the auto-generated config), like `replace_with`. The ignored entries are dropped at runtime right after the config is loaded from file, so the JSON on disk keeps them. Applies to both the SQL `TableConfig` and the MongoDB `MongodbCollectionConfig`.
+
 ## [0.3.3] - 2026-05-31
 
 ### Changed

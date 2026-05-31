@@ -80,15 +80,15 @@ module Exwiw
 
         # Tables with a composite primary key (`representative.primary_key` is an
         # Array) are not supported yet. Emit them with `primary_key` omitted,
-        # `skip: true`, and a `type` that marks them as unsupported — the `type`
+        # `ignore: true`, and a `type` that marks them as unsupported — the `type`
         # acts as a signpost for adding support later. The config file itself is
-        # still generated so a user can manually remove `skip` and wire it up when
-        # needed.
+        # still generated so a user can manually remove `ignore` and wire it up
+        # when needed.
         if primary_key.is_a?(Array)
           TableConfig.from_symbol_keys(
             name: table_name,
             type: TableConfig::UNSUPPORTED_COMPOSITE_PRIMARY_KEY,
-            skip: true,
+            ignore: true,
             comment: "exwiw does not support composite primary keys " \
                      "(#{primary_key.join(', ')}); data extraction is skipped.",
             belongs_tos: aggregate_belongs_tos(model_group),

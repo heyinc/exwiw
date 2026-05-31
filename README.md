@@ -181,7 +181,7 @@ It is a distinct task and class (`Exwiw::MongoidSchemaGenerator`) from the Activ
 
 Models in an inheritance hierarchy whose subclasses share the base's collection (Mongoid STI, distinguished by the auto-added `_type` discriminator) collapse into a single config: the generator discovers the subclasses via `descendants` (Mongoid registers only the base class in `Mongoid.models`) and unions every class's `fields` and `belongs_tos` into the collection config, so subclass-only fields and associations are not lost.
 
-Regeneration preserves hand-edited `replace_with`, `filter`, `skip`, and `bulk_insert_chunk_size` values, like the ActiveRecord generator. Indexes are not written to the config — they are introspected from the live database at dump time (see [MongoDB notes](#mongodb-notes)). Polymorphic `belongs_to` is not yet expanded by this task.
+Regeneration preserves hand-edited `replace_with`, `filter`, `ignore`, and `bulk_insert_chunk_size` values, like the ActiveRecord generator. Indexes are not written to the config — they are introspected from the live database at dump time (see [MongoDB notes](#mongodb-notes)). Polymorphic `belongs_to` is not yet expanded by this task.
 
 ### Configuration
 
@@ -256,15 +256,15 @@ A non-zero exit code from the shell hook aborts exwiw.
 
 Note: Ruby hooks are evaluated via `instance_eval` inside the exwiw process — only pass paths you trust.
 
-### Skip a table
+### Ignore a table
 
-Set `"skip": true` on a table's config JSON to exclude it from data extraction. The table's DDL is still emitted into `insert-000-schema.{sql,js}` so the schema stays consistent, but no `insert-*` / `delete-*` files are generated for it and the table is never queried.
+Set `"ignore": true` on a table's config JSON to exclude it from data extraction. The table's DDL is still emitted into `insert-000-schema.{sql,js}` so the schema stays consistent, but no `insert-*` / `delete-*` files are generated for it and the table is never queried.
 
 ```json
 {
   "name": "audit_logs",
   "primary_key": "id",
-  "skip": true,
+  "ignore": true,
   "belongs_tos": [],
   "columns": [{ "name": "id" }]
 }
@@ -272,9 +272,33 @@ Set `"skip": true` on a table's config JSON to exclude it from data extraction. 
 
 Constraints:
 
-- If another non-skipped table has a `belongs_to` entry pointing at a skipped table, exwiw raises `ArgumentError` on load. Remove the `belongs_to` entry on the referencing table, or unset `skip` on the referenced table.
-- Specifying a skipped table as `--target-table` raises `ArgumentError`.
-- `skip: true` is preserved by `exwiw:schema:generate` regenerations (the receiver value wins over the auto-generated config).
+- If another non-ignored table has a `belongs_to` entry pointing at an ignored table, exwiw raises `ArgumentError` on load. Remove the `belongs_to` entry on the referencing table, or unset `ignore` on the referenced table.
+- Specifying an ignored table as `--target-table` raises `ArgumentError`.
+- `ignore: true` is preserved by `exwiw:schema:generate` regenerations (the receiver value wins over the auto-generated config).
+
+### Ignore / annotate a column or `belongs_to`
+
+Individual `columns` (SQL) / `fields` (MongoDB) and `belongs_tos` entries accept two optional, **user-owned** keys:
+
+- `comment` — a free-form note. Purely informational; exwiw never reads it.
+- `ignore: true` — drops that entry from extraction. An ignored column/field is excluded from the `SELECT` and the generated `INSERT` (the column still exists in the target schema, since the DDL comes from the source database — exwiw just does not copy its data). An ignored `belongs_to` is removed from dependency ordering and query building, so the relation is not traversed.
+
+```json
+{
+  "name": "users",
+  "primary_key": "id",
+  "belongs_tos": [
+    { "table_name": "companies", "foreign_key": "company_id" },
+    { "table_name": "audit_logs", "foreign_key": "log_id", "ignore": true, "comment": "huge table, not needed for this export" }
+  ],
+  "columns": [
+    { "name": "id" },
+    { "name": "secret_token", "ignore": true, "comment": "do not copy credentials" }
+  ]
+}
+```
+
+The ignored entries are removed only at runtime, right after the config is loaded from file; the JSON on disk keeps them. Both `comment` and `ignore` are **preserved across `exwiw:schema:generate` / `exwiw:mongoid:schema:generate` regenerations** (the hand-edited value wins over the auto-generated config), just like `replace_with`. This applies to the MongoDB `MongodbCollectionConfig` (`fields` / `belongs_tos`) as well.
 
 ### Polymorphic `belongs_to`
 
@@ -350,20 +374,20 @@ Constraints:
 
 ### Composite primary keys (unsupported)
 
-exwiw does not yet support tables with a composite primary key. When `exwiw:schema:generate` encounters a model whose `primary_key` is an array, it still emits a config entry so the table is not silently dropped, but marks it `skip: true`, tags it `type: "unsupported_composite_primary_key"`, and records the key columns in a `comment`:
+exwiw does not yet support tables with a composite primary key. When `exwiw:schema:generate` encounters a model whose `primary_key` is an array, it still emits a config entry so the table is not silently dropped, but marks it `ignore: true`, tags it `type: "unsupported_composite_primary_key"`, and records the key columns in a `comment`:
 
 ```json
 {
   "name": "composite_pk_records",
   "type": "unsupported_composite_primary_key",
-  "skip": true,
+  "ignore": true,
   "comment": "exwiw does not support composite primary keys (organization_id, location_id); data extraction is skipped.",
   "belongs_tos": [],
   "columns": [{ "name": "organization_id" }, { "name": "location_id" }, { "name": "name" }]
 }
 ```
 
-Unlike rails-managed entries, `columns` and `belongs_tos` are retained so the entry is ready to wire up once composite-key support lands. The `type` is purely a marker — `skip: true` is what actually excludes the table from extraction, so removing `skip` (and supplying a workable `primary_key`) lets you opt the table back in manually.
+Unlike rails-managed entries, `columns` and `belongs_tos` are retained so the entry is ready to wire up once composite-key support lands. The `type` is purely a marker — `ignore: true` is what actually excludes the table from extraction, so removing `ignore` (and supplying a workable `primary_key`) lets you opt the table back in manually.
 
 ### Bulk insert chunk size
 

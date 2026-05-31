@@ -7,6 +7,11 @@ module Exwiw
     attribute :name, String
     attribute :replace_with, optional(String), skip_serializing_if_nil: true
     attribute :raw_sql, optional(String), skip_serializing_if_nil: true
+    # User-owned fields preserved across schema regeneration (see
+    # TableConfig#merge). `ignore:true` drops the column from extraction (SELECT /
+    # INSERT) once the config is loaded (see TableConfig#reject_ignored_members!).
+    attribute :comment, optional(String), skip_serializing_if_nil: true
+    attribute :ignore, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
 
     def self.from_symbol_keys(hash)
       from(hash.transform_keys(&:to_s))

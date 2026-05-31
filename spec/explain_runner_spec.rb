@@ -85,17 +85,17 @@ module Exwiw
       end
     end
 
-    describe '#run when --target-table is marked skip:true' do
+    describe '#run when --target-table is marked ignore:true' do
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1']) }
 
       before do
         shops = JSON.parse(File.read('scenario/sqlite-schema/shops.json'))
-        shops['skip'] = true
+        shops['ignore'] = true
         File.write(File.join(config_dir, 'shops.json'), JSON.dump(shops))
       end
 
       it 'raises ArgumentError' do
-        expect { runner.run }.to raise_error(ArgumentError, /target-table 'shops' is marked skip:true/)
+        expect { runner.run }.to raise_error(ArgumentError, /target-table 'shops' is marked ignore:true/)
       end
     end
   end
