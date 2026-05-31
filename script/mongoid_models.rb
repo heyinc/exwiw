@@ -11,6 +11,11 @@
 # - embedded subdocuments via `embeds_many` / `embedded_in` (User embeds Posts)
 # - *nested* embedded subdocuments (Post embeds Comments), which the generator
 #   must flatten into a dot-separated `embedded_in.path` ("posts.comments")
+# - a single embedded subdocument via `embeds_one` (User embeds one Profile),
+#   which the dump path masks as a Hash rather than an array
+# - a custom `store_as:` on an embedded relation (Profile is stored under the
+#   document key "user_profile", not "profile"), which the generator must use
+#   for `embedded_in.path` instead of the relation name
 # - indexes (unique / plain / compound), which the dump path introspects from
 #   the live database via listIndexes rather than from the generated config
 #
@@ -52,6 +57,10 @@ module MongoidDummy
     # One-to-many relationship stored as an embedded subdocument array.
     embeds_many :posts, class_name: "MongoidDummy::Post"
 
+    # One-to-one relationship stored as a single embedded subdocument (Hash).
+    # `store_as:` overrides the document key, so it lives under "user_profile".
+    embeds_one :profile, class_name: "MongoidDummy::Profile", store_as: "user_profile"
+
     index({ email: 1 }, name: "idx_users_email")
   end
 
@@ -74,6 +83,16 @@ module MongoidDummy
     field :body, type: String
 
     embedded_in :post, class_name: "MongoidDummy::Post"
+  end
+
+  class Profile
+    include Mongoid::Document
+    store_in collection: "profiles"
+
+    field :phone, type: String
+    field :bio, type: String
+
+    embedded_in :user, class_name: "MongoidDummy::User"
   end
 
   class Product
@@ -135,6 +154,6 @@ module MongoidDummy
 
   # All concrete document models in this dummy app, in a deterministic order.
   MODELS = [
-    Shop, User, Post, Comment, Product, Order, OrderItem, Transaction, SystemAnnouncement,
+    Shop, User, Post, Comment, Profile, Product, Order, OrderItem, Transaction, SystemAnnouncement,
   ].freeze
 end

@@ -24,7 +24,7 @@ module Exwiw
 
       it "emits one config per model keyed by collection name" do
         expect(by_name.keys).to contain_exactly(
-          "shops", "users", "posts", "comments", "products",
+          "shops", "users", "posts", "comments", "profiles", "products",
           "orders", "order_items", "transactions", "system_announcements",
         )
       end
@@ -59,6 +59,15 @@ module Exwiw
         expect(comments.embedded_in.collection_name).to eq("users")
         expect(comments.embedded_in.path).to eq("posts.comments")
       end
+
+      it "marks an embeds_one collection with embedded_in using the custom store_as key" do
+        profiles = by_name["profiles"]
+        expect(profiles.embedded?).to eq(true)
+        expect(profiles.embedded_in.collection_name).to eq("users")
+        # `store_as: "user_profile"` wins over the relation name "profile".
+        expect(profiles.embedded_in.path).to eq("user_profile")
+        expect(profiles.belongs_tos).to be_empty
+      end
     end
 
     describe "#generate!" do
@@ -66,7 +75,7 @@ module Exwiw
         described_class.new(models: models, output_dir: output_dir).generate!
 
         expect(Dir[File.join(output_dir, "*.json")].map { |p| File.basename(p) }).to contain_exactly(
-          "shops.json", "users.json", "posts.json", "comments.json", "products.json",
+          "shops.json", "users.json", "posts.json", "comments.json", "profiles.json", "products.json",
           "orders.json", "order_items.json", "transactions.json", "system_announcements.json",
         )
       end
