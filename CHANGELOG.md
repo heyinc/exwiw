@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-05-31
+
 ### Added
 
 - `schema:generate` now supports polymorphic `belongs_to` associations. Each polymorphic relation (`belongs_to :reviewable, polymorphic: true`) is expanded into one `belongs_to` entry per concrete target table — discovered from the other models' `has_many` / `has_one ..., as:` declarations — carrying `foreign_type` (the type column, e.g. `reviewable_type`) and `type_value` (the stored type, e.g. `"Product"`). Targets are ordered by table name so the generated output is stable across Ruby versions. At dump time, a polymorphic `belongs_to` on the path to the dump target is constrained by both the foreign key and the type column — in both the `SELECT` and the `delete-*.sql` bulk-delete subquery — so only rows of the matching type are extracted. ([#43](https://github.com/heyinc/exwiw/pull/43))
