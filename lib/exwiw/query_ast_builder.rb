@@ -58,12 +58,12 @@ module Exwiw
           base_where_clauses: []
         )
 
-        # この hop 自体が polymorphic belongs_to の場合 (例: comments が
-        # commentable として posts へ polymorphic belongs_to)、型カラム
-        # (foreign_type) は結合元テーブル (from_table = base_table_name) 側に
-        # 存在する。外部キーだけでは reviewable_id=1 のような値が別モデルの
-        # 行と衝突しうるため、base_where_clauses に型条件を追加して結合元
-        # テーブルを絞り込む。
+        # When this hop itself is a polymorphic belongs_to (e.g. comments
+        # polymorphically belongs_to posts as commentable), the type column
+        # (foreign_type) lives on the source table (from_table = base_table_name).
+        # The foreign key alone is not enough — a value like reviewable_id=1 can
+        # collide with rows of another model — so add the type condition to
+        # base_where_clauses to narrow down the source table.
         if relation.polymorphic?
           join_clause.base_where_clauses.push QueryAst::WhereClause.new(
             column_name: relation.foreign_type,
@@ -75,10 +75,11 @@ module Exwiw
         if relation_to_dump_target
           join_clause.where_clauses.push dump_target_fk_clause(relation_to_dump_target.foreign_key)
 
-          # 中間テーブルが dump target へ polymorphic belongs_to している場合は、
-          # 型カラム (foreign_type) も join 条件に追加する。型カラムは to_table
-          # (= join_table_name) 上に存在するため、JoinClause の where_clauses が
-          # join_table_name に対してコンパイルされる仕組みにそのまま乗せられる。
+          # When the intermediate table polymorphically belongs_to the dump
+          # target, also add the type column (foreign_type) to the join
+          # condition. The type column lives on to_table (= join_table_name), so
+          # it rides on the existing mechanism where a JoinClause's where_clauses
+          # are compiled against join_table_name.
           if relation_to_dump_target.polymorphic?
             join_clause.where_clauses.push QueryAst::WhereClause.new(
               column_name: relation_to_dump_target.foreign_type,
@@ -121,9 +122,9 @@ module Exwiw
 
       clauses.push dump_target_fk_clause(belongs_to.foreign_key)
 
-      # polymorphic belongs_to の場合は外部キーだけでは型を区別できないため
-      # (例: reviewable_id=1 が Product なのか別モデルなのか判別できない)、
-      # 型カラム (foreign_type) を type_value で絞り込む条件を追加する。
+      # For a polymorphic belongs_to the foreign key alone cannot distinguish the
+      # type (e.g. reviewable_id=1 could be a Product or another model), so add a
+      # condition filtering the type column (foreign_type) by type_value.
       if belongs_to.polymorphic?
         clauses.push Exwiw::QueryAst::WhereClause.new(
           column_name: belongs_to.foreign_type,

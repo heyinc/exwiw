@@ -4,14 +4,14 @@ require 'exwiw/cli'
 module Exwiw
   RSpec.describe CLI do
     describe 'subcommand parsing' do
-      it 'defaults to "dump" when no subcommand is given' do
+      it 'defaults to "export" when no subcommand is given' do
         cli = CLI.new(['--adapter=sqlite3', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite3-schema'])
-        expect(cli.instance_variable_get(:@subcommand)).to eq('dump')
+        expect(cli.instance_variable_get(:@subcommand)).to eq('export')
       end
 
-      it 'recognizes "dump" as a subcommand' do
-        cli = CLI.new(['dump', '--adapter=sqlite3', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite3-schema'])
-        expect(cli.instance_variable_get(:@subcommand)).to eq('dump')
+      it 'recognizes "export" as a subcommand' do
+        cli = CLI.new(['export', '--adapter=sqlite3', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite3-schema'])
+        expect(cli.instance_variable_get(:@subcommand)).to eq('export')
       end
 
       it 'recognizes "explain" as a subcommand' do
@@ -21,12 +21,12 @@ module Exwiw
 
       it 'does not treat an option-looking argv[0] as a subcommand' do
         cli = CLI.new(['--adapter=sqlite3', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite3-schema'])
-        expect(cli.instance_variable_get(:@subcommand)).to eq('dump')
+        expect(cli.instance_variable_get(:@subcommand)).to eq('export')
       end
 
       it 'does not consume unknown positional arguments as a subcommand' do
         cli = CLI.new(['foo', '--adapter=sqlite3', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite3-schema'])
-        expect(cli.instance_variable_get(:@subcommand)).to eq('dump')
+        expect(cli.instance_variable_get(:@subcommand)).to eq('export')
       end
     end
 

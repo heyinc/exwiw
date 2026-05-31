@@ -10,7 +10,7 @@ require 'exwiw'
 
 module Exwiw
   class CLI
-    KNOWN_SUBCOMMANDS = %w[dump explain].freeze
+    KNOWN_SUBCOMMANDS = %w[export explain].freeze
 
     def self.start(argv)
       new(argv).run
@@ -23,7 +23,7 @@ module Exwiw
         if !@argv.empty? && !@argv.first.start_with?("-") && KNOWN_SUBCOMMANDS.include?(@argv.first)
           @argv.shift
         else
-          "dump"
+          "export"
         end
 
       @help = @argv.empty?
@@ -75,7 +75,7 @@ module Exwiw
       logger = build_logger
 
       case @subcommand
-      when "dump"
+      when "export"
         Runner.new(
           connection_config: connection_config,
           output_dir: @output_dir,
@@ -132,7 +132,7 @@ module Exwiw
         exit 1
       end
 
-      if @subcommand == "dump"
+      if @subcommand == "export"
         @output_dir ||= "dump"
         @output_format ||= "insert"
         @insert_only = @insert_only ? true : false
@@ -306,7 +306,7 @@ module Exwiw
           Usage: exwiw [SUBCOMMAND] [options]
 
           Subcommands:
-            dump      Generate INSERT/COPY SQL files (default when omitted).
+            export    Generate INSERT/COPY SQL files (default when omitted).
             explain   Print EXPLAIN output for each extraction query to stdout.
                       (not yet supported for the mongodb adapter)
         BANNER
@@ -315,7 +315,7 @@ module Exwiw
         opts.on("-h", "--host=HOST", "Target database host") { |v| @database_host = v }
         opts.on("-p", "--port=PORT", "Target database port") { |v| @database_port = v }
         opts.on("-u", "--user=USERNAME", "Target database user") { |v| @database_user = v }
-        opts.on("-o", "--output-dir=[DUMP_DIR_PATH]", "Output file path. default is dump/ (dump subcommand only)") do |v|
+        opts.on("-o", "--output-dir=[DUMP_DIR_PATH]", "Output file path. default is dump/ (export subcommand only)") do |v|
           v = v.end_with?("/") ? v[0..-2] : v
           @output_dir = File.expand_path(v)
         end
@@ -330,9 +330,9 @@ module Exwiw
         opts.on("--ids=[IDS]", "Comma-separated list of identifiers. Required when --target-table is given.") { |v| @ids = v.split(',') }
         opts.on("--ids-field=[FIELD]", "Field on the target collection that --ids is matched against. Defaults to the primary key. (mongodb adapter only)") { |v| @ids_field = v }
         opts.on("--ids-column=[COLUMN]", "Column on the target table that --ids is matched against. Defaults to the primary key. (sql adapters only)") { |v| @ids_column = v }
-        opts.on("--output-format=[FORMAT]", "Output format: insert (default) or copy (PostgreSQL only, dump subcommand only)") { |v| @output_format = v }
-        opts.on("--insert-only", "Do not generate DELETE SQL files (dump subcommand only)") { @insert_only = true }
-        opts.on("--after-insert-hook=PATH", "Path to a .rb or .sh post-processing hook executed after all insert/delete files are written (dump subcommand only)") do |v|
+        opts.on("--output-format=[FORMAT]", "Output format: insert (default) or copy (PostgreSQL only, export subcommand only)") { |v| @output_format = v }
+        opts.on("--insert-only", "Do not generate DELETE SQL files (export subcommand only)") { @insert_only = true }
+        opts.on("--after-insert-hook=PATH", "Path to a .rb or .sh post-processing hook executed after all insert/delete files are written (export subcommand only)") do |v|
           @after_insert_hook_path = File.expand_path(v)
         end
         opts.on("--log-level=LEVEL", "Log level (debug, info). default is info") { |v| @log_level = v.to_sym }

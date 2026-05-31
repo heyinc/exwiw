@@ -78,11 +78,12 @@ module Exwiw
         representative = model_group.first
         primary_key = representative.primary_key
 
-        # 複合主キー (`representative.primary_key` が Array) のテーブルは現状未対応。
-        # primary_key を省略し、type で非対応である旨を明示したうえで skip:true を
-        # 付与して出力する。type を付けておくことで将来対応する際の目印になる。
-        # 利用者が必要に応じて手動で skip を外して設定し直せるよう、設定ファイル
-        # 自体は生成しておく。
+        # Tables with a composite primary key (`representative.primary_key` is an
+        # Array) are not supported yet. Emit them with `primary_key` omitted,
+        # `skip: true`, and a `type` that marks them as unsupported — the `type`
+        # acts as a signpost for adding support later. The config file itself is
+        # still generated so a user can manually remove `skip` and wire it up when
+        # needed.
         if primary_key.is_a?(Array)
           TableConfig.from_symbol_keys(
             name: table_name,
@@ -110,12 +111,13 @@ module Exwiw
       @models.reject(&:abstract_class?).select(&:table_exists?)
     end
 
-    # rails-managed テーブル (`schema_migrations` / `ar_internal_metadata`) は
-    # モデルクラスを持たないため `ActiveRecord::Base.descendants` からは拾えない。
-    # multi-DB 構成では各 connection が独立した migration 履歴テーブルを持つので、
-    # 対象 connection を受け取り、その connection 上に該当テーブルが存在する場合のみ
-    # エントリを生成する。テーブル名そのものは prefix/suffix を含むグローバル設定
-    # (`ActiveRecord::Base.schema_migrations_table_name` 等) から得る。
+    # The rails-managed tables (`schema_migrations` / `ar_internal_metadata`)
+    # have no model class, so they cannot be picked up from
+    # `ActiveRecord::Base.descendants`. In a multi-DB setup each connection has
+    # its own migration history table, so we take the target connection and only
+    # emit an entry when the table actually exists on that connection. The table
+    # name itself (including any prefix/suffix) comes from the global settings
+    # (`ActiveRecord::Base.schema_migrations_table_name`, etc.).
     private def build_rails_managed_tables(conn)
       result = []
 
@@ -151,11 +153,11 @@ module Exwiw
         .reject(&:polymorphic?)
         .map { |assoc| { table_name: assoc.table_name, foreign_key: assoc.foreign_key } }
 
-      # polymorphic な belongs_to (`belongs_to :reviewable, polymorphic: true`) は
-      # 単一の対象テーブルを持たない。対象になりうるテーブルは、他モデルで
-      # `has_many/has_one ..., as: <association_name>` と宣言されている側から逆引き
-      # する。各候補テーブルごとに、型カラム (`foreign_type`) と格納される型の値
-      # (`type_value`) を添えた belongs_to を 1 件ずつ展開する。
+      # A polymorphic belongs_to (`belongs_to :reviewable, polymorphic: true`)
+      # has no single target table. The candidate tables are found by looking up
+      # the other models that declare `has_many/has_one ..., as: <association_name>`.
+      # For each candidate table, expand one belongs_to entry carrying the type
+      # column (`foreign_type`) and the stored type value (`type_value`).
       polymorphic = belongs_to_assocs
         .select(&:polymorphic?)
         .flat_map do |assoc|
@@ -172,11 +174,12 @@ module Exwiw
       (non_polymorphic + polymorphic).uniq
     end
 
-    # polymorphic 関連 `association_name` の対象となりうる具象モデルを、全モデルの
-    # `has_many` / `has_one` の `as:` オプションから逆引きして列挙する。
-    # `concrete_models` の並びは `ActiveRecord::Base.descendants` の順に依存し、
-    # Ruby バージョンによって変わりうるため、生成される belongs_to の並びが安定する
-    # よう `table_name` でソートして決定的に返す。
+    # Enumerate the concrete models that can be targets of the polymorphic
+    # association `association_name`, by looking them up from every model's
+    # `has_many` / `has_one` `as:` option. The order of `concrete_models` depends
+    # on `ActiveRecord::Base.descendants`, which can vary by Ruby version, so sort
+    # by `table_name` to return a deterministic order and keep the generated
+    # belongs_to ordering stable.
     private def polymorphic_target_models(association_name)
       concrete_models.select do |model|
         (model.reflect_on_all_associations(:has_many) +

@@ -159,11 +159,13 @@ module Exwiw
         end
       end
 
-      # polymorphic belongs_to (`belongs_to :reviewable, polymorphic: true`) は
-      # 単一の対象コレクションを持たないため現状未対応。誤った FK を出力しないよう
-      # ここでは除外する (将来 ActiveRecord 版と同様に展開する余地を残す)。
+      # A polymorphic belongs_to (`belongs_to :reviewable, polymorphic: true`)
+      # has no single target collection, so it is not supported yet. Exclude it
+      # here to avoid emitting an incorrect FK (leaving room to expand it later,
+      # like the ActiveRecord version does).
       #
-      # 継承階層では基底クラスとサブクラスが同じ belongs_to を二重に持つため uniq する。
+      # In an inheritance hierarchy the base class and its subclasses carry the
+      # same belongs_to twice, so uniq them.
       belongs_to_assocs
         .reject(&:polymorphic?)
         .map { |assoc| { table_name: assoc.klass.collection_name.to_s, foreign_key: assoc.foreign_key } }

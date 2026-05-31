@@ -3,11 +3,11 @@
 module Exwiw
   module QueryAst
     class JoinClause
-      # `where_clauses` はこの join の join_table_name (= 結合先テーブル) に対して
-      # コンパイルされる。一方 `base_where_clauses` は base_table_name (= 結合元
-      # テーブル) に対してコンパイルされる。後者は、結合元テーブルが結合先へ
-      # polymorphic belongs_to していて型カラム (foreign_type) が結合元テーブル
-      # 側に存在するケースのために使う。
+      # `where_clauses` is compiled against this join's join_table_name (the
+      # joined-to table). `base_where_clauses`, on the other hand, is compiled
+      # against base_table_name (the joined-from table). The latter is used for
+      # the case where the source table polymorphically belongs_to the joined-to
+      # table and the type column (foreign_type) lives on the source table.
       attr_reader :base_table_name, :foreign_key, :join_table_name, :primary_key, :where_clauses, :base_where_clauses
 
       def initialize(base_table_name:, foreign_key:, join_table_name:, primary_key:, where_clauses: [], base_where_clauses: [])

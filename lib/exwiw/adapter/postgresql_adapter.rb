@@ -180,10 +180,11 @@ module Exwiw
         subquery_sql = compile_ast(subquery_ast)
         sql += "\nWHERE #{select_query_ast.from_table_name}.#{foreign_key} IN (#{subquery_sql})"
 
-        # first_join.base_where_clauses は外側の削除対象テーブル
-        # (from_table_name) 上の条件 (polymorphic 型カラム等)。subquery には
-        # 含まれないため、外側の WHERE に追加する。これにより、別の
-        # polymorphic 型に属する行まで削除してしまうのを防ぐ。
+        # first_join.base_where_clauses holds conditions on the outer
+        # delete-target table (from_table_name), such as a polymorphic type
+        # column. They are not part of the subquery, so add them to the outer
+        # WHERE. This prevents deleting rows that belong to a different
+        # polymorphic type.
         first_join.base_where_clauses.each do |where|
           next unless where.is_a?(Exwiw::QueryAst::WhereClause)
 
@@ -213,8 +214,9 @@ module Exwiw
             sql += " AND #{compiled_where_condition}"
           end
 
-          # base_where_clauses は結合元テーブル (base_table_name) に対して
-          # コンパイルする。polymorphic な結合元テーブルの型カラム絞り込み等。
+          # base_where_clauses is compiled against the joined-from table
+          # (base_table_name), e.g. the type-column filter on a polymorphic
+          # source table.
           join.base_where_clauses.each do |where|
             compiled_where_condition = compile_where_condition(where, join.base_table_name)
             sql += " AND #{compiled_where_condition}"

@@ -6,9 +6,10 @@ module Exwiw
 
     attribute :foreign_key, String
     attribute :table_name, String
-    # polymorphic 関連の場合のみ設定される。`foreign_type` は型を格納するカラム名
-    # (例: `reviewable_type`)、`type_value` はそのカラムに入る値 (例: `"Product"`)。
-    # 非 polymorphic の belongs_to では両方とも nil。
+    # Set only for a polymorphic association. `foreign_type` is the name of the
+    # column storing the type (e.g. `reviewable_type`), and `type_value` is the
+    # value held in that column (e.g. `"Product"`). Both are nil for a
+    # non-polymorphic belongs_to.
     attribute :foreign_type, optional(String), skip_serializing_if_nil: true
     attribute :type_value, optional(String), skip_serializing_if_nil: true
 

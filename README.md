@@ -46,10 +46,10 @@ gem install exwiw
 
 exwiw has two subcommands:
 
-- `dump` (default) — generate INSERT/COPY SQL files. This is the existing behavior; if the subcommand is omitted, `dump` is assumed for backwards compatibility.
-- `explain` — print the compiled SQL and its `EXPLAIN` output for each query that `dump` would run, without executing the SELECTs.
+- `export` (default) — generate INSERT/COPY SQL files. If the subcommand is omitted, `export` is assumed.
+- `explain` — print the compiled SQL and its `EXPLAIN` output for each query that `export` would run, without executing the SELECTs.
 
-### `exwiw dump`
+### `exwiw export`
 
 ```bash
 # dump & masking all records from database to dump.sql based on schema.json
