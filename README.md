@@ -97,6 +97,8 @@ exwiw \
 
 This command will generate sql files in the `dump` directory.
 
+The output dir is emptied before each export so it never mixes files from a previous run (defaulting to `dump/` when `--output-dir` is omitted). When run interactively (stdin is a tty) and the dir already contains files, exwiw asks for confirmation before removing them; in non-interactive contexts (CI, pipes) it proceeds without prompting.
+
 - `dump/insert-000-schema.sql` — idempotent `CREATE TABLE IF NOT EXISTS ...` for every table in scope. Apply this first to provision an empty database.
 - `dump/insert-{idx}-{table_name}.sql`
 - `dump/delete-{idx}-{table_name}.sql`

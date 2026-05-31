@@ -42,6 +42,40 @@ module Exwiw
       expect { runner.run }.not_to raise_error
     end
 
+    describe 'output dir cleaning' do
+      it 'removes pre-existing contents of the output dir before export' do
+        stale_file = File.join(output_dir, 'insert-999-stale.sql')
+        stale_dir = File.join(output_dir, 'leftover')
+        dotfile = File.join(output_dir, '.hidden')
+        File.write(stale_file, 'stale')
+        FileUtils.mkdir_p(stale_dir)
+        File.write(dotfile, 'hidden')
+
+        runner.run
+
+        expect(File.exist?(stale_file)).to be(false)
+        expect(File.exist?(stale_dir)).to be(false)
+        expect(File.exist?(dotfile)).to be(false)
+        expect(Dir[File.join(output_dir, 'insert-000-schema.sql')]).not_to be_empty
+      end
+
+      it 'creates the output dir when it does not exist' do
+        missing = File.join(output_dir, 'nested', 'out')
+        runner_for_missing = Runner.new(
+          connection_config: connection_config,
+          output_dir: missing,
+          config_dir: config_dir,
+          dump_target: dump_target,
+          logger: ::Logger.new(nil),
+        )
+
+        runner_for_missing.run
+
+        expect(Dir.exist?(missing)).to be(true)
+        expect(Dir[File.join(missing, 'insert-000-schema.sql')]).not_to be_empty
+      end
+    end
+
     describe 'with bulk_insert_chunk_size' do
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1', '2', '3', '4', '5']) }
       let(:insert_sql_regex) { /INSERT INTO shops .+ VALUES\n\([^)]+\)(?:,\n\([^)]+\))*;/ }

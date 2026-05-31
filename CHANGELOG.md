@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `export` now empties `--output-dir` before writing, so a run never mixes files from a previous export. When running interactively (stdin is a tty) and the dir already has contents, exwiw asks for confirmation before removing them; in non-interactive contexts (CI, pipes) it proceeds without prompting.
+
 ## [0.3.3] - 2026-05-31
 
 ## [0.3.2] - 2026-05-31

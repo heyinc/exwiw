@@ -41,9 +41,7 @@ module Exwiw
       @logger.info("Determining table processing order...")
       ordered_table_names = DetermineTableProcessingOrder.run(configs.select { |c| adapter.dumpable?(c) })
 
-      if !Dir.exist?(@output_dir)
-        FileUtils.mkdir_p(@output_dir)
-      end
+      clean_output_dir!
 
       ordered_tables = ordered_table_names.map { |n| table_by_name.fetch(n) }
       schema_path = File.join(@output_dir, "insert-000-schema.#{adapter.schema_output_extension}")
@@ -120,6 +118,23 @@ module Exwiw
           output_extension: adapter.output_extension,
           logger: @logger,
         )
+      end
+    end
+
+    # Empty the output dir before writing so each export starts from a clean
+    # slate and never mixes files from a previous run. Remove the contents
+    # (including dotfiles) rather than the dir itself, preserving the dir's own
+    # permissions/inode. The CLI is responsible for confirming this with the
+    # user when running interactively.
+    private def clean_output_dir!
+      if Dir.exist?(@output_dir)
+        entries = Dir.each_child(@output_dir).to_a
+        unless entries.empty?
+          @logger.info("Cleaning output dir #{@output_dir} (#{entries.size} entr#{entries.size == 1 ? 'y' : 'ies'})...")
+          entries.each { |entry| FileUtils.rm_rf(File.join(@output_dir, entry)) }
+        end
+      else
+        FileUtils.mkdir_p(@output_dir)
       end
     end
 
