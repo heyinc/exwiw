@@ -5,27 +5,27 @@ module Exwiw
   RSpec.describe CLI do
     describe 'subcommand parsing' do
       it 'defaults to "export" when no subcommand is given' do
-        cli = CLI.new(['--adapter=sqlite3', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite3-schema'])
+        cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite-schema'])
         expect(cli.instance_variable_get(:@subcommand)).to eq('export')
       end
 
       it 'recognizes "export" as a subcommand' do
-        cli = CLI.new(['export', '--adapter=sqlite3', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite3-schema'])
+        cli = CLI.new(['export', '--adapter=sqlite', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite-schema'])
         expect(cli.instance_variable_get(:@subcommand)).to eq('export')
       end
 
       it 'recognizes "explain" as a subcommand' do
-        cli = CLI.new(['explain', '--adapter=sqlite3', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite3-schema'])
+        cli = CLI.new(['explain', '--adapter=sqlite', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite-schema'])
         expect(cli.instance_variable_get(:@subcommand)).to eq('explain')
       end
 
       it 'does not treat an option-looking argv[0] as a subcommand' do
-        cli = CLI.new(['--adapter=sqlite3', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite3-schema'])
+        cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite-schema'])
         expect(cli.instance_variable_get(:@subcommand)).to eq('export')
       end
 
       it 'does not consume unknown positional arguments as a subcommand' do
-        cli = CLI.new(['foo', '--adapter=sqlite3', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite3-schema'])
+        cli = CLI.new(['foo', '--adapter=sqlite', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite-schema'])
         expect(cli.instance_variable_get(:@subcommand)).to eq('export')
       end
     end
@@ -36,26 +36,26 @@ module Exwiw
       end
 
       it 'rejects --output-format with explain' do
-        argv = ['explain', '--adapter=sqlite3', '--database=tmp/test.sqlite3',
-                '--config-dir=scenario/sqlite3-schema', '--output-format=copy']
+        argv = ['explain', '--adapter=sqlite', '--database=tmp/test.sqlite3',
+                '--config-dir=scenario/sqlite-schema', '--output-format=copy']
         expect { run_cli(argv) }.to raise_error(SystemExit).and output(/not applicable in 'explain'/).to_stderr
       end
 
       it 'rejects --insert-only with explain' do
-        argv = ['explain', '--adapter=sqlite3', '--database=tmp/test.sqlite3',
-                '--config-dir=scenario/sqlite3-schema', '--insert-only']
+        argv = ['explain', '--adapter=sqlite', '--database=tmp/test.sqlite3',
+                '--config-dir=scenario/sqlite-schema', '--insert-only']
         expect { run_cli(argv) }.to raise_error(SystemExit).and output(/not applicable in 'explain'/).to_stderr
       end
 
       it 'rejects --output-dir with explain' do
-        argv = ['explain', '--adapter=sqlite3', '--database=tmp/test.sqlite3',
-                '--config-dir=scenario/sqlite3-schema', '--output-dir=tmp/x']
+        argv = ['explain', '--adapter=sqlite', '--database=tmp/test.sqlite3',
+                '--config-dir=scenario/sqlite-schema', '--output-dir=tmp/x']
         expect { run_cli(argv) }.to raise_error(SystemExit).and output(/not applicable in 'explain'/).to_stderr
       end
 
       it 'rejects --after-insert-hook with explain' do
-        argv = ['explain', '--adapter=sqlite3', '--database=tmp/test.sqlite3',
-                '--config-dir=scenario/sqlite3-schema', '--after-insert-hook=/tmp/some.rb']
+        argv = ['explain', '--adapter=sqlite', '--database=tmp/test.sqlite3',
+                '--config-dir=scenario/sqlite-schema', '--after-insert-hook=/tmp/some.rb']
         expect { run_cli(argv) }.to raise_error(SystemExit).and output(/not applicable in 'explain'/).to_stderr
       end
 
@@ -86,7 +86,7 @@ module Exwiw
       end
 
       it 'rejects --ids-field for non-mongodb adapters' do
-        argv = ['--adapter=sqlite3', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite3-schema',
+        argv = ['--adapter=sqlite', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite-schema',
                 '--target-table=users', '--ids=1', '--ids-field=email']
         expect { run_cli(argv) }.to raise_error(SystemExit)
           .and output(/--ids-field is only supported by the mongodb adapter \(use --ids-column\)/).to_stderr
@@ -99,8 +99,8 @@ module Exwiw
       end
 
       it 'folds --ids-column into the ids field for sql adapters' do
-        cli = CLI.new(['--adapter=sqlite3', '--database=tmp/test.sqlite3',
-                       '--config-dir=scenario/sqlite3-schema', '--target-table=users',
+        cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3',
+                       '--config-dir=scenario/sqlite-schema', '--target-table=users',
                        '--ids=a@example.com', '--ids-column=email'])
         cli.send(:resolve_target_collection_alias!)
         cli.send(:resolve_ids_column_alias!)
@@ -116,14 +116,14 @@ module Exwiw
       end
 
       it 'rejects specifying both --ids-field and --ids-column' do
-        argv = ['--adapter=sqlite3', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite3-schema',
+        argv = ['--adapter=sqlite', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite-schema',
                 '--target-table=users', '--ids=1', '--ids-field=email', '--ids-column=email']
         expect { run_cli(argv) }.to raise_error(SystemExit)
           .and output(/Specify only one of --ids-field and --ids-column/).to_stderr
       end
 
       it 'rejects --ids-column without --target-table' do
-        argv = ['--adapter=sqlite3', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite3-schema',
+        argv = ['--adapter=sqlite', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite-schema',
                 '--ids-column=email']
         expect { run_cli(argv) }.to raise_error(SystemExit)
           .and output(/--target-table is required when --ids-column is specified/).to_stderr
@@ -143,7 +143,7 @@ module Exwiw
       end
 
       it 'rejects --target-collection for non-mongodb adapters' do
-        argv = ['--adapter=sqlite3', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite3-schema',
+        argv = ['--adapter=sqlite', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite-schema',
                 '--target-collection=users', '--ids=1']
         expect { run_cli(argv) }.to raise_error(SystemExit)
           .and output(/--target-collection is only supported by the mongodb adapter/).to_stderr
@@ -155,6 +155,36 @@ module Exwiw
                 '--target-collection=users', '--ids=1']
         expect { run_cli(argv) }.to raise_error(SystemExit)
           .and output(/Specify only one of --target-table and --target-collection/).to_stderr
+      end
+    end
+
+    describe 'adapter name normalization' do
+      def run_cli(argv)
+        CLI.new(argv).run
+      end
+
+      it 'accepts the mysql2 alias and folds it into the canonical mysql name' do
+        original = ENV['DATABASE_PASSWORD']
+        ENV['DATABASE_PASSWORD'] = 'secret'
+        cli = CLI.new(['--adapter=mysql2', '--host=localhost', '--port=3306', '--user=root',
+                       '--database=app', '--config-dir=scenario/mysql-schema'])
+        cli.send(:validate_options!)
+        expect(cli.instance_variable_get(:@database_adapter)).to eq('mysql')
+      ensure
+        ENV['DATABASE_PASSWORD'] = original
+      end
+
+      it 'accepts the sqlite3 alias and folds it into the canonical sqlite name' do
+        cli = CLI.new(['--adapter=sqlite3', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite-schema'])
+        cli.send(:validate_options!)
+        expect(cli.instance_variable_get(:@database_adapter)).to eq('sqlite')
+      end
+
+      it 'rejects an unknown adapter with a message listing canonical names and aliases' do
+        argv = ['--adapter=oracle', '--host=localhost', '--port=1521', '--user=system',
+                '--database=app', '--config-dir=scenario/sqlite-schema']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/Invalid adapter.*mysql, sqlite, postgresql, mongodb.*aliases.*mysql2/m).to_stderr
       end
     end
   end

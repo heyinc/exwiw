@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Adapter names are now driver-agnostic: `--adapter=mysql` and `--adapter=sqlite` replace the driver-flavored `mysql2` / `sqlite3` as the canonical names (`postgresql` and `mongodb` are unchanged). The CLI stays backward compatible — `mysql2` and `sqlite3` are accepted as aliases and folded onto the canonical name, and the matching is case-insensitive so a Rails app's `connection.adapter_name` (e.g. `Mysql2`, `SQLite`) is absorbed too. There is intentionally no `trilogy` alias: exwiw connects to MySQL via the `mysql2` gem regardless of the source app's driver, so a trilogy-based app should pass `--adapter=mysql`. **Breaking** only for code using the library classes directly: `Exwiw::Adapter::Mysql2Adapter` → `Exwiw::Adapter::MysqlAdapter` and `Exwiw::Adapter::Sqlite3Adapter` → `Exwiw::Adapter::SqliteAdapter`. The `EXWIW_DATABASE_ADAPTER` value passed to `--after-insert-hook` is now the canonical name (`mysql` / `sqlite`).
+
 ## [0.3.1] - 2026-05-31
 
 ### Changed

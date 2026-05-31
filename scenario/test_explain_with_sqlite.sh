@@ -3,7 +3,7 @@
 set -eo pipefail
 
 TARGET_DB_PATH="tmp/scenario-explain-target.sqlite3"
-EXPLAIN_OUT="tmp/sqlite3-explain.out"
+EXPLAIN_OUT="tmp/sqlite-explain.out"
 
 # Clean up
 rm -f "$TARGET_DB_PATH" "$EXPLAIN_OUT"
@@ -19,9 +19,9 @@ tmp_before=$(ls -1 tmp 2>/dev/null | sort)
 # Run `exwiw explain` and capture stdout. stderr (the logger) is allowed
 # through unchanged so CI users can read the progress lines on failure.
 bundle exec exe/exwiw explain \
-  --adapter=sqlite3 \
+  --adapter=sqlite \
   --database="${TARGET_DB_PATH}" \
-  --config-dir=scenario/sqlite3-schema \
+  --config-dir=scenario/sqlite-schema \
   --target-table=shops \
   --ids=1 \
   | tee "$EXPLAIN_OUT"
@@ -48,7 +48,7 @@ if [ "$tmp_after" != "$expected" ]; then
   exit 1
 fi
 
-echo "✓ sqlite3 explain produced expected output and wrote no extra files"
+echo "✓ sqlite explain produced expected output and wrote no extra files"
 
 # Rejection case: dump-only flag must be refused.
 # `tee` lets CI logs surface the rejection message; `|| true` lets us treat the
@@ -56,20 +56,20 @@ echo "✓ sqlite3 explain produced expected output and wrote no extra files"
 echo "Testing explain rejection of --output-format..."
 set +e
 bundle exec exe/exwiw explain \
-    --adapter=sqlite3 \
+    --adapter=sqlite \
     --database="${TARGET_DB_PATH}" \
-    --config-dir=scenario/sqlite3-schema \
+    --config-dir=scenario/sqlite-schema \
     --output-format=copy \
-    2>&1 | tee tmp/sqlite3-explain.err
+    2>&1 | tee tmp/sqlite-explain.err
 rejection_exit=${PIPESTATUS[0]}
 set -e
 if [ "$rejection_exit" -eq 0 ]; then
   echo "✗ explain should have rejected --output-format=copy (exit 0)"
   exit 1
 fi
-grep -q "not applicable in 'explain'" tmp/sqlite3-explain.err || {
+grep -q "not applicable in 'explain'" tmp/sqlite-explain.err || {
   echo "✗ unexpected rejection message:"
-  cat tmp/sqlite3-explain.err
+  cat tmp/sqlite-explain.err
   exit 1
 }
-echo "✓ sqlite3 explain rejects --output-format with the expected message"
+echo "✓ sqlite explain rejects --output-format with the expected message"

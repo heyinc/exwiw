@@ -7,13 +7,13 @@ RSpec.describe Exwiw::QueryAstBuilder do
     let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'shops', ids: [1]) }
     let(:all_tables) do
       [
-        users_table(:sqlite3),
-        shops_table(:sqlite3),
-        products_table(:sqlite3),
-        orders_table(:sqlite3),
-        order_items_table(:sqlite3),
-        transactions_table(:sqlite3),
-        system_announcements_table(:sqlite3),
+        users_table(:sqlite),
+        shops_table(:sqlite),
+        products_table(:sqlite),
+        orders_table(:sqlite),
+        order_items_table(:sqlite),
+        transactions_table(:sqlite),
+        system_announcements_table(:sqlite),
       ]
     end
     let(:table_by_name) do
@@ -38,7 +38,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
     end
 
     context 'when the table is same as dump target table' do
-      let(:table) { shops_table(:sqlite3) }
+      let(:table) { shops_table(:sqlite) }
 
       it 'builds correct query ast' do
         expect(built_query_ast.from_table_name).to eq('shops')
@@ -57,7 +57,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
 
     context 'when dump_target.ids_field overrides the target table filter column' do
       let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'shops', ids: ['acme'], ids_field: 'name') }
-      let(:table) { shops_table(:sqlite3) }
+      let(:table) { shops_table(:sqlite) }
 
       it 'filters the target table on ids_field instead of the primary key' do
         expect(built_query_ast.where_clauses.map(&:to_h)).to eq([
@@ -66,7 +66,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
 
       context 'for a table with a foreign key to the dump target' do
-        let(:table) { users_table(:sqlite3) }
+        let(:table) { users_table(:sqlite) }
 
         it 'resolves the foreign key through the target via a subquery' do
           expect(built_query_ast.where_clauses.map(&:to_h)).to eq([
@@ -86,7 +86,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
     end
 
     context 'when the table has foreign key to dump target table' do
-      let(:table) { users_table(:sqlite3) }
+      let(:table) { users_table(:sqlite) }
 
       it 'builds correct query ast' do
         expect(built_query_ast.from_table_name).to eq('users')
@@ -106,7 +106,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
     end
 
     context 'when the table is N:M relation to dump target table' do
-      let(:table) { order_items_table(:sqlite3) }
+      let(:table) { order_items_table(:sqlite) }
 
       it 'builds correct query ast' do
         expect(built_query_ast.from_table_name).to eq('order_items')
@@ -134,7 +134,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
     end
 
     context 'when the table is indirect relation with dump target table' do
-      let(:table) { transactions_table(:sqlite3) }
+      let(:table) { transactions_table(:sqlite) }
 
       it 'builds correct query ast' do
         expect(built_query_ast.from_table_name).to eq('transactions')
@@ -187,9 +187,9 @@ RSpec.describe Exwiw::QueryAstBuilder do
       let(:all_tables) do
         [
           reviews_table,
-          users_table(:sqlite3),
-          shops_table(:sqlite3),
-          products_table(:sqlite3),
+          users_table(:sqlite),
+          shops_table(:sqlite),
+          products_table(:sqlite),
         ]
       end
       let(:table) { reviews_table }
@@ -238,9 +238,9 @@ RSpec.describe Exwiw::QueryAstBuilder do
       let(:all_tables) do
         [
           reviews_table,
-          users_table(:sqlite3),
-          shops_table(:sqlite3),
-          products_table(:sqlite3),
+          users_table(:sqlite),
+          shops_table(:sqlite),
+          products_table(:sqlite),
         ]
       end
       let(:table) { reviews_table }
@@ -310,7 +310,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
         [
           comments_table,
           reviews_table,
-          products_table(:sqlite3),
+          products_table(:sqlite),
         ]
       end
       let(:table) { comments_table }
@@ -369,7 +369,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
         [
           comments_table,
           posts_table,
-          users_table(:sqlite3),
+          users_table(:sqlite),
         ]
       end
       let(:table) { comments_table }
@@ -395,7 +395,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
     end
 
     context 'when the table has no relation with dump target table' do
-      let(:table) { system_announcements_table(:sqlite3) }
+      let(:table) { system_announcements_table(:sqlite) }
 
       it 'builds correct query ast' do
         expect(built_query_ast.from_table_name).to eq('system_announcements')

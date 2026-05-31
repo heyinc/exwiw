@@ -19,30 +19,30 @@ $MYSQL_CMD -e "DROP DATABASE IF EXISTS ${FROM_DATABASE_NAME}; CREATE DATABASE ${
 $MYSQL_CMD -e "DROP DATABASE IF EXISTS ${TO_DATABASE_NAME}; CREATE DATABASE ${TO_DATABASE_NAME};"
 
 # Setup db
-$MYSQL_CMD "${FROM_DATABASE_NAME}" < seed/mysql2-dump.sql
-$MYSQL_CMD "${TO_DATABASE_NAME}" < seed/mysql2-dump.sql
+$MYSQL_CMD "${FROM_DATABASE_NAME}" < seed/mysql-dump.sql
+$MYSQL_CMD "${TO_DATABASE_NAME}" < seed/mysql-dump.sql
 
 # run exwiw
 export DATABASE_PASSWORD="rootpassword"
 bundle exec exe/exwiw \
-  --adapter=mysql2 \
+  --adapter=mysql \
   --host=127.0.0.1 \
   --port=3306 \
   --user=root \
   --database="${FROM_DATABASE_NAME}" \
-  --config-dir=scenario/mysql2-schema \
+  --config-dir=scenario/mysql-schema \
   --target-table=shops \
   --ids=1 \
-  --output-dir=tmp/mysql2 \
+  --output-dir=tmp/mysql \
   --log-level=debug
 
 # import to db
-for file in tmp/mysql2/delete-*.sql; do
+for file in tmp/mysql/delete-*.sql; do
   echo "Run ${file}"
   $MYSQL_CMD "${TO_DATABASE_NAME}" < "${file}"
 done
 
-for file in tmp/mysql2/insert-*.sql; do
+for file in tmp/mysql/insert-*.sql; do
   echo "Run ${file}"
   $MYSQL_CMD "${TO_DATABASE_NAME}" < "${file}"
 done

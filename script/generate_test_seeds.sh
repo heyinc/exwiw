@@ -1,14 +1,14 @@
 #!/bin/bash
 
-## Sqlite3
+## SQLite
 
 export DATABASE_NAME="tmp/seed.sqlite3"
 rm -f "${DATABASE_NAME}"
 
-bundle exec ruby script/define_schema.rb "sqlite3"
-sqlite3 tmp/seed.sqlite3 ".schema" > seed/sqlite3-schema.sql
-bundle exec ruby script/generate_data.rb "sqlite3"
-sqlite3 tmp/seed.sqlite3 ".dump" > seed/sqlite3-dump.sql
+bundle exec ruby script/define_schema.rb "sqlite"
+sqlite3 tmp/seed.sqlite3 ".schema" > seed/sqlite-schema.sql
+bundle exec ruby script/generate_data.rb "sqlite"
+sqlite3 tmp/seed.sqlite3 ".dump" > seed/sqlite-dump.sql
 
 ## MySQL
 
@@ -16,12 +16,12 @@ export DATABASE_NAME="exwiw_seed"
 
 docker compose exec -e MYSQL_PWD=rootpassword mysql mysql -u root -e "DROP DATABASE IF EXISTS ${DATABASE_NAME}; CREATE DATABASE ${DATABASE_NAME};"
 
-bundle exec ruby script/define_schema.rb "mysql2"
+bundle exec ruby script/define_schema.rb "mysql"
 docker compose exec -e MYSQL_PWD=rootpassword mysql mysqldump -u root \
-  --no-data "${DATABASE_NAME}" > seed/mysql2-schema.sql
-bundle exec ruby script/generate_data.rb "mysql2"
+  --no-data "${DATABASE_NAME}" > seed/mysql-schema.sql
+bundle exec ruby script/generate_data.rb "mysql"
 docker compose exec -e MYSQL_PWD=rootpassword mysql mysqldump -u root \
- "${DATABASE_NAME}" > seed/mysql2-dump.sql
+ "${DATABASE_NAME}" > seed/mysql-dump.sql
 
 ## PostgreSQL
 

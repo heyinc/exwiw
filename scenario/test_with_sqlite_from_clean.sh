@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Variant of test_with_sqlite3.sh that exercises the "fresh target DB" path.
+# Variant of test_with_sqlite.sh that exercises the "fresh target DB" path.
 # The TO database file starts non-existent / empty (no tables), so the run
 # must succeed purely on the strength of insert-000-schema.sql creating the
 # schema before the subsequent insert-*.sql statements run.
@@ -13,8 +13,8 @@ TARGET_DB_PATH="tmp/scenario-target-clean.sqlite3"
 NEW_DB_PATH="tmp/scenario-new-clean.sqlite3"
 
 # Clean up
-rm -rf tmp/sqlite3-clean
-mkdir -p tmp/sqlite3-clean
+rm -rf tmp/sqlite-clean
+mkdir -p tmp/sqlite-clean
 rm -f "$TARGET_DB_PATH" "$NEW_DB_PATH"
 
 # Seed only the FROM (source) database. The NEW (target) DB file is left
@@ -25,18 +25,18 @@ cp scenario/initdb/init.sqlite3 "$TARGET_DB_PATH"
 # run exwiw — output to a dedicated dir so we don't collide with the other
 # scenario's artifacts.
 bundle exec exe/exwiw \
-  --adapter=sqlite3 \
+  --adapter=sqlite \
   --database="${TARGET_DB_PATH}" \
-  --config-dir=scenario/sqlite3-schema \
+  --config-dir=scenario/sqlite-schema \
   --target-table=shops \
   --ids=1 \
-  --output-dir=tmp/sqlite3-clean \
+  --output-dir=tmp/sqlite-clean \
   --log-level=debug
 
 # Apply insert-*.sql against the (non-existent) TO database file.
 # insert-000-schema.sql is expected to be the first file and to create every
 # table referenced by the subsequent insert-*.sql statements.
-for file in tmp/sqlite3-clean/insert-*.sql; do
+for file in tmp/sqlite-clean/insert-*.sql; do
   echo "Run ${file}"
   sqlite3 "$NEW_DB_PATH" < "${file}"
 done

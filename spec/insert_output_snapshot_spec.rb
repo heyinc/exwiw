@@ -31,19 +31,19 @@ module Exwiw
     end
     SCENARIOS = [
       {
-        adapter: "sqlite3",
-        config_dir: "scenario/sqlite3-schema",
+        adapter: "sqlite",
+        config_dir: "scenario/sqlite-schema",
         connection: {
-          adapter: "sqlite3",
+          adapter: "sqlite",
           database_name: "tmp/test.sqlite3",
           host: nil, port: nil, user: nil, password: nil,
         },
       },
       {
-        adapter: "mysql2",
-        config_dir: "scenario/mysql2-schema",
+        adapter: "mysql",
+        config_dir: "scenario/mysql-schema",
         connection: {
-          adapter: "mysql2",
+          adapter: "mysql",
           database_name: "exwiw_test",
           host: "127.0.0.1", port: 3306,
           user: "root", password: "rootpassword",
