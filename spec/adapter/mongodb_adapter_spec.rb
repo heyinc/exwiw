@@ -72,6 +72,28 @@ module Exwiw
           end
         end
 
+        context "coercing the textual --ids to the stored _id type" do
+          it "coerces a 24-char hex --ids into a BSON::ObjectId so it matches an ObjectId _id" do
+            # Mongoid's default `_id` is a BSON::ObjectId. `--ids` arrives as a
+            # String, and Mongo compares types strictly, so a plain hex String
+            # would never match an ObjectId in the `$in` filter. The adapter must
+            # coerce it to BSON::ObjectId.
+            shops = config_by_name.fetch("shops")
+            dump_target = Exwiw::DumpTarget.new(table_name: "shops", ids: ["5f5e7c1e1c9d440000000001"])
+            query = adapter.build_query(shops, dump_target, config_by_name)
+            coerced = query.filter.fetch("_id").fetch("$in").first
+            expect(coerced).to be_a(BSON::ObjectId)
+            expect(coerced.to_s).to eq("5f5e7c1e1c9d440000000001")
+          end
+
+          it "coerces an integer-looking --ids to Integer and leaves other strings as-is" do
+            shops = config_by_name.fetch("shops")
+            dump_target = Exwiw::DumpTarget.new(table_name: "shops", ids: ["42", "abc-123"])
+            query = adapter.build_query(shops, dump_target, config_by_name)
+            expect(query.filter.fetch("_id").fetch("$in")).to eq([42, "abc-123"])
+          end
+        end
+
         context "for a related collection with no upstream state" do
           let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: [1]) }
 

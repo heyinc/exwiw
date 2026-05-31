@@ -440,6 +440,21 @@ module Exwiw
         expect(query.filter).to eq("shop_id" => { "$in" => [1] })
       end
 
+      it "coerces an ObjectId-hex --ids against the generated _id primary key" do
+        # The generator emits `primary_key: "_id"`, and a real Mongoid `_id` is a
+        # BSON::ObjectId. When the dump_target IS this collection, build_query
+        # filters by that primary key against the textual `--ids`. Proves the
+        # generated config drives the ObjectId coercion so `--ids <hex>` actually
+        # matches an ObjectId `_id` (a plain String never would).
+        users = config_by_name.fetch("users")
+        dump_target = Exwiw::DumpTarget.new(table_name: "users", ids: ["5f5e7c1e1c9d440000000001"])
+
+        query = adapter.build_query(users, dump_target, config_by_name)
+        coerced = query.filter.fetch("_id").fetch("$in").first
+        expect(coerced).to be_a(BSON::ObjectId)
+        expect(coerced.to_s).to eq("5f5e7c1e1c9d440000000001")
+      end
+
       it "emits independent $in filters for two belongs_tos targeting the same collection" do
         # transactions has TWO belongs_to -> users (paid_by_id, reviewer_id) plus
         # one -> orders. Each generated foreign_key must produce its own filter
