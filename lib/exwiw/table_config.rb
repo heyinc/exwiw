@@ -12,7 +12,7 @@ module Exwiw
     ].freeze
 
     # type marking a table with a composite primary key, which exwiw does not
-    # support yet. schema:generate attaches it together with skip:true. Unlike
+    # support yet. schema:generate attaches it together with ignore:true. Unlike
     # rails-managed tables, columns/belongs_tos are retained so it can serve as a
     # signpost for adding support later.
     UNSUPPORTED_COMPOSITE_PRIMARY_KEY = "unsupported_composite_primary_key"
@@ -25,7 +25,7 @@ module Exwiw
     attribute :belongs_tos, array(BelongsTo), default: []
     attribute :columns, array(TableColumn), default: []
     attribute :bulk_insert_chunk_size, optional(Integer), skip_serializing_if_nil: true
-    attribute :skip, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
+    attribute :ignore, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
 
     def self.from(hash)
       config = super
@@ -52,6 +52,16 @@ module Exwiw
 
     def column_names
       columns.map(&:name)
+    end
+
+    # Drop the belongs_tos/columns flagged `ignore:true` so they are excluded
+    # from extraction (dependency ordering, SELECT projection, INSERT). The
+    # config files on disk keep these entries; this is applied to the runtime
+    # config right after it is loaded from a file (see Runner#load_table_config).
+    def reject_ignored_members!
+      self.belongs_tos = belongs_tos.reject(&:ignore)
+      self.columns = columns.reject(&:ignore)
+      self
     end
 
     def belongs_to(table_name)
@@ -111,9 +121,22 @@ module Exwiw
         merged_table.type = passed_table.type
         merged_table.comment = comment
         merged_table.filter = filter
-        merged_table.belongs_tos = passed_table.belongs_tos
         merged_table.bulk_insert_chunk_size = passed_table.bulk_insert_chunk_size
-        merged_table.skip = skip
+        merged_table.ignore = ignore
+
+        # Structural facts of each belongs_to come from the freshly generated
+        # config, but the user-owned `comment`/`ignore` carry over when the same
+        # relation still exists.
+        receiver_belongs_to_by_identity = belongs_tos.each_with_object({}) { |bt, hash| hash[bt.identity] = bt }
+        merged_table.belongs_tos =
+          passed_table.belongs_tos.map do |passed_belongs_to|
+            receiver_belongs_to = receiver_belongs_to_by_identity[passed_belongs_to.identity]
+            if receiver_belongs_to
+              passed_belongs_to.comment = receiver_belongs_to.comment if receiver_belongs_to.comment
+              passed_belongs_to.ignore = receiver_belongs_to.ignore unless receiver_belongs_to.ignore.nil?
+            end
+            passed_belongs_to
+          end
 
         receiver_column_by_name = columns.each_with_object({}) { |column, hash| hash[column.name] = column }
 
@@ -144,9 +167,9 @@ module Exwiw
                 "Table '#{name}' has type=#{type}; columns must not be defined."
         end
       else
-        # A skip:true table is not extracted, so primary_key is not required
+        # An ignore:true table is not extracted, so primary_key is not required
         # (e.g. a composite-primary-key table that exwiw does not support).
-        if primary_key.nil? && !skip
+        if primary_key.nil? && !ignore
           raise ArgumentError, "Table '#{name}' requires primary_key."
         end
       end

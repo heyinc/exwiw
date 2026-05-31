@@ -310,12 +310,12 @@ module Exwiw
         expect(result["fields"].map { |f| f["name"] }).to include("name", "shop_id")
       end
 
-      it "preserves a user-customized skip flag across regeneration" do
+      it "preserves a user-customized ignore flag across regeneration" do
         path = File.join(output_dir, "system_announcements.json")
         existing = {
           "name" => "system_announcements",
           "primary_key" => "_id",
-          "skip" => true,
+          "ignore" => true,
           "belongs_tos" => [],
           "fields" => [{ "name" => "_id" }],
         }
@@ -323,7 +323,7 @@ module Exwiw
 
         described_class.new(models: [MongoidDummy::SystemAnnouncement], output_dir: output_dir).generate!
 
-        expect(JSON.parse(File.read(path))["skip"]).to eq(true)
+        expect(JSON.parse(File.read(path))["ignore"]).to eq(true)
       end
 
       it "preserves an embedded config's masking and embedded_in across regeneration" do
@@ -368,7 +368,7 @@ module Exwiw
       end
 
       it "preserves bulk_insert_chunk_size and drops fields no longer on the model across regeneration" do
-        # The full regeneration contract beyond replace_with/skip: a
+        # The full regeneration contract beyond replace_with/ignore: a
         # user-tuned `bulk_insert_chunk_size` survives, while the field list
         # tracks the model — a field that no longer exists on the model is
         # dropped (not retained as a stale entry) even if it carried a

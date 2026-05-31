@@ -121,19 +121,19 @@ module Exwiw
         end
       end
 
-      context 'when receiver has skip:true' do
+      context 'when receiver has ignore:true' do
         let(:current_config) do
           TableConfig.from_symbol_keys(
             name: 'users',
             primary_key: 'id',
-            skip: true,
+            ignore: true,
             belongs_tos: current_belongs_tos,
             columns: current_columns,
           )
         end
 
-        it 'preserves skip from the receiver in the merged config' do
-          expect(merged_config.skip).to eq(true)
+        it 'preserves ignore from the receiver in the merged config' do
+          expect(merged_config.ignore).to eq(true)
         end
       end
 
@@ -150,6 +150,39 @@ module Exwiw
           expect(actual.map(&:to_hash)).to eq([
             { 'name' => 'id' },
             { 'name' => 'name', 'replace_with' => 'MaskedName{id}' },
+          ])
+        end
+      end
+
+      context 'when belongs_to has user-owned comment/ignore' do
+        let(:current_belongs_tos) do
+          [{ table_name: 'clients', foreign_key: 'company_id', comment: 'hand-written', ignore: true }]
+        end
+        let(:passed_belongs_tos) do
+          [{ table_name: 'clients', foreign_key: 'company_id' }]
+        end
+
+        it 'preserves comment/ignore from receiver while keeping the relation' do
+          actual = merged_config.belongs_tos
+          expect(actual.map(&:to_hash)).to eq([
+            { 'table_name' => 'clients', 'foreign_key' => 'company_id', 'comment' => 'hand-written', 'ignore' => true },
+          ])
+        end
+      end
+
+      context 'when columns have user-owned comment/ignore' do
+        let(:current_columns) do
+          [{ name: 'id' }, { name: 'secret', comment: 'PII', ignore: true }]
+        end
+        let(:passed_columns) do
+          [{ name: 'id' }, { name: 'secret' }]
+        end
+
+        it 'preserves comment/ignore from receiver' do
+          actual = merged_config.columns
+          expect(actual.map(&:to_hash)).to eq([
+            { 'name' => 'id' },
+            { 'name' => 'secret', 'comment' => 'PII', 'ignore' => true },
           ])
         end
       end
@@ -182,6 +215,34 @@ module Exwiw
         it 'preserves comment from receiver (user-owned)' do
           expect(merged_config.comment).to eq('localized comment')
         end
+      end
+    end
+
+    describe '#reject_ignored_members!' do
+      let(:config) do
+        TableConfig.from_symbol_keys(
+          name: 'orders',
+          primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'shops', foreign_key: 'shop_id' },
+            { table_name: 'users', foreign_key: 'user_id', ignore: true },
+          ],
+          columns: [
+            { name: 'id' },
+            { name: 'secret', ignore: true },
+            { name: 'amount' },
+          ],
+        )
+      end
+
+      it 'drops belongs_tos and columns flagged ignore:true' do
+        config.reject_ignored_members!
+        expect(config.belongs_tos.map(&:table_name)).to eq(['shops'])
+        expect(config.column_names).to eq(['id', 'amount'])
+      end
+
+      it 'returns self so it can be chained after load' do
+        expect(config.reject_ignored_members!).to be(config)
       end
     end
 

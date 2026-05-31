@@ -12,6 +12,12 @@ module Exwiw
     # non-polymorphic belongs_to.
     attribute :foreign_type, optional(String), skip_serializing_if_nil: true
     attribute :type_value, optional(String), skip_serializing_if_nil: true
+    # User-owned fields. The schema generators never emit them, but a user can
+    # add them by hand and they survive regeneration (see TableConfig#merge /
+    # MongodbCollectionConfig#merge). `ignore:true` drops the relation from
+    # extraction once the config is loaded (see #reject_ignored_members!).
+    attribute :comment, optional(String), skip_serializing_if_nil: true
+    attribute :ignore, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
 
     def self.from_symbol_keys(hash)
       from(hash.transform_keys(&:to_s))
@@ -19,6 +25,13 @@ module Exwiw
 
     def polymorphic?
       !foreign_type.nil?
+    end
+
+    # Structural identity used to match a freshly generated belongs_to against a
+    # user-maintained one during merge. `comment`/`ignore` are user-owned and so
+    # are intentionally excluded.
+    def identity
+      [table_name, foreign_key, foreign_type, type_value]
     end
 
     def to_hash

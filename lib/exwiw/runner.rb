@@ -30,7 +30,7 @@ module Exwiw
       adapter = Adapter.build(@connection_config, @logger)
       configs = load_table_config(adapter.class.table_config_class)
 
-      validate_skipped(configs)
+      validate_ignored(configs)
       validate_rails_managed_target!(configs)
 
       table_by_name = configs.each_with_object({}) { |config, hash| hash[config.name] = config }
@@ -52,8 +52,8 @@ module Exwiw
       ordered_table_names.each_with_index do |table_name, idx|
         table = table_by_name.fetch(table_name)
 
-        if table.skip
-          @logger.info("Skipping data extraction for '#{table_name}' (skip:true)")
+        if table.ignore
+          @logger.info("Skipping data extraction for '#{table_name}' (ignore:true)")
           next
         end
 
@@ -141,33 +141,37 @@ module Exwiw
     private def load_table_config(klass)
       Dir[File.join(@config_dir, "*.json")].map do |file|
         json = JSON.parse(File.read(file))
-        klass.from(json)
+        # Drop belongs_tos/columns(fields) flagged ignore:true so they are not
+        # considered during extraction. Done here (after loading from file)
+        # rather than in `.from` so the schema generators keep the full config
+        # and can preserve the ignored entries on regeneration.
+        klass.from(json).reject_ignored_members!
       end
     end
 
-    private def validate_skipped(configs)
-      skipped_names = configs.select { |c| c.skip }.map(&:name).to_set
-      return if skipped_names.empty?
+    private def validate_ignored(configs)
+      ignored_names = configs.select { |c| c.ignore }.map(&:name).to_set
+      return if ignored_names.empty?
 
       configs.each do |config|
-        next if config.skip
+        next if config.ignore
         next unless config.respond_to?(:belongs_tos)
 
-        dangling = config.belongs_tos.select { |rel| skipped_names.include?(rel.table_name) }
+        dangling = config.belongs_tos.select { |rel| ignored_names.include?(rel.table_name) }
         next if dangling.empty?
 
         raise ArgumentError,
-              "Table '#{config.name}' has belongs_to references to skipped table(s): " \
+              "Table '#{config.name}' has belongs_to references to ignored table(s): " \
               "#{dangling.map(&:table_name).join(', ')}. " \
-              "Remove the belongs_to entries or unset `skip` on the referenced table."
+              "Remove the belongs_to entries or unset `ignore` on the referenced table."
       end
 
-      if @dump_target.table_name && skipped_names.include?(@dump_target.table_name)
+      if @dump_target.table_name && ignored_names.include?(@dump_target.table_name)
         raise ArgumentError,
-              "--target-table '#{@dump_target.table_name}' is marked skip:true and cannot be used as a dump target."
+              "--target-table '#{@dump_target.table_name}' is marked ignore:true and cannot be used as a dump target."
       end
 
-      skipped_names.each { |n| @logger.info("Table '#{n}' is marked skip:true (schema will be included, data extraction skipped)") }
+      ignored_names.each { |n| @logger.info("Table '#{n}' is marked ignore:true (schema will be included, data extraction skipped)") }
     end
 
     private def validate_rails_managed_target!(configs)

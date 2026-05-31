@@ -209,18 +209,18 @@ module Exwiw
       end
     end
 
-    describe 'with skip:true on a table config' do
+    describe 'with ignore:true on a table config' do
       let(:dump_target) { DumpTarget.new(table_name: nil, ids: []) }
 
       before do
         FileUtils.cp('scenario/sqlite-schema/shops.json', File.join(config_dir, 'shops.json'))
 
         announcements = JSON.parse(File.read('scenario/sqlite-schema/system_announcements.json'))
-        announcements['skip'] = true
+        announcements['ignore'] = true
         File.write(File.join(config_dir, 'system_announcements.json'), JSON.dump(announcements))
       end
 
-      it 'emits schema for the skipped table but no insert/delete files' do
+      it 'emits schema for the ignored table but no insert/delete files' do
         runner.run
 
         expect(Dir[File.join(output_dir, 'insert-*-system_announcements.sql')]).to be_empty
@@ -231,39 +231,39 @@ module Exwiw
         expect(File.read(schema_file)).to include('system_announcements')
       end
 
-      it 'still emits files for non-skipped tables' do
+      it 'still emits files for non-ignored tables' do
         runner.run
 
         expect(Dir[File.join(output_dir, 'insert-*-shops.sql')]).not_to be_empty
       end
     end
 
-    describe 'when a non-skipped table has belongs_to a skipped table' do
+    describe 'when a non-ignored table has belongs_to an ignored table' do
       let(:dump_target) { DumpTarget.new(table_name: nil, ids: []) }
 
       before do
         shops = JSON.parse(File.read('scenario/sqlite-schema/shops.json'))
-        shops['skip'] = true
+        shops['ignore'] = true
         File.write(File.join(config_dir, 'shops.json'), JSON.dump(shops))
         FileUtils.cp('scenario/sqlite-schema/users.json', File.join(config_dir, 'users.json'))
       end
 
       it 'raises ArgumentError with a clear message' do
-        expect { runner.run }.to raise_error(ArgumentError, /belongs_to references to skipped table\(s\): shops/)
+        expect { runner.run }.to raise_error(ArgumentError, /belongs_to references to ignored table\(s\): shops/)
       end
     end
 
-    describe 'when --target-table is skipped' do
+    describe 'when --target-table is ignored' do
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1']) }
 
       before do
         shops = JSON.parse(File.read('scenario/sqlite-schema/shops.json'))
-        shops['skip'] = true
+        shops['ignore'] = true
         File.write(File.join(config_dir, 'shops.json'), JSON.dump(shops))
       end
 
       it 'raises ArgumentError' do
-        expect { runner.run }.to raise_error(ArgumentError, /target-table 'shops' is marked skip:true/)
+        expect { runner.run }.to raise_error(ArgumentError, /target-table 'shops' is marked ignore:true/)
       end
     end
 
