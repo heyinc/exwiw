@@ -42,17 +42,6 @@ gem install exwiw
 - sqlite
 - mongodb (experimental, see [MongoDB notes](#mongodb-notes))
 
-Adapter names are driver-agnostic — they name the database, not the Ruby driver
-or Rails ActiveRecord adapter. For backward compatibility and to absorb the Rails
-adapter spelling, the following aliases are also accepted (case-insensitive):
-
-| `--adapter` value | Aliases accepted |
-| --- | --- |
-| `mysql` | `mysql2` |
-| `sqlite` | `sqlite3` |
-
-So `--adapter=mysql2` and `--adapter=mysql` both select the same MySQL adapter.
-
 For MySQL, exwiw connects through whichever of the `mysql2` or `trilogy` gem is
 available (preferring `mysql2`), so an app on either driver works without any
 extra setup. There is no separate `trilogy` adapter name — pass `--adapter=mysql`
