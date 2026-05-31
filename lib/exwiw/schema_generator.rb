@@ -147,7 +147,7 @@ module Exwiw
     end
 
     private def aggregate_belongs_tos(models)
-      belongs_to_assocs = models.flat_map { |m| m.reflect_on_all_associations(:belongs_to) }
+      belongs_to_assocs = models.flat_map { |m| belongs_to_associations_for(m) }
 
       non_polymorphic = belongs_to_assocs
         .reject(&:polymorphic?)
@@ -172,6 +172,27 @@ module Exwiw
         end
 
       (non_polymorphic + polymorphic).uniq
+    end
+
+    # `belongs_to` reflections for a model, with the synthetic HABTM left-side
+    # association removed.
+    #
+    # Rails backs every `has_and_belongs_to_many` with an anonymous join model
+    # (`HABTM_*`, a concrete `ActiveRecord::Base` descendant whose table is the
+    # join table). That join model declares two belongs_tos: the "right side"
+    # (named after the association, e.g. `belongs_to :tags` -> `tag_id`), which
+    # is correct, and a synthetic `belongs_to :left_side`. The left-side
+    # association is built with `anonymous_class:` and no `foreign_key:`, so AR
+    # derives its foreign key from the reflection name -> `left_side_id`, a
+    # column that does not exist in the join table. Dropping it leaves the join
+    # table with only its genuine foreign keys; the right-side reflections of
+    # the two HABTM_* models together still supply both (`post_id` + `tag_id`).
+    private def belongs_to_associations_for(model)
+      assocs = model.reflect_on_all_associations(:belongs_to)
+      return assocs unless model.respond_to?(:left_reflection)
+
+      left = model.left_reflection
+      assocs.reject { |assoc| assoc.equal?(left) }
     end
 
     # Enumerate the concrete models that can be targets of the polymorphic
