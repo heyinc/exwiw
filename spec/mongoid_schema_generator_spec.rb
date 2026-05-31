@@ -296,6 +296,47 @@ module Exwiw
         expect(JSON.parse(File.read(path))["skip"]).to eq(true)
       end
 
+      it "preserves an embedded config's masking and embedded_in across regeneration" do
+        # Regenerating an *embedded* collection is a distinct merge path: the
+        # existing file is read back through `MongodbCollectionConfig.from`, which
+        # runs `validate_embedded!` (an embedded config must carry an empty
+        # belongs_tos), and the merge takes `embedded_in` from the freshly
+        # generated config. This proves a user's hand-edited `replace_with` on an
+        # embedded field survives while the structural `embedded_in`
+        # (collection_name "users", path "posts") is re-derived from the model,
+        # and that the rewritten file is itself re-readable.
+        path = File.join(output_dir, "posts.json")
+        existing = {
+          "name" => "posts",
+          "primary_key" => "_id",
+          "belongs_tos" => [],
+          "embedded_in" => { "collection_name" => "users", "path" => "posts" },
+          "fields" => [
+            { "name" => "_id" },
+            { "name" => "title", "replace_with" => "masked-title-{_id}" },
+            { "name" => "legacy_removed_field", "replace_with" => "should-disappear" },
+          ],
+        }
+        File.write(path, JSON.pretty_generate(existing))
+
+        described_class.new(models: [MongoidDummy::Post], output_dir: output_dir).generate!
+
+        result = JSON.parse(File.read(path))
+        # Structural embedded_in is re-derived from the model and kept.
+        expect(result["embedded_in"]).to eq("collection_name" => "users", "path" => "posts")
+        # An embedded config always carries an empty belongs_tos...
+        expect(result["belongs_tos"]).to eq([])
+        # ...the user's masking on a surviving field is preserved...
+        expect(result["fields"].find { |f| f["name"] == "title" }["replace_with"]).to eq("masked-title-{_id}")
+        # ...and a field no longer on the model is dropped.
+        expect(result["fields"].map { |f| f["name"] }).not_to include("legacy_removed_field")
+
+        # The rewritten file round-trips back through validate_embedded! (empty
+        # belongs_tos), so a follow-up regeneration won't raise.
+        reread = MongodbCollectionConfig.from(JSON.parse(File.read(path)))
+        expect(reread.embedded?).to eq(true)
+      end
+
       it "preserves bulk_insert_chunk_size and drops fields no longer on the model across regeneration" do
         # The full regeneration contract beyond replace_with/skip: a
         # user-tuned `bulk_insert_chunk_size` survives, while the field list
