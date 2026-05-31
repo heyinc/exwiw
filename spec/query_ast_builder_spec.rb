@@ -174,6 +174,74 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
     end
 
+    context 'when the table has polymorphic belongs_tos to multiple targets' do
+      # reviews が reviewable として products と shops の両方へ polymorphic に
+      # belongs_to するケース。dump target に一致する型だけが絞り込まれ、もう一方
+      # の belongs_to (Shop) が products dump に混入しないこと、その逆も確認する。
+      let(:reviews_table) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'reviews',
+          primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'users', foreign_key: 'user_id' },
+            {
+              table_name: 'products',
+              foreign_key: 'reviewable_id',
+              foreign_type: 'reviewable_type',
+              type_value: 'Product',
+            },
+            {
+              table_name: 'shops',
+              foreign_key: 'reviewable_id',
+              foreign_type: 'reviewable_type',
+              type_value: 'Shop',
+            },
+          ],
+          columns: [
+            { name: 'id' },
+            { name: 'reviewable_type' },
+            { name: 'reviewable_id' },
+            { name: 'user_id' },
+          ],
+        )
+      end
+      let(:all_tables) do
+        [
+          reviews_table,
+          users_table(:sqlite3),
+          shops_table(:sqlite3),
+          products_table(:sqlite3),
+        ]
+      end
+      let(:table) { reviews_table }
+
+      context 'when dumping the Product target' do
+        let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'products', ids: [1]) }
+
+        it 'filters by the Product type only' do
+          expect(built_query_ast.from_table_name).to eq('reviews')
+          expect(built_query_ast.join_clauses).to eq([])
+          expect(built_query_ast.where_clauses.map(&:to_h)).to eq([
+            { column_name: 'reviewable_id', operator: :eq, value: [1] },
+            { column_name: 'reviewable_type', operator: :eq, value: ['Product'] },
+          ])
+        end
+      end
+
+      context 'when dumping the Shop target' do
+        let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'shops', ids: [1]) }
+
+        it 'filters by the Shop type only' do
+          expect(built_query_ast.from_table_name).to eq('reviews')
+          expect(built_query_ast.join_clauses).to eq([])
+          expect(built_query_ast.where_clauses.map(&:to_h)).to eq([
+            { column_name: 'reviewable_id', operator: :eq, value: [1] },
+            { column_name: 'reviewable_type', operator: :eq, value: ['Shop'] },
+          ])
+        end
+      end
+    end
+
     context 'when the table joins through an intermediate polymorphic belongs_to to the dump target table' do
       let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'products', ids: [1]) }
       let(:reviews_table) do
