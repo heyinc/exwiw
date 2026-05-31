@@ -31,6 +31,25 @@ module Exwiw
           expect(sql).to match(/CREATE TABLE IF NOT EXISTS `users`/i)
           expect(sql).not_to match(/`products`/) # not in scope
         end
+
+        context "when EXWIW_MYSQLDUMP points at a missing binary" do
+          around do |example|
+            original = ENV['EXWIW_MYSQLDUMP']
+            ENV['EXWIW_MYSQLDUMP'] = '/nonexistent/path/to/mysqldump-xyz'
+            example.run
+            if original.nil?
+              ENV.delete('EXWIW_MYSQLDUMP')
+            else
+              ENV['EXWIW_MYSQLDUMP'] = original
+            end
+          end
+
+          it "raises a message naming the configured binary and EXWIW_MYSQLDUMP" do
+            tables = [shops_table(adapter_name)]
+            expect { adapter.dump_schema(tables, schema_path) }
+              .to raise_error(/mysqldump-xyz.*EXWIW_MYSQLDUMP/m)
+          end
+        end
       end
 
       describe "#compile_ast" do

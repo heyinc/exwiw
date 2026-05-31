@@ -18,9 +18,27 @@ module Exwiw
       # Immutable value object: a query's column names and its rows.
       Result = Data.define(:fields, :rows)
 
+      DRIVERS = [:mysql2, :trilogy].freeze
+
       # Pick the available driver, preferring mysql2 (exwiw's historical default).
       # require returns false when already loaded, so this is safe to call repeatedly.
+      #
+      # Set EXWIW_MYSQL_DRIVER=trilogy to force the pure-Ruby trilogy driver. This
+      # is useful when the mysql2 gem is linked against a libmysqlclient that can
+      # no longer load the server's auth plugin (e.g. MySQL 9.x client dropped the
+      # `mysql_native_password` plugin .so, raising "Authentication plugin
+      # 'mysql_native_password' cannot be loaded" on connect).
       def self.detect_driver
+        forced = ENV['EXWIW_MYSQL_DRIVER']
+        if forced && !forced.empty?
+          sym = forced.to_sym
+          unless DRIVERS.include?(sym)
+            raise ArgumentError,
+                  "EXWIW_MYSQL_DRIVER must be one of #{DRIVERS.join(', ')}, got #{forced.inspect}."
+          end
+          return sym
+        end
+
         require 'mysql2'
         :mysql2
       rescue LoadError
