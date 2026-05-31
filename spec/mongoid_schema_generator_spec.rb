@@ -54,10 +54,16 @@ module Exwiw
         expect(posts.belongs_tos).to be_empty
       end
 
-      it "flattens a nested embedded chain into a dot-separated path" do
+      it "points a nested embedded config at its immediate parent with a relative path" do
         comments = by_name["comments"]
-        expect(comments.embedded_in.collection_name).to eq("users")
-        expect(comments.embedded_in.path).to eq("posts.comments")
+        # NOT flattened to { "users", "posts.comments" }: MongodbAdapter masks
+        # multi-level embeds by recursing through the chain (mask each `posts`
+        # subdocument, then its `comments`), so the Comment config must name its
+        # immediate parent collection ("posts") and a single-segment path.
+        expect(comments.embedded?).to eq(true)
+        expect(comments.embedded_in.collection_name).to eq("posts")
+        expect(comments.embedded_in.path).to eq("comments")
+        expect(comments.belongs_tos).to be_empty
       end
 
       it "marks an embeds_one collection with embedded_in using the custom store_as key" do
@@ -116,6 +122,71 @@ module Exwiw
         described_class.new(models: [MongoidDummy::SystemAnnouncement], output_dir: output_dir).generate!
 
         expect(JSON.parse(File.read(path))["skip"]).to eq(true)
+      end
+    end
+
+    # End-to-end check that the *generated* configs are actually consumable by
+    # the MongoDB dump path: feed the dummy app's seed documents through
+    # MongodbAdapter's masking using nothing but the generated config shapes.
+    # This is what guards against the generator and adapter drifting apart on
+    # how embedded subdocuments are addressed (e.g. nested `comments` inside the
+    # `posts` array).
+    describe "generated configs drive MongodbAdapter masking on the seed" do
+      let(:seed) { MongoidDummy::SEED }
+      let(:logger) { Logger.new(nil) }
+      let(:connection_config) do
+        ConnectionConfig.new(
+          adapter: "mongodb",
+          database_name: "exwiw_test",
+          host: "127.0.0.1",
+          port: 27017,
+          user: nil,
+          password: nil,
+        )
+      end
+      let(:adapter) { Adapter::MongodbAdapter.new(connection_config, logger) }
+
+      # Generated configs carry no masking by default; inject representative
+      # `replace_with` rules so the masking pass has something to do.
+      let(:config_by_name) do
+        collections = described_class.new(models: models, output_dir: output_dir).build_collections
+        by_name = collections.each_with_object({}) { |c, h| h[c.name] = c }
+
+        set_replace_with(by_name.fetch("users"), "name", "masked{_id}")
+        set_replace_with(by_name.fetch("posts"), "title", "masked-title-{_id}")
+        set_replace_with(by_name.fetch("comments"), "body", "masked-comment-{_id}")
+        set_replace_with(by_name.fetch("profiles"), "phone", "masked-phone")
+
+        by_name
+      end
+
+      def set_replace_with(config, field_name, template)
+        config.fields.find { |f| f.name == field_name }.replace_with = template
+      end
+
+      it "masks the user document, its embedded posts, nested comments, and embeds_one profile" do
+        dump_target = Exwiw::DumpTarget.new(table_name: "users", ids: [10])
+        users_config = config_by_name.fetch("users")
+        # Primes @embedded_children_by_parent off the generated config index.
+        adapter.build_query(users_config, dump_target, config_by_name)
+
+        user = Marshal.load(Marshal.dump(seed.fetch("users").first))
+        jsonl = adapter.to_bulk_insert([user], users_config)
+        masked = JSON.parse(jsonl)
+
+        expect(masked["name"]).to eq("masked10")
+
+        post = masked.fetch("posts").first
+        expect(post["title"]).to eq("masked-title-100")
+        # Nested embeds_many: comments live inside the posts array and are only
+        # reachable because the Comment config is embedded_in "posts".
+        expect(post.fetch("comments").map { |c| c["body"] }).to eq([
+          "masked-comment-1000",
+          "masked-comment-1001",
+        ])
+
+        # embeds_one with a custom store_as: masked at the "user_profile" key.
+        expect(masked.fetch("user_profile")["phone"]).to eq("masked-phone")
       end
     end
   end

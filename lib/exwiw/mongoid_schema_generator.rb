@@ -95,28 +95,28 @@ module Exwiw
         .map { |assoc| { table_name: assoc.klass.collection_name.to_s, foreign_key: assoc.foreign_key } }
     end
 
-    # Walks the embedded chain up to the owning top-level collection, building a
-    # dot-separated storage path. For `User embeds_many :posts` and
-    # `Post embeds_many :comments`, the Comment config resolves to
-    # `{ collection_name: "users", path: "posts.comments" }`.
+    # Resolves the `embedded_in` config for an embedded model. Each embedded
+    # model points at its *immediate* embedding parent: the parent's collection
+    # name plus the single document key (`store_as`, defaulting to the relation
+    # name) the subdocuments live under within that parent.
+    #
+    # Multi-level nesting is represented one link at a time, NOT flattened into
+    # a dot-separated path. For `User embeds_many :posts` and
+    # `Post embeds_many :comments`, the Post config resolves to
+    # `{ collection_name: "users", path: "posts" }` and the Comment config to
+    # `{ collection_name: "posts", path: "comments" }`. `MongodbAdapter` walks
+    # this chain recursively (masking each `posts` subdocument, then its
+    # `comments`), which is the only form that correctly traverses both array
+    # (`embeds_many`) and Hash (`embeds_one`) intermediates — a flattened
+    # `posts.comments` path would stop at the `posts` array boundary.
     private def embedded_in_for(model)
-      parts = []
-      current = model
+      assoc = embedded_in_association(model)
+      parent = assoc.klass
+      # `store_as` defaults to the relation name and is the actual document key
+      # the subdocuments are stored under inside the immediate parent.
+      parent_relation = parent.relations[assoc.inverse.to_s]
 
-      loop do
-        assoc = embedded_in_association(current)
-        parent = assoc.klass
-        parent_relation = parent.relations[assoc.inverse.to_s]
-        # `store_as` defaults to the relation name and is the actual document
-        # key the subdocuments are stored under.
-        parts.unshift(parent_relation.store_as)
-
-        if parent.embedded?
-          current = parent
-        else
-          return { collection_name: parent.collection_name.to_s, path: parts.join(".") }
-        end
-      end
+      { collection_name: parent.collection_name.to_s, path: parent_relation.store_as }
     end
 
     private def embedded_in_association(model)

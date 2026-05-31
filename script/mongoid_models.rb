@@ -9,8 +9,10 @@
 #   `user_id`, ...) become ordinary fields exwiw tracks for FK-based extraction
 # - a collection with no relations at all (SystemAnnouncement)
 # - embedded subdocuments via `embeds_many` / `embedded_in` (User embeds Posts)
-# - *nested* embedded subdocuments (Post embeds Comments), which the generator
-#   must flatten into a dot-separated `embedded_in.path` ("posts.comments")
+# - *nested* embedded subdocuments (Post embeds Comments), represented as an
+#   embedded chain: the Comment config is `embedded_in` its *immediate* parent
+#   "posts" (path "comments"), not flattened to a dot-path under "users" — the
+#   form MongodbAdapter walks recursively across the `posts` array
 # - a single embedded subdocument via `embeds_one` (User embeds one Profile),
 #   which the dump path masks as a Hash rather than an array
 # - a custom `store_as:` on an embedded relation (Profile is stored under the
@@ -156,4 +158,59 @@ module MongoidDummy
   MODELS = [
     Shop, User, Post, Comment, Profile, Product, Order, OrderItem, Transaction, SystemAnnouncement,
   ].freeze
+
+  # Representative seed documents, keyed by collection name. These mirror the
+  # physical document shapes the MongoDB adapter sees at dump time, so they
+  # double as fixtures for asserting that the *generated* configs line up with
+  # the real storage layout:
+  #
+  # - top-level documents carry their referenced `belongs_to` foreign keys
+  #   (`shop_id`, `user_id`, ...) as ordinary fields
+  # - `users` documents embed a `posts` array (embeds_many), each post embeds a
+  #   `comments` array (nested embeds_many), and a single `user_profile` Hash
+  #   (embeds_one with a custom `store_as`)
+  #
+  # The embedded subdocuments live *only* inside their parent here (there is no
+  # standalone "posts"/"comments"/"profiles" collection), matching how exwiw
+  # dumps them: the embedded configs are masked through the parent document at
+  # their `embedded_in.path` rather than as their own jsonl.
+  SEED = {
+    "shops" => [
+      { "_id" => 1, "name" => "Acme" },
+    ],
+    "users" => [
+      {
+        "_id" => 10,
+        "name" => "Alice",
+        "email" => "alice@example.com",
+        "shop_id" => 1,
+        "posts" => [
+          {
+            "_id" => 100,
+            "title" => "Hello world",
+            "comments" => [
+              { "_id" => 1000, "body" => "Nice post" },
+              { "_id" => 1001, "body" => "Thanks for sharing" },
+            ],
+          },
+        ],
+        "user_profile" => { "_id" => 200, "phone" => "090-0000-0000", "bio" => "hi there" },
+      },
+    ],
+    "products" => [
+      { "_id" => 20, "name" => "Widget", "price" => 500, "shop_id" => 1 },
+    ],
+    "orders" => [
+      { "_id" => 30, "shop_id" => 1, "user_id" => 10 },
+    ],
+    "order_items" => [
+      { "_id" => 40, "quantity" => 2, "order_id" => 30, "product_id" => 20 },
+    ],
+    "transactions" => [
+      { "_id" => 50, "kind" => "charge", "amount" => 1000, "order_id" => 30 },
+    ],
+    "system_announcements" => [
+      { "_id" => 60, "title" => "Maintenance", "content" => "Down at midnight" },
+    ],
+  }.freeze
 end
