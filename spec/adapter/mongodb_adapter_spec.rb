@@ -139,7 +139,9 @@ module Exwiw
         end
 
         context "for a related collection after upstream state is populated" do
-          let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: [1]) }
+          # Shop 1's seeded ObjectId (`_id`); see seed/mongodb.
+          let(:shop1_oid) { BSON::ObjectId.from_string("a00100000000000000000001") }
+          let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: ["a00100000000000000000001"]) }
 
           it "filters by foreign_key with $in using state from previous execute" do
             shops = config_by_name.fetch("shops")
@@ -149,7 +151,7 @@ module Exwiw
             adapter.execute(shops_query)
 
             users_query = adapter.build_query(users, dump_target, config_by_name)
-            expect(users_query.filter).to eq("shop_id" => { "$in" => [1] })
+            expect(users_query.filter).to eq("shop_id" => { "$in" => [shop1_oid] })
           end
         end
 
@@ -166,21 +168,24 @@ module Exwiw
       end
 
       describe "#execute" do
+        # Shop 1's seeded ObjectId (`_id`); see seed/mongodb.
+        let(:shop1_oid) { BSON::ObjectId.from_string("a00100000000000000000001") }
+
         context "for the dump_target collection" do
-          let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: [1]) }
+          let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: ["a00100000000000000000001"]) }
 
           it "returns matching documents" do
             shops = config_by_name.fetch("shops")
             query = adapter.build_query(shops, dump_target, config_by_name)
             results = adapter.execute(query)
             expect(results.size).to eq(1)
-            expect(results.first["_id"]).to eq(1)
+            expect(results.first["_id"]).to eq(shop1_oid)
             expect(results.first["name"]).to eq("Shop 1")
           end
         end
 
         context "for a related collection after running the dump_target collection" do
-          let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: [1]) }
+          let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: ["a00100000000000000000001"]) }
 
           it "limits results via state-driven $in filter" do
             shops = config_by_name.fetch("shops")
@@ -190,7 +195,7 @@ module Exwiw
             users = adapter.execute(adapter.build_query(users_t, dump_target, config_by_name))
 
             expect(users.size).to eq(2)
-            expect(users.map { |u| u["shop_id"] }.uniq).to eq([1])
+            expect(users.map { |u| u["shop_id"] }.uniq).to eq([shop1_oid])
           end
         end
       end

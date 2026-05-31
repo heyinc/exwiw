@@ -38,7 +38,9 @@ end
 files.each do |path|
   collection_name = File.basename(path, ".jsonl").sub(/\Ainsert-\d+-/, "")
   puts "Import #{path} -> #{collection_name}"
-  docs = File.readlines(path, chomp: true).reject(&:empty?).map { |line| JSON.parse(line) }
+  # exwiw emits MongoDB Extended JSON ($oid/$date), so parse with BSON::ExtJSON
+  # to restore ObjectId `_id`/foreign keys rather than store the `$oid` wrapper.
+  docs = File.readlines(path, chomp: true).reject(&:empty?).map { |line| BSON::ExtJSON.parse(line) }
   client[collection_name].insert_many(docs) unless docs.empty?
 end
 

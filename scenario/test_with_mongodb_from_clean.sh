@@ -38,7 +38,7 @@ bundle exec exe/exwiw \
   --database="${FROM_DATABASE_NAME}" \
   --config-dir=scenario/mongodb-schema \
   --target-table=shops \
-  --ids=1 \
+  --ids=a00100000000000000000001 \
   --output-dir=tmp/mongodb-clean \
   --log-level=debug
 

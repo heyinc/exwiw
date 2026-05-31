@@ -74,6 +74,12 @@ module Exwiw
       {
         adapter: "mongodb",
         config_dir: "scenario/mongodb-schema",
+        # The mongo seed keys `_id` with a deterministic ObjectId: a 4-hex
+        # per-collection tag (shops -> "a001") + the zero-padded integer. The
+        # tag's letter keeps the id from being all-decimal, so the adapter
+        # coerces this 24-char hex back to a BSON::ObjectId (not an Integer) for
+        # the `$in` filter.
+        ids: ["a00100000000000000000001"],
         connection: {
           adapter: "mongodb",
           database_name: "exwiw_test",
@@ -95,7 +101,7 @@ module Exwiw
             connection_config: connection_config,
             output_dir: output_dir,
             config_dir: scenario[:config_dir],
-            dump_target: DumpTarget.new(table_name: "shops", ids: ["1"]),
+            dump_target: DumpTarget.new(table_name: "shops", ids: scenario.fetch(:ids, ["1"])),
             output_format: scenario.fetch(:output_format, "insert"),
             logger: ::Logger.new(nil),
           )
