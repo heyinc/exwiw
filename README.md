@@ -148,6 +148,23 @@ Each database keeps its own Rails migration history, so a `schema_migrations` (a
 
 - The rails-managed table *names* are resolved from the global `ActiveRecord::Base.schema_migrations_table_name` / `internal_metadata_table_name` accessors, which are shared across all connections. A per-database override of these names is not detected, so such a table will be missing from that database's generated configs.
 
+#### Mongoid applications
+
+For MongoDB applications backed by [Mongoid](https://www.mongodb.com/docs/mongoid/), a separate rake task introspects Mongoid document models and emits `MongodbCollectionConfig` files (the `fields` / `_id` / `embedded_in` shape described under [MongoDB notes](#mongodb-notes)):
+
+```bash
+bundle exec rake exwiw:schema:generate_mongoid
+```
+
+It is a distinct task and class (`Exwiw::MongoidSchemaGenerator`) from the ActiveRecord generator because the two ORMs expose entirely different metadata. From each model it derives:
+
+- the collection name and the `_id` primary key,
+- `fields` from the declared Mongoid fields (referenced `belongs_to` foreign keys such as `shop_id` are ordinary fields),
+- `belongs_tos` from referenced `belongs_to` associations (`{ table_name, foreign_key }`),
+- `embedded_in` from `embedded_in` / `embeds_many` / `embeds_one` associations, flattening nested embedding into a dot-separated `path` (e.g. `posts.comments`).
+
+Regeneration preserves hand-edited `replace_with`, `filter`, `skip`, and `bulk_insert_chunk_size` values, like the ActiveRecord generator. Indexes are not written to the config — they are introspected from the live database at dump time (see [MongoDB notes](#mongodb-notes)). Polymorphic `belongs_to` is not yet expanded by this task.
+
 ### Configuration
 
 This is an example of the one table schema:

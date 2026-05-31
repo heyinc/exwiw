@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- New rake task `exwiw:schema:generate_mongoid` (backed by `Exwiw::MongoidSchemaGenerator`) generates `MongodbCollectionConfig` files by introspecting Mongoid document models — a separate task/class from the ActiveRecord `schema:generate` because the ORMs expose different metadata. It derives the collection name, the `_id` primary key, `fields` (including referenced `belongs_to` foreign keys), `belongs_tos` from referenced `belongs_to` associations, and `embedded_in` from `embedded_in` / `embeds_many` / `embeds_one` associations (nested embedding flattened into a dot-separated `path`, e.g. `posts.comments`). Regeneration preserves hand-edited `replace_with` / `filter` / `skip` / `bulk_insert_chunk_size`. Polymorphic `belongs_to` is not yet expanded.
+
 ## [0.2.8] - 2026-05-31
 
 ### Added
