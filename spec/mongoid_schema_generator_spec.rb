@@ -102,6 +102,17 @@ module Exwiw
         expect(comments.belongs_tos).to be_empty
       end
 
+      it "drops a referenced belongs_to declared on an embedded document but keeps its FK field" do
+        # Comment#author is a referenced belongs_to on an embedded document.
+        # MongodbCollectionConfig forbids a non-empty belongs_tos on an embedded
+        # config (cross-collection FKs from inside embedded arrays are
+        # unsupported), so the generator must drop the association entirely while
+        # still surfacing the auto-added `author_id` as an ordinary field.
+        comments = by_name["comments"]
+        expect(comments.belongs_tos).to be_empty
+        expect(comments.fields.map(&:name)).to include("author_id")
+      end
+
       it "marks an embeds_one collection with embedded_in using the custom store_as key" do
         profiles = by_name["profiles"]
         expect(profiles.embedded?).to eq(true)

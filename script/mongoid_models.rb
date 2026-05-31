@@ -22,6 +22,11 @@
 #   embedded chain: the Comment config is `embedded_in` its *immediate* parent
 #   "posts" (path "comments"), not flattened to a dot-path under "users" — the
 #   form MongodbAdapter walks recursively across the `posts` array
+# - a *referenced* `belongs_to` declared on an embedded document
+#   (Comment#author -> "users"), which the generator must DROP from the embedded
+#   config's belongs_tos (cross-collection FKs from inside embedded arrays are
+#   unsupported — MongodbCollectionConfig rejects them) while still tracking the
+#   auto-added `author_id` as an ordinary field
 # - a single embedded subdocument via `embeds_one` (User embeds one Profile),
 #   which the dump path masks as a Hash rather than an array
 # - a custom `store_as:` on an embedded relation (Profile is stored under the
@@ -103,6 +108,15 @@ module MongoidDummy
     field :body, type: String
 
     embedded_in :post, class_name: "MongoidDummy::Post"
+
+    # A *referenced* belongs_to declared on an embedded document. Mongoid allows
+    # an embedded subdocument to reference a top-level collection and auto-adds
+    # the `author_id` foreign-key field. exwiw cannot follow cross-collection
+    # foreign keys from inside an embedded array (MongodbCollectionConfig's
+    # validate_embedded! rejects a non-empty belongs_tos on an embedded config),
+    # so the generator must DROP this association from the emitted belongs_tos
+    # while still tracking `author_id` as an ordinary (maskable) field.
+    belongs_to :author, class_name: "MongoidDummy::User"
   end
 
   class Profile
@@ -295,8 +309,11 @@ module MongoidDummy
             "_id" => 100,
             "title" => "Hello world",
             "comments" => [
-              { "_id" => 1000, "body" => "Nice post" },
-              { "_id" => 1001, "body" => "Thanks for sharing" },
+              # `author_id` is the referenced belongs_to FK auto-added on the
+              # embedded Comment; it rides along as an ordinary field even though
+              # the generator drops the association itself.
+              { "_id" => 1000, "body" => "Nice post", "author_id" => 10 },
+              { "_id" => 1001, "body" => "Thanks for sharing", "author_id" => 10 },
             ],
           },
         ],

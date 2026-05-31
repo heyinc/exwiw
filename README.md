@@ -160,7 +160,7 @@ It is a distinct task and class (`Exwiw::MongoidSchemaGenerator`) from the Activ
 
 - the collection name and the `_id` primary key,
 - `fields` from the declared Mongoid fields (referenced `belongs_to` foreign keys such as `shop_id` are ordinary fields),
-- `belongs_tos` from referenced `belongs_to` associations (`{ table_name, foreign_key }`),
+- `belongs_tos` from referenced `belongs_to` associations (`{ table_name, foreign_key }`). A referenced `belongs_to` declared on an *embedded* document is dropped (cross-collection refs from inside embedded subdocuments are unsupported — see [MongoDB notes](#mongodb-notes)), but its foreign-key column is still kept as an ordinary field,
 - `embedded_in` from `embedded_in` / `embeds_many` / `embeds_one` associations. Each embedded config names its *immediate* parent collection and the document key it lives under (`store_as`, defaulting to the relation name); nested embedding is represented as a chain (`comments` → `embedded_in` `posts`, `posts` → `embedded_in` `users`) rather than a flattened dot-path, matching how the adapter recurses through array and Hash subdocuments.
 
 Models in an inheritance hierarchy whose subclasses share the base's collection (Mongoid STI, distinguished by the auto-added `_type` discriminator) collapse into a single config: the generator discovers the subclasses via `descendants` (Mongoid registers only the base class in `Mongoid.models`) and unions every class's `fields` and `belongs_tos` into the collection config, so subclass-only fields and associations are not lost.
