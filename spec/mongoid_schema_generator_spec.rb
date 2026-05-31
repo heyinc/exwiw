@@ -100,6 +100,16 @@ module Exwiw
         expect(by_name["tags"].belongs_tos).to be_empty
       end
 
+      it "emits an aliased field's storage key, not its Ruby accessor" do
+        # Product declares `field :ctry, as: :country`: the document stores the
+        # value under `ctry`, while `country` is only the Ruby accessor. exwiw
+        # masks/projects by the stored document key, so the generated config must
+        # carry `ctry` (what `model.fields.keys` returns) and never `country`.
+        field_names = by_name["products"].fields.map(&:name)
+        expect(field_names).to include("ctry")
+        expect(field_names).not_to include("country")
+      end
+
       it "still tracks the HABTM array foreign-key columns as ordinary fields" do
         # The HABTM relation is dropped, but Mongoid auto-declares the `*_ids`
         # array fields, so the generator surfaces them as ordinary (maskable)
@@ -292,6 +302,9 @@ module Exwiw
         set_replace_with(by_name.fetch("comments"), "body", "masked-comment-{_id}")
         set_replace_with(by_name.fetch("profiles"), "phone", "masked-phone")
         set_replace_with(by_name.fetch("contacts"), "phone", "masked-contact-{_id}")
+        # Mask the aliased field by its STORAGE key (`ctry`), the only key the
+        # generator emits and the only key present in the document.
+        set_replace_with(by_name.fetch("products"), "ctry", "XX")
 
         by_name
       end
@@ -333,6 +346,22 @@ module Exwiw
           "masked-contact-300",
           "masked-contact-301",
         ])
+      end
+
+      it "masks an aliased field by its stored document key, not the accessor" do
+        # Product stores `field :ctry, as: :country`. The generated config masks
+        # by the stored key `ctry`; the document carries `ctry` (not `country`),
+        # so masking must hit it — proving the generator and adapter agree on
+        # using the storage key for aliased fields.
+        dump_target = Exwiw::DumpTarget.new(table_name: "products", ids: [20])
+        products_config = config_by_name.fetch("products")
+        adapter.build_query(products_config, dump_target, config_by_name)
+
+        product = Marshal.load(Marshal.dump(seed.fetch("products").first))
+        masked = JSON.parse(adapter.to_bulk_insert([product], products_config))
+
+        expect(masked["ctry"]).to eq("XX")
+        expect(masked).not_to have_key("country")
       end
     end
 

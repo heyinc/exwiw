@@ -22,6 +22,10 @@
 #   generator must EXCLUDE the HABTM relation from belongs_tos (it is a
 #   `HasAndBelongsToMany`, not a `BelongsTo`) while still tracking the auto-added
 #   `*_ids` array column as an ordinary field, like the polymorphic case
+# - an *aliased* field (`field :ctry, as: :country` on Product), whose document
+#   STORAGE key (`ctry`) differs from its Ruby accessor (`country`). exwiw masks
+#   and projects by the stored document key, so the generator must emit the
+#   storage key `ctry` (from `model.fields.keys`), never the `country` accessor
 # - a collection with no relations at all (SystemAnnouncement)
 # - embedded subdocuments via `embeds_many` / `embedded_in` (User embeds Posts)
 # - *nested* embedded subdocuments (Post embeds Comments), represented as an
@@ -168,6 +172,14 @@ module MongoidDummy
 
     field :name, type: String
     field :price, type: Integer
+
+    # An *aliased* field: the Ruby accessor is `country` but the document key
+    # stored in MongoDB is the short `ctry` (a common Mongoid optimization,
+    # since the key is repeated in every document). `model.fields.keys` yields
+    # the STORAGE key, so the generator must emit `ctry` — the key that actually
+    # appears in the document and that masking/projection must target — never the
+    # `country` accessor alias.
+    field :ctry, as: :country, type: String
 
     belongs_to :shop, class_name: "MongoidDummy::Shop"
 
@@ -384,7 +396,9 @@ module MongoidDummy
     "products" => [
       # `tag_ids` is the HABTM array foreign key; it rides along as an ordinary
       # field even though the generator drops the HABTM relation itself.
-      { "_id" => 20, "name" => "Widget", "price" => 500, "shop_id" => 1, "tag_ids" => [90, 91] },
+      # `ctry` is the STORAGE key of the `country` aliased field — the document
+      # carries `ctry`, not `country`.
+      { "_id" => 20, "name" => "Widget", "price" => 500, "ctry" => "JP", "shop_id" => 1, "tag_ids" => [90, 91] },
     ],
     "tags" => [
       { "_id" => 90, "label" => "sale", "product_ids" => [20] },
