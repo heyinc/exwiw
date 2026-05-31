@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-31
+
 ### Changed
 
 - **Breaking:** the `dump` subcommand is renamed to `export` to match the gem name (Export What I Want). Invoke `exwiw export ...` (or omit the subcommand, which now defaults to `export`) instead of `exwiw dump ...`. There is no `dump` alias.
