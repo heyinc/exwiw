@@ -47,6 +47,12 @@
 #   by `_type`). Mongoid registers only the base in `Mongoid.models`, so the
 #   generator must discover subclasses via `descendants` and union their
 #   subclass-only fields and belongs_tos into one "events" config
+# - `Mongoid::Timestamps` (`created_at` / `updated_at`), auto-added Time/BSON
+#   Date columns the generator tracks as ordinary fields; at dump time their
+#   BSON values — like an `ObjectId` `_id` — serialize as MongoDB Extended JSON
+#   ($date / $oid). The SEED below uses plain Integer ids/Strings for
+#   readability, so the BSON Extended JSON path is exercised with synthetic
+#   BSON documents in the generator spec rather than from SEED.
 # - indexes (unique / plain / compound), which the dump path introspects from
 #   the live database via listIndexes rather than from the generated config
 # - a *polymorphic* `embedded_in` (PolymorphicAddress), which has no single

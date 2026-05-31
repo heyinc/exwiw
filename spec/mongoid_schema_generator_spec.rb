@@ -37,6 +37,14 @@ module Exwiw
         expect(by_name["users"].fields.map(&:name)).to include("_id", "name", "email", "shop_id")
       end
 
+      it "tracks the Mongoid::Timestamps fields as ordinary fields" do
+        # `include Mongoid::Timestamps` auto-declares created_at/updated_at as
+        # Time (BSON Date) fields. The generator must surface them like any other
+        # field so they are projected and (if desired) maskable; the dump path
+        # serializes their BSON Date values as MongoDB Extended JSON.
+        expect(by_name["users"].fields.map(&:name)).to include("created_at", "updated_at")
+      end
+
       it "extracts non-embedded belongs_tos as table_name/foreign_key pairs" do
         belongs_tos = by_name["orders"].belongs_tos.map { |b| [b.table_name, b.foreign_key] }
         expect(belongs_tos).to contain_exactly(["shops", "shop_id"], ["users", "user_id"])
@@ -325,6 +333,74 @@ module Exwiw
           "masked-contact-300",
           "masked-contact-301",
         ])
+      end
+    end
+
+    # End-to-end check that the *generated* configs survive realistic MongoDB
+    # documents: a real find() returns BSON values (ObjectId `_id`, Time/BSON
+    # Date `created_at`/`updated_at`), not the plain Integers/Strings the seed
+    # uses for readability. MongodbAdapter#to_bulk_insert masks first, then runs
+    # `as_extended_json` so those BSON types serialize as MongoDB Extended JSON
+    # ($oid / $date) — the form `mongoimport` round-trips. This proves the
+    # generated field set (including the Mongoid::Timestamps columns) flows
+    # through that serialization untouched and that masking templates resolve an
+    # ObjectId primary key to its hex string.
+    describe "generated configs drive MongodbAdapter BSON Extended JSON serialization" do
+      let(:logger) { Logger.new(nil) }
+      let(:connection_config) do
+        ConnectionConfig.new(
+          adapter: "mongodb",
+          database_name: "exwiw_test",
+          host: "127.0.0.1",
+          port: 27017,
+          user: nil,
+          password: nil,
+        )
+      end
+      let(:adapter) { Adapter::MongodbAdapter.new(connection_config, logger) }
+      let(:config_by_name) do
+        collections = described_class.new(models: models, output_dir: output_dir).build_collections
+        by_name = collections.each_with_object({}) { |c, h| h[c.name] = c }
+        by_name.fetch("users").fields.find { |f| f.name == "name" }.replace_with = "masked{_id}"
+        by_name.fetch("posts").fields.find { |f| f.name == "title" }.replace_with = "masked-title-{_id}"
+        by_name
+      end
+
+      it "serializes BSON ObjectId/Date as Extended JSON while masking against the ObjectId _id" do
+        users_config = config_by_name.fetch("users")
+        dump_target = Exwiw::DumpTarget.new(table_name: "users", ids: [])
+        adapter.build_query(users_config, dump_target, config_by_name)
+
+        user_oid = BSON::ObjectId.from_string("5f5e7c1e1c9d440000000001")
+        post_oid = BSON::ObjectId.from_string("5f5e7c1e1c9d440000000002")
+        # The shape a live `find` returns: BSON types, not the seed's Integers.
+        doc = {
+          "_id" => user_oid,
+          "name" => "Alice",
+          "email" => "alice@example.com",
+          "shop_id" => 1,
+          "created_at" => Time.utc(2026, 5, 31, 12, 0, 0),
+          "updated_at" => Time.utc(2026, 5, 31, 12, 0, 0),
+          "posts" => [
+            { "_id" => post_oid, "title" => "Hello", "created_at" => Time.utc(2026, 1, 1, 0, 0, 0) },
+          ],
+        }
+
+        masked = JSON.parse(adapter.to_bulk_insert([doc], users_config))
+
+        # ObjectId _id serialized as Extended JSON, and the {_id} template
+        # resolved to its hex string before serialization.
+        expect(masked["_id"]).to eq("$oid" => "5f5e7c1e1c9d440000000001")
+        expect(masked["name"]).to eq("masked5f5e7c1e1c9d440000000001")
+        # Mongoid::Timestamps Time values serialized as Extended JSON $date.
+        expect(masked["created_at"]).to eq("$date" => "2026-05-31T12:00:00Z")
+        expect(masked["updated_at"]).to eq("$date" => "2026-05-31T12:00:00Z")
+
+        # Extended JSON conversion recurses into the masked embedded posts array.
+        post = masked.fetch("posts").first
+        expect(post["_id"]).to eq("$oid" => "5f5e7c1e1c9d440000000002")
+        expect(post["title"]).to eq("masked-title-5f5e7c1e1c9d440000000002")
+        expect(post["created_at"]).to eq("$date" => "2026-01-01T00:00:00Z")
       end
     end
 
