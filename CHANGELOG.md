@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-05-31
+
 ### Added
 
 - New `--ids-field=FIELD` CLI option matches `--ids` against an arbitrary field on the target collection instead of its primary key (e.g. `--target-collection=users --ids=a@example.com --ids-field=email`). Only the target collection's filter changes — downstream foreign-key propagation still keys off the primary key. Unlike the primary-key path, the supplied ids are **not** type-coerced (a custom field's stored type is unknown, so values are passed through as-is). Currently **mongodb-only**: the SQL adapters (mysql2/postgresql/sqlite3) reject the flag at validation time, and threading `ids_field` through `QueryAstBuilder` for them is left as a TODO.
