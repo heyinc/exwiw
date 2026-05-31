@@ -201,9 +201,18 @@ module Exwiw
           else
             "#{key} IN (#{values.join(', ')})"
           end
+        elsif where_clause.operator == :in_subquery
+          "#{key} IN (#{compile_subquery(where_clause.value)})"
         else
           raise "Unsupported operator: #{where_clause.operator}"
         end
+      end
+
+      private def compile_subquery(subquery)
+        inner_values = subquery.where_values.map { |v| escape_value(v) }
+        "SELECT #{subquery.table_name}.#{subquery.select_column} " \
+          "FROM #{subquery.table_name} " \
+          "WHERE #{subquery.table_name}.#{subquery.where_column} IN (#{inner_values.join(', ')})"
       end
 
       private def escape_value(value)

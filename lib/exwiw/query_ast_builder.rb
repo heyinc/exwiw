@@ -73,11 +73,7 @@ module Exwiw
         end
         relation_to_dump_target = to_table.belongs_to(dump_target.table_name)
         if relation_to_dump_target
-          join_clause.where_clauses.push QueryAst::WhereClause.new(
-            column_name: relation_to_dump_target.foreign_key,
-            operator: :eq,
-            value: dump_target.ids
-          )
+          join_clause.where_clauses.push dump_target_fk_clause(relation_to_dump_target.foreign_key)
 
           # 中間テーブルが dump target へ polymorphic belongs_to している場合は、
           # 型カラム (foreign_type) も join 条件に追加する。型カラムは to_table
@@ -107,12 +103,12 @@ module Exwiw
       clauses = []
 
       if table.name == dump_target.table_name
-        # TODO: honor dump_target.ids_field here so `--ids` can match a non
-        # primary-key column on the target table (currently mongodb-only; the
-        # CLI rejects --ids-field for the sql adapters). When implemented, use
-        # `dump_target.ids_field || table.primary_key` as the column_name.
+        # `--ids-column` (folded into dump_target.ids_field by the CLI) lets
+        # `--ids` match a non primary-key column on the target table; otherwise
+        # fall back to the primary key. Only the target table's filter changes —
+        # downstream foreign-key propagation still keys off the primary key.
         clauses.push Exwiw::QueryAst::WhereClause.new(
-          column_name: table.primary_key,
+          column_name: dump_target.ids_field || table.primary_key,
           operator: :eq,
           value: dump_target.ids
         )
@@ -123,11 +119,7 @@ module Exwiw
       belongs_to = table.belongs_to(dump_target.table_name)
       return clauses if belongs_to.nil?
 
-      clauses.push Exwiw::QueryAst::WhereClause.new(
-        column_name: belongs_to.foreign_key,
-        operator: :eq,
-        value: dump_target.ids
-      )
+      clauses.push dump_target_fk_clause(belongs_to.foreign_key)
 
       # polymorphic belongs_to の場合は外部キーだけでは型を区別できないため
       # (例: reviewable_id=1 が Product なのか別モデルなのか判別できない)、
@@ -145,6 +137,36 @@ module Exwiw
       end
 
       clauses
+    end
+
+    # Builds the WHERE clause that constrains a `foreign_key` pointing at the
+    # dump target. Normally `--ids` are the target's primary keys, so a plain
+    # `foreign_key IN (ids)` suffices. When `--ids-column`/`--ids-field` is set
+    # (dump_target.ids_field), `--ids` match a non primary-key column instead,
+    # so the foreign key must be resolved through the target table:
+    # `foreign_key IN (SELECT pk FROM target WHERE ids_field IN (ids))`.
+    # This keeps related-table extraction correct regardless of whether the
+    # relation is direct, indirect, or polymorphic.
+    private def dump_target_fk_clause(foreign_key)
+      unless dump_target.ids_field
+        return Exwiw::QueryAst::WhereClause.new(
+          column_name: foreign_key,
+          operator: :eq,
+          value: dump_target.ids
+        )
+      end
+
+      target = table_by_name.fetch(dump_target.table_name)
+      Exwiw::QueryAst::WhereClause.new(
+        column_name: foreign_key,
+        operator: :in_subquery,
+        value: Exwiw::QueryAst::Subquery.new(
+          table_name: target.name,
+          select_column: target.primary_key,
+          where_column: dump_target.ids_field,
+          where_values: dump_target.ids
+        )
+      )
     end
 
     private def find_path_to_dump_target(table, table_by_name, dump_target)

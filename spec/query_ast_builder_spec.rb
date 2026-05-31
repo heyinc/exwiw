@@ -55,6 +55,36 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
     end
 
+    context 'when dump_target.ids_field overrides the target table filter column' do
+      let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'shops', ids: ['acme'], ids_field: 'name') }
+      let(:table) { shops_table(:sqlite3) }
+
+      it 'filters the target table on ids_field instead of the primary key' do
+        expect(built_query_ast.where_clauses.map(&:to_h)).to eq([
+          { column_name: 'name', operator: :eq, value: ['acme'] },
+        ])
+      end
+
+      context 'for a table with a foreign key to the dump target' do
+        let(:table) { users_table(:sqlite3) }
+
+        it 'resolves the foreign key through the target via a subquery' do
+          expect(built_query_ast.where_clauses.map(&:to_h)).to eq([
+            {
+              column_name: 'shop_id',
+              operator: :in_subquery,
+              value: {
+                table_name: 'shops',
+                select_column: 'id',
+                where_column: 'name',
+                where_values: ['acme'],
+              },
+            },
+          ])
+        end
+      end
+    end
+
     context 'when the table has foreign key to dump target table' do
       let(:table) { users_table(:sqlite3) }
 
