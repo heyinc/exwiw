@@ -37,7 +37,9 @@ module Exwiw
       @database_adapter = nil
       @database_name = nil
       @target_table_name = nil
+      @target_collection_name = nil
       @ids = []
+      @ids_field = nil
       @output_format = nil
       @insert_only = nil
       @after_insert_hook_path = nil
@@ -66,6 +68,7 @@ module Exwiw
       dump_target = DumpTarget.new(
         table_name: @target_table_name,
         ids: @ids,
+        ids_field: @ids_field,
       )
 
       logger = build_logger
@@ -95,6 +98,8 @@ module Exwiw
     end
 
     private def validate_options!
+      resolve_target_collection_alias!
+
       if @subcommand == "explain"
         validate_explain_only!
       end
@@ -167,6 +172,23 @@ module Exwiw
         exit 1
       end
 
+      if @ids_field
+        # --ids-field overrides the field --ids filters against on the target
+        # table; it is meaningless without a target table to constrain.
+        if !@target_table_name
+          $stderr.puts "--target-table is required when --ids-field is specified"
+          exit 1
+        end
+
+        # TODO: support --ids-field for the sql adapters (mysql2/postgresql/
+        # sqlite3) by threading dump_target.ids_field through QueryAstBuilder's
+        # WHERE clause on the target table. For now it is mongodb-only.
+        if @database_adapter != "mongodb"
+          $stderr.puts "--ids-field is currently only supported by the mongodb adapter"
+          exit 1
+        end
+      end
+
       if @after_insert_hook_path
         unless File.file?(@after_insert_hook_path)
           $stderr.puts "--after-insert-hook file not found: #{@after_insert_hook_path}"
@@ -179,6 +201,26 @@ module Exwiw
           exit 1
         end
       end
+    end
+
+    # `--target-collection` is a mongodb-only alias of `--target-table`. Fold it
+    # into @target_table_name (the single field the rest of the CLI/runner uses)
+    # after rejecting the misuses: combining it with --target-table, or using it
+    # with a non-mongodb adapter.
+    private def resolve_target_collection_alias!
+      return if @target_collection_name.nil?
+
+      if @target_table_name
+        $stderr.puts "Specify only one of --target-table and --target-collection"
+        exit 1
+      end
+
+      if @database_adapter != "mongodb"
+        $stderr.puts "--target-collection is only supported by the mongodb adapter (use --target-table)"
+        exit 1
+      end
+
+      @target_table_name = @target_collection_name
     end
 
     private def validate_explain_only!
@@ -211,6 +253,7 @@ module Exwiw
         database_name: @database_name,
         target_table: @target_table_name,
         ids: @ids.dup.freeze,
+        ids_field: @ids_field,
         output_format: @output_format,
         insert_only: @insert_only,
         log_level: @log_level,
@@ -261,7 +304,9 @@ module Exwiw
         opts.on("-a", "--adapter=ADAPTER", "Database adapter") { |v| @database_adapter = v }
         opts.on("--database=DATABASE", "Target database name") { |v| @database_name = v }
         opts.on("--target-table=[TABLE]", "Target table for extraction. If omitted, dump all tables.") { |v| @target_table_name = v }
+        opts.on("--target-collection=[COLLECTION]", "Alias of --target-table for the mongodb adapter.") { |v| @target_collection_name = v }
         opts.on("--ids=[IDS]", "Comma-separated list of identifiers. Required when --target-table is given.") { |v| @ids = v.split(',') }
+        opts.on("--ids-field=[FIELD]", "Field on the target table that --ids is matched against. Defaults to the primary key. (mongodb adapter only)") { |v| @ids_field = v }
         opts.on("--output-format=[FORMAT]", "Output format: insert (default) or copy (PostgreSQL only, dump subcommand only)") { |v| @output_format = v }
         opts.on("--insert-only", "Do not generate DELETE SQL files (dump subcommand only)") { @insert_only = true }
         opts.on("--after-insert-hook=PATH", "Path to a .rb or .sh post-processing hook executed after all insert/delete files are written (dump subcommand only)") do |v|

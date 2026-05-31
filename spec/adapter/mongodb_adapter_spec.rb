@@ -72,6 +72,31 @@ module Exwiw
           end
         end
 
+        context "when dump_target.ids_field overrides the filter field" do
+          it "filters the target collection by the given field instead of the primary key" do
+            # `--ids-field=email` matches --ids against `email`, not `_id`. The
+            # primary_key is still reported on the query (it drives downstream
+            # foreign-key propagation), but the WHERE filter keys off the
+            # overridden field.
+            users = config_by_name.fetch("users")
+            dump_target = Exwiw::DumpTarget.new(table_name: "users", ids: ["a@example.com"], ids_field: "email")
+            query = adapter.build_query(users, dump_target, config_by_name)
+            expect(query.primary_key).to eq("_id")
+            expect(query.filter).to eq("email" => { "$in" => ["a@example.com"] })
+          end
+
+          it "does not coerce the textual --ids against a custom field (unknown stored type)" do
+            # Unlike the primary-key path, a custom field's stored type is
+            # unknown, so the textual --ids are left as Strings rather than
+            # guessed into Integer/ObjectId (which could break matching, e.g. a
+            # zero-padded code or a hex string stored as a String).
+            users = config_by_name.fetch("users")
+            dump_target = Exwiw::DumpTarget.new(table_name: "users", ids: ["7", "5f5e7c1e1c9d440000000001"], ids_field: "legacy_id")
+            query = adapter.build_query(users, dump_target, config_by_name)
+            expect(query.filter).to eq("legacy_id" => { "$in" => ["7", "5f5e7c1e1c9d440000000001"] })
+          end
+        end
+
         context "coercing the textual --ids to the stored _id type" do
           it "coerces a 24-char hex --ids into a BSON::ObjectId so it matches an ObjectId _id" do
             # Mongoid's default `_id` is a BSON::ObjectId. `--ids` arrives as a

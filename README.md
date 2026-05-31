@@ -411,6 +411,8 @@ The MongoDB adapter is experimental. To use it:
 - Set `--adapter=mongodb`. `--user` / `DATABASE_PASSWORD` are optional and only needed when your MongoDB requires authentication.
 - The MongoDB adapter consumes a separate config type, `MongodbCollectionConfig`, with MongoDB-native naming. Use `fields` (instead of the SQL adapters' `columns`), and set `"primary_key": "_id"`. Foreign keys (`shop_id`, `user_id`, ...) stay as ordinary fields.
 - `--ids` values are coerced to the type actually stored in `_id` before filtering: integer-looking ids become `Integer`, 24-char hex ids become `BSON::ObjectId` (Mongoid's default `_id` type — a plain String would never match an ObjectId), and any other string is left as-is.
+- `--target-collection=COLLECTION` is a mongodb-only alias of `--target-table` (use whichever reads better for MongoDB). Specifying both, or using `--target-collection` with a non-mongodb adapter, is an error.
+- `--ids-field=FIELD` matches `--ids` against `FIELD` on the target collection instead of its primary key (e.g. `--target-collection=users --ids=a@example.com --ids-field=email`). Downstream foreign-key propagation still keys off the primary key, so only the target collection's filter changes. Unlike the primary-key path, the supplied ids are **not** type-coerced (the stored type of a custom field is unknown), so pass values matching the field's actual type. This flag is currently **mongodb-only** (the SQL adapters reject it; supporting them is a TODO).
 - Output is JSON Lines (`insert-{idx}-{collection}.jsonl`) using MongoDB Extended JSON (relaxed mode). Import with `mongoimport`:
   ```bash
   mongoimport --db app_dev --collection users --file dump/insert-002-users.jsonl

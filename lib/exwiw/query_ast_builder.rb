@@ -107,6 +107,10 @@ module Exwiw
       clauses = []
 
       if table.name == dump_target.table_name
+        # TODO: honor dump_target.ids_field here so `--ids` can match a non
+        # primary-key column on the target table (currently mongodb-only; the
+        # CLI rejects --ids-field for the sql adapters). When implemented, use
+        # `dump_target.ids_field || table.primary_key` as the column_name.
         clauses.push Exwiw::QueryAst::WhereClause.new(
           column_name: table.primary_key,
           operator: :eq,

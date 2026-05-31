@@ -47,7 +47,22 @@ module Exwiw
 
         filter =
           if config.name == dump_target.table_name
-            { config.primary_key => { "$in" => coerce_ids(dump_target.ids) } }
+            # `--ids-field` may override which field --ids is matched against;
+            # otherwise fall back to the primary key. Note this only changes the
+            # WHERE filter on the target collection — downstream foreign-key
+            # propagation still keys off `primary_key` (see #execute, which
+            # stashes doc[primary_key] into @state).
+            #
+            # Type coercion is only applied to the primary key (`_id`), whose
+            # stored type we know (Mongoid's default ObjectId). For a custom
+            # `ids_field` the stored type is unknown, so the textual --ids are
+            # left as Strings rather than guessed at — the caller passes values
+            # matching the field's actual type.
+            if dump_target.ids_field
+              { dump_target.ids_field => { "$in" => dump_target.ids } }
+            else
+              { config.primary_key => { "$in" => coerce_ids(dump_target.ids) } }
+            end
           else
             constrained = config.belongs_tos.select do |relation|
               @state.key?(relation.table_name) && !@state[relation.table_name].empty?
@@ -161,6 +176,9 @@ module Exwiw
       # - 24-char hex ids -> BSON::ObjectId (Mongoid's default `_id` type; a
       #   plain String would never match an ObjectId in a `$in` filter)
       # - anything else (e.g. a String/UUID `_id`) is left as-is
+      #
+      # Only used for the primary-key filter; a custom `--ids-field` skips this
+      # because its stored type is unknown (see build_query).
       private def coerce_ids(ids)
         Array(ids).map { |id| coerce_id(id) }
       end
