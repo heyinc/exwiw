@@ -24,7 +24,8 @@
       "name": "price"
     },
     {
-      "name": "ctry"
+      "name": "ctry",
+      "mongoid_field_name": "country"
     },
     {
       "name": "shop_id"

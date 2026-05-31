@@ -70,11 +70,13 @@
 #   `embedded_in` config; the generator must raise a clear error rather than
 #   crash. It is kept out of `MODELS`/`SEED` and exercised in isolation.
 # - a *self-referential / cyclic* embedding via `recursively_embeds_many`
-#   (TreeNode), which makes a collection BOTH top-level AND embedded inside
-#   documents of its own type. exwiw represents a collection as either top-level
-#   or embedded, not both, so this is UNREPRESENTABLE: the generator must raise a
-#   clear error rather than emit an `embedded_in` config that would silently make
-#   the collection undumpable. Also kept out of `MODELS`/`SEED`.
+#   (TreeNode) and its embeds_one counterpart `recursively_embeds_one`
+#   (Category), which make a collection BOTH top-level AND embedded inside
+#   documents of its own type (an array for TreeNode, a Hash for Category).
+#   exwiw represents a collection as either top-level or embedded, not both, so
+#   this is UNREPRESENTABLE: the generator must raise a clear error rather than
+#   emit an `embedded_in` config that would silently make the collection
+#   undumpable. Both are kept out of `MODELS`/`SEED`.
 #
 # Everything lives under the `MongoidDummy` namespace (with explicit
 # `store_in collection:` and `class_name:`) so these models can coexist in the
@@ -386,6 +388,23 @@ module MongoidDummy
     field :name, type: String
 
     recursively_embeds_many
+  end
+
+  # The `embeds_one` counterpart of `TreeNode`. `recursively_embeds_one` declares
+  # a `cyclic: true` pair — `embeds_one :child_category` and
+  # `embedded_in :parent_category`, both pointing at `Category` — so a Category
+  # is BOTH a top-level "categories" document AND embedded (as a single Hash
+  # subdocument) inside documents of its own type. This is the same
+  # unrepresentable top-level-AND-embedded shape as `TreeNode`, only via a Hash
+  # rather than an array, so the generator must raise the same clear error. Like
+  # `TreeNode` it is kept OUT of `MODELS`/`SEED` and exercised in isolation.
+  class Category
+    include Mongoid::Document
+    store_in collection: "categories"
+
+    field :name, type: String
+
+    recursively_embeds_one
   end
 
   # All concrete document models in this dummy app, in a deterministic order.

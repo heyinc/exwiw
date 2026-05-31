@@ -120,12 +120,35 @@ module Exwiw
     private def aggregate_fields(models)
       seen = {}
       models.each_with_object([]) do |model, fields|
+        accessor_by_storage = aliased_field_accessors(model)
         model.fields.keys.each do |name|
           next if seen[name]
 
           seen[name] = true
-          fields << { name: name }
+          field = { name: name }
+          # When `field :ctry, as: :country` renamed the storage key, surface the
+          # Ruby accessor so the short key is not cryptic in the config.
+          accessor = accessor_by_storage[name]
+          field[:mongoid_field_name] = accessor if accessor
+          fields << field
         end
+      end
+    end
+
+    # Maps a stored document key -> its Mongoid Ruby accessor, but ONLY for
+    # genuine `field ..., as:` renames. `Model.aliased_fields` also contains the
+    # built-in `id => _id` and one entry per association (e.g. `shop => shop_id`,
+    # `profile => user_profile`); those are not field renames, so exclude any
+    # accessor that names a relation, the `_id` storage key, or a no-op alias.
+    private def aliased_field_accessors(model)
+      relation_names = model.relations.keys
+      model.aliased_fields.each_with_object({}) do |(accessor, storage), acc|
+        next if accessor == storage
+        next if storage == "_id"
+        next if relation_names.include?(accessor)
+        next unless model.fields.key?(storage)
+
+        acc[storage] = accessor
       end
     end
 
@@ -194,7 +217,8 @@ module Exwiw
         raise ArgumentError,
               "MongoidSchemaGenerator: '#{model.name}' (collection '#{model.collection_name}') " \
               "declares a self-referential (cyclic) `embedded_in :#{assoc.name}` that embeds the " \
-              "collection inside documents of its own type (e.g. `recursively_embeds_many`). " \
+              "collection inside documents of its own type (e.g. `recursively_embeds_many` / " \
+              "`recursively_embeds_one`). " \
               "exwiw represents a collection as either top-level or embedded, not both, so this " \
               "cannot be expressed as an exwiw `embedded_in` config. Define the collection's config " \
               "by hand."

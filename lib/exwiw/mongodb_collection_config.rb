@@ -56,8 +56,15 @@ module Exwiw
         merged.skip = skip
         merged.embedded_in = passed.embedded_in
 
+        # Take each field from the freshly generated config (so structural facts
+        # like `mongoid_field_name` track the model) but carry over the user's
+        # hand-edited `replace_with` masking when the field still exists.
         receiver_field_by_name = fields.each_with_object({}) { |f, h| h[f.name] = f }
-        merged.fields = passed.fields.map { |pf| receiver_field_by_name.fetch(pf.name, pf) }
+        merged.fields = passed.fields.map do |pf|
+          receiver = receiver_field_by_name[pf.name]
+          pf.replace_with = receiver.replace_with if receiver&.replace_with
+          pf
+        end
       end
     end
 

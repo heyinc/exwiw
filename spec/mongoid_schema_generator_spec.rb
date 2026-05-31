@@ -111,6 +111,23 @@ module Exwiw
         expect(field_names).not_to include("country")
       end
 
+      it "annotates an aliased field with its Mongoid accessor via mongoid_field_name" do
+        # The storage key (`ctry`) stays the `name`, but the cryptic short key is
+        # explained by carrying the Ruby accessor (`country`) as
+        # `mongoid_field_name`.
+        ctry = by_name["products"].fields.find { |f| f.name == "ctry" }
+        expect(ctry.mongoid_field_name).to eq("country")
+      end
+
+      it "does not annotate non-aliased fields or belongs_to foreign keys" do
+        # Only genuine `field ..., as:` renames get mongoid_field_name. A plain
+        # field (`price`) and a belongs_to FK (`shop_id`, whose `shop => shop_id`
+        # entry lives in aliased_fields as an association alias) must not.
+        fields = by_name["products"].fields.each_with_object({}) { |f, h| h[f.name] = f }
+        expect(fields["price"].mongoid_field_name).to be_nil
+        expect(fields["shop_id"].mongoid_field_name).to be_nil
+      end
+
       it "still tracks the HABTM array foreign-key columns as ordinary fields" do
         # The HABTM relation is dropped, but Mongoid auto-declares the `*_ids`
         # array fields, so the generator surfaces them as ordinary (maskable)
@@ -246,6 +263,18 @@ module Exwiw
           ArgumentError, /self-referential \(cyclic\) `embedded_in :parent_tree_node`/,
         )
       end
+
+      it "raises the same clear error for recursively_embeds_one (Hash self-embedding)" do
+        # Category uses `recursively_embeds_one`, the embeds_one counterpart of
+        # TreeNode: BOTH a top-level "categories" document AND embedded as a Hash
+        # inside documents of its own type. Same unrepresentable top-level-AND-
+        # embedded shape, so the generator must reject it just like the array
+        # (`recursively_embeds_many`) case.
+        gen = described_class.new(models: [MongoidDummy::Category], output_dir: output_dir)
+        expect { gen.build_collections }.to raise_error(
+          ArgumentError, /self-referential \(cyclic\) `embedded_in :parent_category`/,
+        )
+      end
     end
 
     describe "#generate!" do
@@ -370,6 +399,9 @@ module Exwiw
         expect(field_names).not_to include("legacy_removed_field")
         # ...and fields the model declares are present.
         expect(field_names).to include("price", "ctry", "shop_id")
+        # ...with the freshly-derived mongoid_field_name re-applied on regen
+        # (the hand-edited file above carried none).
+        expect(result["fields"].find { |f| f["name"] == "ctry" }["mongoid_field_name"]).to eq("country")
       end
 
       # Full-output snapshot of every generated config for the dummy app. The
