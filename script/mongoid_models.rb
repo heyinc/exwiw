@@ -23,6 +23,10 @@
 # - a custom `store_as:` on an embedded relation (Profile is stored under the
 #   document key "user_profile", not "profile"), which the generator must use
 #   for `embedded_in.path` instead of the relation name
+# - an embedded array nested *inside* an embeds_one Hash intermediate
+#   (Profile embeds_many Contacts -> users.user_profile.contacts), proving the
+#   embedded chain recurses across a Hash boundary into an array, not just
+#   array-in-array (posts.comments)
 # - indexes (unique / plain / compound), which the dump path introspects from
 #   the live database via listIndexes rather than from the generated config
 #
@@ -100,6 +104,22 @@ module MongoidDummy
     field :bio, type: String
 
     embedded_in :user, class_name: "MongoidDummy::User"
+
+    # Array of subdocuments nested *inside* the embeds_one Hash intermediate
+    # (users.user_profile.contacts). This exercises masking that crosses a Hash
+    # boundary (the embeds_one profile) into an embedded array — distinct from
+    # the array-in-array (posts.comments) and Hash-leaf (user_profile) cases.
+    embeds_many :contacts, class_name: "MongoidDummy::Contact"
+  end
+
+  class Contact
+    include Mongoid::Document
+    store_in collection: "contacts"
+
+    field :phone, type: String
+    field :label, type: String
+
+    embedded_in :profile, class_name: "MongoidDummy::Profile"
   end
 
   class Product
@@ -174,7 +194,7 @@ module MongoidDummy
 
   # All concrete document models in this dummy app, in a deterministic order.
   MODELS = [
-    Shop, User, Post, Comment, Profile, Product, Order, OrderItem, Transaction, SystemAnnouncement,
+    Shop, User, Post, Comment, Profile, Contact, Product, Order, OrderItem, Transaction, SystemAnnouncement,
   ].freeze
 
   # Representative seed documents, keyed by collection name. These mirror the
@@ -186,7 +206,8 @@ module MongoidDummy
   #   (`shop_id`, `user_id`, ...) as ordinary fields
   # - `users` documents embed a `posts` array (embeds_many), each post embeds a
   #   `comments` array (nested embeds_many), and a single `user_profile` Hash
-  #   (embeds_one with a custom `store_as`)
+  #   (embeds_one with a custom `store_as`) that itself embeds a `contacts`
+  #   array (an array nested inside the Hash intermediate)
   #
   # The embedded subdocuments live *only* inside their parent here (there is no
   # standalone "posts"/"comments"/"profiles" collection), matching how exwiw
@@ -212,7 +233,15 @@ module MongoidDummy
             ],
           },
         ],
-        "user_profile" => { "_id" => 200, "phone" => "090-0000-0000", "bio" => "hi there" },
+        "user_profile" => {
+          "_id" => 200,
+          "phone" => "090-0000-0000",
+          "bio" => "hi there",
+          "contacts" => [
+            { "_id" => 300, "phone" => "080-1111-1111", "label" => "home" },
+            { "_id" => 301, "phone" => "070-2222-2222", "label" => "work" },
+          ],
+        },
       },
     ],
     "products" => [

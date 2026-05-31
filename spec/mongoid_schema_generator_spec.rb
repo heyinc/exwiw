@@ -24,7 +24,7 @@ module Exwiw
 
       it "emits one config per model keyed by collection name" do
         expect(by_name.keys).to contain_exactly(
-          "shops", "users", "posts", "comments", "profiles", "products",
+          "shops", "users", "posts", "comments", "profiles", "contacts", "products",
           "orders", "order_items", "transactions", "system_announcements",
         )
       end
@@ -92,6 +92,19 @@ module Exwiw
         expect(profiles.embedded_in.path).to eq("user_profile")
         expect(profiles.belongs_tos).to be_empty
       end
+
+      it "points an array embedded inside a Hash intermediate at its immediate parent" do
+        contacts = by_name["contacts"]
+        # Contacts (embeds_many) live inside the embeds_one `user_profile` Hash,
+        # so the chain is users -> user_profile (Hash) -> contacts (array). The
+        # config names its immediate parent collection ("profiles") and the
+        # relative path ("contacts"), regardless of the parent being embedded
+        # itself; MongodbAdapter resolves the full chain by recursing.
+        expect(contacts.embedded?).to eq(true)
+        expect(contacts.embedded_in.collection_name).to eq("profiles")
+        expect(contacts.embedded_in.path).to eq("contacts")
+        expect(contacts.belongs_tos).to be_empty
+      end
     end
 
     describe "#generate!" do
@@ -99,8 +112,8 @@ module Exwiw
         described_class.new(models: models, output_dir: output_dir).generate!
 
         expect(Dir[File.join(output_dir, "*.json")].map { |p| File.basename(p) }).to contain_exactly(
-          "shops.json", "users.json", "posts.json", "comments.json", "profiles.json", "products.json",
-          "orders.json", "order_items.json", "transactions.json", "system_announcements.json",
+          "shops.json", "users.json", "posts.json", "comments.json", "profiles.json", "contacts.json",
+          "products.json", "orders.json", "order_items.json", "transactions.json", "system_announcements.json",
         )
       end
 
@@ -174,6 +187,7 @@ module Exwiw
         set_replace_with(by_name.fetch("posts"), "title", "masked-title-{_id}")
         set_replace_with(by_name.fetch("comments"), "body", "masked-comment-{_id}")
         set_replace_with(by_name.fetch("profiles"), "phone", "masked-phone")
+        set_replace_with(by_name.fetch("contacts"), "phone", "masked-contact-{_id}")
 
         by_name
       end
@@ -204,7 +218,17 @@ module Exwiw
         ])
 
         # embeds_one with a custom store_as: masked at the "user_profile" key.
-        expect(masked.fetch("user_profile")["phone"]).to eq("masked-phone")
+        profile = masked.fetch("user_profile")
+        expect(profile["phone"]).to eq("masked-phone")
+
+        # Array nested inside the embeds_one Hash intermediate: contacts live at
+        # users.user_profile.contacts and are only reachable because the Contact
+        # config is embedded_in "profiles" and the adapter recurses across the
+        # Hash boundary into the array.
+        expect(profile.fetch("contacts").map { |c| c["phone"] }).to eq([
+          "masked-contact-300",
+          "masked-contact-301",
+        ])
       end
     end
   end
