@@ -24,7 +24,7 @@ module Exwiw
 
       it "emits one config per collection keyed by collection name" do
         expect(by_name.keys).to contain_exactly(
-          "shops", "users", "posts", "comments", "profiles", "contacts", "products", "tags",
+          "shops", "users", "posts", "comments", "profiles", "contacts", "addresses", "products", "tags",
           "orders", "order_items", "transactions", "events", "reviews", "system_announcements",
         )
       end
@@ -171,6 +171,20 @@ module Exwiw
         expect(contacts.belongs_tos).to be_empty
       end
 
+      it "points a Hash embedded inside a Hash intermediate at its immediate parent" do
+        addresses = by_name["addresses"]
+        # Address (embeds_one) lives inside the embeds_one `user_profile` Hash,
+        # so the chain is users -> user_profile (Hash) -> address (Hash). Like
+        # the array-in-Hash contacts case, the config names its immediate parent
+        # collection ("profiles") and the relative path ("address"); the only
+        # difference is the leaf is a single Hash, not an array. MongodbAdapter
+        # resolves the full chain by recursing through both Hash boundaries.
+        expect(addresses.embedded?).to eq(true)
+        expect(addresses.embedded_in.collection_name).to eq("profiles")
+        expect(addresses.embedded_in.path).to eq("address")
+        expect(addresses.belongs_tos).to be_empty
+      end
+
       it "unions fields and belongs_tos of inheritance subclasses sharing a collection" do
         # Event / PurchaseEvent / LoginEvent all store into "events". The single
         # config must aggregate the base's fields plus each subclass's own
@@ -239,8 +253,8 @@ module Exwiw
 
         expect(Dir[File.join(output_dir, "*.json")].map { |p| File.basename(p) }).to contain_exactly(
           "shops.json", "users.json", "posts.json", "comments.json", "profiles.json", "contacts.json",
-          "products.json", "tags.json", "orders.json", "order_items.json", "transactions.json", "events.json",
-          "reviews.json", "system_announcements.json",
+          "addresses.json", "products.json", "tags.json", "orders.json", "order_items.json",
+          "transactions.json", "events.json", "reviews.json", "system_announcements.json",
         )
       end
 
@@ -315,6 +329,7 @@ module Exwiw
         set_replace_with(by_name.fetch("comments"), "body", "masked-comment-{_id}")
         set_replace_with(by_name.fetch("profiles"), "phone", "masked-phone")
         set_replace_with(by_name.fetch("contacts"), "phone", "masked-contact-{_id}")
+        set_replace_with(by_name.fetch("addresses"), "city", "masked-city-{_id}")
         # Mask the aliased field by its STORAGE key (`ctry`), the only key the
         # generator emits and the only key present in the document.
         set_replace_with(by_name.fetch("products"), "ctry", "XX")
@@ -359,6 +374,13 @@ module Exwiw
           "masked-contact-300",
           "masked-contact-301",
         ])
+
+        # Hash nested inside the embeds_one Hash intermediate: address lives at
+        # users.user_profile.address and is only reachable because the Address
+        # config is embedded_in "profiles" and the adapter recurses across the
+        # second Hash boundary (Hash-in-Hash, vs the array-in-Hash contacts).
+        address = profile.fetch("address")
+        expect(address["city"]).to eq("masked-city-400")
       end
 
       it "masks an aliased field by its stored document key, not the accessor" do

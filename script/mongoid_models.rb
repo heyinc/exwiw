@@ -46,6 +46,12 @@
 #   (Profile embeds_many Contacts -> users.user_profile.contacts), proving the
 #   embedded chain recurses across a Hash boundary into an array, not just
 #   array-in-array (posts.comments)
+# - a single embedded subdocument (embeds_one) nested *inside* an embeds_one Hash
+#   intermediate (Profile embeds_one Address -> users.user_profile.address): the
+#   Hash-in-Hash case, proving masking recurses through two consecutive Hash
+#   boundaries (not just Hash-then-array like contacts). Together with the cases
+#   above this completes the embedding-shape matrix: array-in-array,
+#   array-in-Hash, Hash-leaf, and Hash-in-Hash
 # - a model inheritance hierarchy whose subclasses share the base's collection
 #   (Event / PurchaseEvent / LoginEvent all stored in "events", discriminated
 #   by `_type`). Mongoid registers only the base in `Mongoid.models`, so the
@@ -159,6 +165,13 @@ module MongoidDummy
     # boundary (the embeds_one profile) into an embedded array — distinct from
     # the array-in-array (posts.comments) and Hash-leaf (user_profile) cases.
     embeds_many :contacts, class_name: "MongoidDummy::Contact"
+
+    # A *single* subdocument (embeds_one) nested inside the embeds_one Hash
+    # intermediate (users.user_profile.address). This is the Hash-in-Hash case:
+    # the chain is users -> user_profile (Hash) -> address (Hash leaf), distinct
+    # from the array-in-Hash (contacts) case above. It proves masking recurses
+    # through two consecutive Hash boundaries, not just into an array.
+    embeds_one :address, class_name: "MongoidDummy::Address"
   end
 
   class Contact
@@ -167,6 +180,21 @@ module MongoidDummy
 
     field :phone, type: String
     field :label, type: String
+
+    embedded_in :profile, class_name: "MongoidDummy::Profile"
+  end
+
+  # The Hash-in-Hash leaf: a single embedded subdocument (embeds_one) inside the
+  # embeds_one `user_profile` Hash, so it lives at users.user_profile.address.
+  # The generator must name its immediate parent collection ("profiles") and the
+  # relative path ("address"); MongodbAdapter resolves the full chain by
+  # recursing across the two Hash boundaries.
+  class Address
+    include Mongoid::Document
+    store_in collection: "addresses"
+
+    field :city, type: String
+    field :zip, type: String
 
     embedded_in :profile, class_name: "MongoidDummy::Profile"
   end
@@ -368,7 +396,7 @@ module MongoidDummy
   # `LoginEvent` subclasses — the generator must discover them via
   # `descendants`.
   MODELS = [
-    Shop, User, Post, Comment, Profile, Contact, Product, Tag, Order, OrderItem, Transaction, Event,
+    Shop, User, Post, Comment, Profile, Contact, Address, Product, Tag, Order, OrderItem, Transaction, Event,
     Review, SystemAnnouncement,
   ].freeze
 
@@ -382,7 +410,8 @@ module MongoidDummy
   # - `users` documents embed a `posts` array (embeds_many), each post embeds a
   #   `comments` array (nested embeds_many), and a single `user_profile` Hash
   #   (embeds_one with a custom `store_as`) that itself embeds a `contacts`
-  #   array (an array nested inside the Hash intermediate)
+  #   array (an array nested inside the Hash intermediate) and a single `address`
+  #   Hash (a Hash nested inside the Hash intermediate)
   #
   # The embedded subdocuments live *only* inside their parent here (there is no
   # standalone "posts"/"comments"/"profiles" collection), matching how exwiw
@@ -419,6 +448,9 @@ module MongoidDummy
             { "_id" => 300, "phone" => "080-1111-1111", "label" => "home" },
             { "_id" => 301, "phone" => "070-2222-2222", "label" => "work" },
           ],
+          # Single embedded subdocument (embeds_one) inside the user_profile Hash
+          # — the Hash-in-Hash leaf at users.user_profile.address.
+          "address" => { "_id" => 400, "city" => "Tokyo", "zip" => "100-0001" },
         },
       },
     ],
