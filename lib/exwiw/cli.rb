@@ -76,6 +76,7 @@ module Exwiw
 
       case @subcommand
       when "export"
+        confirm_output_dir_clear!
         Runner.new(
           connection_config: connection_config,
           output_dir: @output_dir,
@@ -270,6 +271,28 @@ module Exwiw
       end
     end
 
+    # The export clears @output_dir before writing (see Runner#clean_output_dir!).
+    # That is destructive, so when running interactively (stdin is a tty) ask for
+    # confirmation first. In non-interactive contexts (CI, pipes) we proceed
+    # without prompting. Only prompt when there is actually something to delete.
+    private def confirm_output_dir_clear!
+      return unless $stdin.tty?
+      return unless Dir.exist?(@output_dir)
+
+      entries = Dir.each_child(@output_dir).to_a
+      return if entries.empty?
+
+      $stderr.puts "All contents of the output dir will be removed before export:"
+      $stderr.puts "  #{@output_dir} (#{entries.size} entr#{entries.size == 1 ? 'y' : 'ies'})"
+      $stderr.print "Continue? [y/N]: "
+
+      answer = $stdin.gets&.strip&.downcase
+      unless answer == "y" || answer == "yes"
+        $stderr.puts "Aborted."
+        exit 1
+      end
+    end
+
     private def build_cli_options_hash
       {
         database_host: @database_host,
@@ -322,7 +345,7 @@ module Exwiw
         opts.on("-h", "--host=HOST", "Target database host") { |v| @database_host = v }
         opts.on("-p", "--port=PORT", "Target database port") { |v| @database_port = v }
         opts.on("-u", "--user=USERNAME", "Target database user") { |v| @database_user = v }
-        opts.on("-o", "--output-dir=[DUMP_DIR_PATH]", "Output file path. default is dump/ (export subcommand only)") do |v|
+        opts.on("-o", "--output-dir=[DUMP_DIR_PATH]", "Output file path. default is dump/. Its contents are emptied before each export (export subcommand only)") do |v|
           v = v.end_with?("/") ? v[0..-2] : v
           @output_dir = File.expand_path(v)
         end

@@ -1,5 +1,7 @@
 require 'spec_helper'
 require 'exwiw/cli'
+require 'tmpdir'
+require 'fileutils'
 
 module Exwiw
   RSpec.describe CLI do
@@ -155,6 +157,63 @@ module Exwiw
                 '--target-collection=users', '--ids=1']
         expect { run_cli(argv) }.to raise_error(SystemExit)
           .and output(/Specify only one of --target-table and --target-collection/).to_stderr
+      end
+    end
+
+    describe 'output dir clear confirmation' do
+      around do |example|
+        Dir.mktmpdir do |dir|
+          @output_dir = dir
+          example.run
+        end
+      end
+
+      def cli_with_output_dir
+        cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3', '--config-dir=scenario/sqlite-schema'])
+        cli.instance_variable_set(:@output_dir, @output_dir)
+        cli
+      end
+
+      it 'does not prompt when stdin is not a tty' do
+        File.write(File.join(@output_dir, 'stale.sql'), 'x')
+        allow($stdin).to receive(:tty?).and_return(false)
+        expect($stdin).not_to receive(:gets)
+
+        expect { cli_with_output_dir.send(:confirm_output_dir_clear!) }.not_to raise_error
+      end
+
+      it 'does not prompt on a tty when the output dir is empty' do
+        allow($stdin).to receive(:tty?).and_return(true)
+        expect($stdin).not_to receive(:gets)
+
+        expect { cli_with_output_dir.send(:confirm_output_dir_clear!) }.not_to raise_error
+      end
+
+      it 'proceeds when the user answers yes on a tty' do
+        File.write(File.join(@output_dir, 'stale.sql'), 'x')
+        allow($stdin).to receive(:tty?).and_return(true)
+        allow($stdin).to receive(:gets).and_return("y\n")
+
+        expect { cli_with_output_dir.send(:confirm_output_dir_clear!) }
+          .to output(/All contents of the output dir will be removed/).to_stderr
+      end
+
+      it 'aborts when the user declines on a tty' do
+        File.write(File.join(@output_dir, 'stale.sql'), 'x')
+        allow($stdin).to receive(:tty?).and_return(true)
+        allow($stdin).to receive(:gets).and_return("n\n")
+
+        expect { cli_with_output_dir.send(:confirm_output_dir_clear!) }
+          .to raise_error(SystemExit).and output(/Aborted/).to_stderr
+      end
+
+      it 'aborts on empty input (default is no)' do
+        File.write(File.join(@output_dir, 'stale.sql'), 'x')
+        allow($stdin).to receive(:tty?).and_return(true)
+        allow($stdin).to receive(:gets).and_return("\n")
+
+        expect { cli_with_output_dir.send(:confirm_output_dir_clear!) }
+          .to raise_error(SystemExit).and output(/Aborted/).to_stderr
       end
     end
 
