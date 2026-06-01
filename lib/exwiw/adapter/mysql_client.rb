@@ -57,7 +57,7 @@ module Exwiw
       def self.stringify_value(value)
         case value
         when nil then nil
-        when String then value
+        when String then normalize_encoding(value)
         when Time
           # Emit fractional seconds only when present. A Time can't tell us the
           # column's declared precision, so a zero fraction on a DATETIME(6)
@@ -76,6 +76,21 @@ module Exwiw
         end
       end
 
+      # Re-tag a value string as UTF-8 when it comes back as ASCII-8BIT (BINARY).
+      # Both drivers tag values from binary-collation / VARBINARY / BLOB columns
+      # as ASCII-8BIT even when the bytes are really UTF-8 text. When exwiw runs
+      # inside a host process whose Encoding.default_internal is UTF-8 (e.g. a
+      # Rails app, or RUBYOPT=-EUTF-8), IO#write enables conversion, so writing
+      # such a binary string carrying multi-byte bytes (e.g. Japanese "\xE4...")
+      # to the INSERT file raises "\xE4 from ASCII-8BIT to UTF-8"
+      # (Encoding::UndefinedConversionError). Re-tagging makes that write a
+      # UTF-8 -> UTF-8 no-op; only the tag changes, the bytes pass through.
+      def self.normalize_encoding(str)
+        return str unless str.encoding == Encoding::ASCII_8BIT
+
+        str.dup.force_encoding(Encoding::UTF_8)
+      end
+
       attr_reader :driver
 
       # `driver:` is mainly a test seam to force a specific driver; in normal use
@@ -92,7 +107,8 @@ module Exwiw
         case @driver
         when :mysql2
           res = raw.query(sql, cast: false, as: :array)
-          Result.new(res.fields, res.to_a)
+          rows = res.to_a.map { |row| row.map { |value| self.class.stringify_value(value) } }
+          Result.new(res.fields, rows)
         when :trilogy
           res = raw.query(sql)
           rows = res.rows.map { |row| row.map { |value| self.class.stringify_value(value) } }
