@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-06-01
+
 - bug fix https://github.com/heyinc/exwiw/pull/67
 
 ## [0.3.6] - 2026-06-01
