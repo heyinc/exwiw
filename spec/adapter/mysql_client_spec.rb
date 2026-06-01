@@ -11,6 +11,23 @@ module Exwiw
           expect(MysqlClient.stringify_value('hello')).to eq('hello')
         end
 
+        it 're-tags ASCII-8BIT strings (binary-collation columns) as UTF-8 without changing bytes' do
+          utf8_bytes = 'あ'.encode('UTF-8')
+          binary = utf8_bytes.dup.force_encoding(Encoding::ASCII_8BIT)
+
+          result = MysqlClient.stringify_value(binary)
+
+          expect(result.encoding).to eq(Encoding::UTF_8)
+          expect(result.bytes).to eq(utf8_bytes.bytes)
+          # The generated INSERT is written to a UTF-8 file, so this must not raise.
+          expect { +'' << result }.not_to raise_error
+        end
+
+        it 'leaves already-UTF-8 strings untouched' do
+          str = 'すでにUTF-8'
+          expect(MysqlClient.stringify_value(str).encoding).to eq(Encoding::UTF_8)
+        end
+
         it 'renders numbers as their literal text' do
           expect(MysqlClient.stringify_value(42)).to eq('42')
           expect(MysqlClient.stringify_value(BigDecimal('0.123e1'))).to eq('1.23')
