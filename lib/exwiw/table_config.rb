@@ -61,6 +61,20 @@ module Exwiw
     def reject_ignored_members!
       self.belongs_tos = belongs_tos.reject(&:ignore)
       self.columns = columns.reject(&:ignore)
+
+      # A table that will be extracted needs at least one effective column;
+      # otherwise the generated SELECT (`SELECT  FROM ...`) and INSERT
+      # (`INSERT INTO t () ...`) are syntactically broken. Checked here, after
+      # rejection, so it catches both a genuinely empty `columns: []` and a list
+      # left empty because every column was ignore:true. Schema generation does
+      # not call this method, so regenerating a broken config still works.
+      if !rails_managed? && !ignore && columns.empty?
+        raise ArgumentError,
+              "Table '#{name}' has no columns to extract " \
+              "(it may be empty in the config or have all columns set to ignore:true); " \
+              "define or unignore at least one column."
+      end
+
       self
     end
 
