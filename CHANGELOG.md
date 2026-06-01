@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-06-01
+
 ### Fixed
 
 - MySQL export no longer crashes with `IO#write: "\xE4" from ASCII-8BIT to UTF-8 (Encoding::UndefinedConversionError)` when a value comes from a binary-collation / `VARBINARY` / `BLOB` column but holds UTF-8 text (e.g. Japanese). Both the `mysql2` and `trilogy` drivers tag such values as `ASCII-8BIT`; writing them to the UTF-8 INSERT file failed inside host processes whose `Encoding.default_internal` is UTF-8 (a Rails app, or `RUBYOPT=-EUTF-8`). The driver-returned strings are now re-tagged UTF-8 (bytes unchanged) so the write is a no-op conversion.
