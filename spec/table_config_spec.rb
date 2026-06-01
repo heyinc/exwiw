@@ -311,6 +311,42 @@ module Exwiw
             )
           }.to raise_error(ArgumentError, /requires primary_key/)
         end
+
+        # Empty columns only become a problem at extraction time, which always
+        # runs reject_ignored_members! first (see Runner#load_table_config), so
+        # the guard lives there rather than at load.
+        it 'loads with empty columns but raises once reject_ignored_members! runs' do
+          config = TableConfig.from_symbol_keys(
+            name: 'users',
+            primary_key: 'id',
+            belongs_tos: [],
+            columns: [],
+          )
+          expect { config.reject_ignored_members! }.to raise_error(ArgumentError, /has no columns to extract/)
+        end
+
+        # The case that matters most: columns exist in the config but every one
+        # is ignore:true, so rejection empties them and extraction would emit
+        # broken SQL. This must raise too.
+        it 'raises from reject_ignored_members! when all columns are ignore:true' do
+          config = TableConfig.from_symbol_keys(
+            name: 'users',
+            primary_key: 'id',
+            belongs_tos: [],
+            columns: [{ name: 'secret', ignore: true }],
+          )
+          expect { config.reject_ignored_members! }.to raise_error(ArgumentError, /has no columns to extract/)
+        end
+
+        it 'does not raise when an ignore:true table has empty columns (never extracted)' do
+          config = TableConfig.from_symbol_keys(
+            name: 'users',
+            ignore: true,
+            belongs_tos: [],
+            columns: [],
+          )
+          expect { config.reject_ignored_members! }.not_to raise_error
+        end
       end
     end
 

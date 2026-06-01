@@ -198,6 +198,35 @@ module Exwiw
       end
     end
 
+    describe 'when the extraction query matches zero rows' do
+      let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['999999']) }
+      let(:log_io) { StringIO.new }
+      let(:runner) do
+        Runner.new(
+          connection_config: connection_config,
+          output_dir: output_dir,
+          config_dir: config_dir,
+          dump_target: dump_target,
+          logger: ::Logger.new(log_io),
+        )
+      end
+
+      before do
+        FileUtils.cp('scenario/sqlite-schema/shops.json', File.join(config_dir, 'shops.json'))
+      end
+
+      # Regression guard for runner.rb's `record_num.zero?` short-circuit: a
+      # zero-row table must be skipped entirely rather than fed to
+      # to_bulk_insert, which would otherwise emit broken `INSERT ... VALUES ;`.
+      it 'skips the table without emitting insert or delete files' do
+        expect { runner.run }.not_to raise_error
+
+        expect(Dir[File.join(output_dir, 'insert-*-shops.sql')]).to be_empty
+        expect(Dir[File.join(output_dir, 'delete-*-shops.sql')]).to be_empty
+        expect(log_io.string).to include('No records matched. skip this table.')
+      end
+    end
+
     describe 'with after_insert_hook_path (.rb)' do
       let(:hook_path) { 'tmp/runner_spec_after_hook.rb' }
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1', '2']) }
@@ -344,6 +373,16 @@ module Exwiw
 
         delete_files = Dir[File.join(output_dir, 'delete-*.sql')]
         expect(delete_files).not_to be_empty
+      end
+
+      context 'when the extraction query matches zero rows' do
+        let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['999999']) }
+
+        it 'skips the table without emitting a COPY file' do
+          expect { runner.run }.not_to raise_error
+
+          expect(Dir[File.join(output_dir, 'insert-*-shops.sql')]).to be_empty
+        end
       end
     end
   end
