@@ -502,6 +502,54 @@ RSpec.describe Exwiw::QueryAstBuilder do
           expect(built_query_ast.join_clauses).to eq([])
         end
       end
+
+      context 'when an additional unconstrained referencer exists (active_storage_variant_records)' do
+        # Real ActiveStorage also has active_storage_variant_records.blob_id
+        # pointing at blobs. On paper that makes blobs a *multi-referencer*
+        # table, which the reverse-extraction guards against (multiple
+        # referencers would need OR'd subqueries, not yet supported). But
+        # variant_records has no path of its own to the dump target, so its
+        # child query is unconstrained and filtered out as a candidate. blobs
+        # therefore stays a single-referencer case (attachments only) and is
+        # still narrowed correctly rather than dumping every blob.
+        let(:variant_records_table) do
+          Exwiw::TableConfig.from_symbol_keys(
+            name: 'active_storage_variant_records',
+            primary_key: 'id',
+            belongs_tos: [
+              { table_name: 'active_storage_blobs', foreign_key: 'blob_id' },
+            ],
+            columns: [
+              { name: 'id' },
+              { name: 'blob_id' },
+              { name: 'variation_digest' },
+            ],
+          )
+        end
+        let(:all_tables) { [blobs_table, attachments_table, variant_records_table, as_users_table] }
+
+        it 'still narrows blobs to the attachments-referenced ids only' do
+          expect(built_query_ast.from_table_name).to eq('active_storage_blobs')
+          expect(built_query_ast.join_clauses).to eq([])
+          expect(built_query_ast.where_clauses.map(&:to_h)).to eq([
+            {
+              column_name: 'id',
+              operator: :in_subquery,
+              value: {
+                query: {
+                  from: 'active_storage_attachments',
+                  columns: [{ name: 'blob_id', value: 'blob_id' }],
+                  joins: [],
+                  where: [
+                    { column_name: 'record_id', operator: :eq, value: [1] },
+                    { column_name: 'record_type', operator: :eq, value: ['AsUser'] },
+                  ],
+                },
+              },
+            },
+          ])
+        end
+      end
     end
 
     context 'when the table has no relation with dump target table' do

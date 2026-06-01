@@ -38,18 +38,18 @@ require "sqlite3"
 #     active_storage_blobs as a foreign key, which keeps blobs ordered before
 #     attachments at insert time.
 #
-# The *blobs* side, however, is NOT yet fully handled at dump time. exwiw only
-# propagates downward along belongs_to: it extracts a table by finding a
-# belongs_to path FROM that table TO the dump target (QueryAstBuilder#
-# find_path_to_dump_target). active_storage_blobs has no belongs_to at all, so
-# it has no path to the target and falls into the "no relation -> dump all
-# records" branch — every blob in the database is exported, not just the ones
-# referenced by the extracted attachments. Extracting only the referenced blobs
-# needs a separate "reverse"/"referenced_by" mechanism (blobs WHERE id IN
-# (SELECT blob_id FROM <extracted attachments>)) and is left to a follow-up.
+# The *blobs* side needs more than schema generation. exwiw only propagates
+# downward along belongs_to: it extracts a table by finding a belongs_to path
+# FROM that table TO the dump target (QueryAstBuilder#find_path_to_dump_target).
+# active_storage_blobs has no belongs_to at all, so it has no path to the target
+# and would fall into the "no relation -> dump all records" branch. That gap is
+# now closed at dump time by QueryAstBuilder's reverse/"referenced_by" mechanism
+# (blobs WHERE id IN (SELECT blob_id FROM <extracted attachments>)); see
+# query_ast_builder_spec.rb's "referenced by an extractable child" contexts.
 #
 # These specs therefore lock in the schema-generation half (the belongs_tos that
-# following the macros yields). The fixtures replicate exactly what the macros
+# following the macros yields); the reverse-extraction half is covered in
+# query_ast_builder_spec.rb. The fixtures replicate exactly what the macros
 # generate (the gem itself is not a dependency), mirroring the approach in
 # schema_generator_habtm_spec.rb.
 module Exwiw
