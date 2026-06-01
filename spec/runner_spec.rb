@@ -2,6 +2,7 @@ require 'spec_helper'
 require 'fileutils'
 require 'json'
 require 'tmpdir'
+require 'stringio'
 
 module Exwiw
   RSpec.describe Runner do
@@ -122,6 +123,33 @@ module Exwiw
         expect(sql.scan(/INSERT INTO shops/).size).to eq(1)
       end
     end
+    describe 'error reporting when SQL generation fails' do
+      let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1', '2']) }
+      let(:log_io) { StringIO.new }
+      let(:runner) do
+        Runner.new(
+          connection_config: connection_config,
+          output_dir: output_dir,
+          config_dir: 'scenario/sqlite-schema',
+          dump_target: dump_target,
+          logger: ::Logger.new(log_io),
+        )
+      end
+
+      it 're-raises and logs the table, phase, and extraction query that produced the failing data' do
+        allow_any_instance_of(Adapter::SqliteAdapter)
+          .to receive(:to_bulk_insert)
+          .and_raise(RuntimeError, 'simulated encoding error in row data')
+
+        expect { runner.run }.to raise_error(RuntimeError, 'simulated encoding error in row data')
+
+        log = log_io.string
+        expect(log).to include("Error while generating INSERT statement for table 'shops'")
+        expect(log).to include('Extraction query that produced the data being processed:')
+        expect(log).to match(/SELECT .+ FROM shops WHERE shops\.id IN \('1', '2'\)/)
+      end
+    end
+
     describe 'dump-all mode (no target table or ids)' do
       let(:dump_target) { DumpTarget.new(table_name: nil, ids: []) }
       let(:runner) do

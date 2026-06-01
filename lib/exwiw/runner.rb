@@ -60,51 +60,67 @@ module Exwiw
         @logger.info("Processing table '#{table_name}'... (#{idx + 1}/#{total_size})")
 
         query_ast = adapter.build_query(table, @dump_target, table_by_name)
-        results = adapter.execute(query_ast)
-        record_num = results.size
 
-        if record_num.zero?
-          @logger.info("  No records matched. skip this table.")
-          next
-        end
-        insert_idx = (idx + 1).to_s.rjust(3, '0')
+        # Track which phase we are in so that, if an error is raised while
+        # turning the fetched rows into SQL/JSONL, the rescue below can report
+        # both the failing step and the exact extraction query that produced the
+        # data being processed.
+        phase = "executing extraction query"
+        begin
+          results = adapter.execute(query_ast)
+          record_num = results.size
 
-        if @output_format == 'copy'
-          @logger.debug("  Generate COPY statement...")
-          copy_sql = adapter.to_copy_from_stdin(results, table)
-          @logger.info("  Generated COPY statement for #{record_num} records.")
-
-          File.open(File.join(@output_dir, "insert-#{insert_idx}-#{table_name}.#{adapter.output_extension}"), 'w') do |file|
-            file.puts(copy_sql)
-            post = adapter.post_insert_sql(table)
-            file.puts(post) if post
+          if record_num.zero?
+            @logger.info("  No records matched. skip this table.")
+            next
           end
-        else
-          @logger.debug("  Generate INSERT statement...")
-          chunk_size = table.bulk_insert_chunk_size
-          chunks = chunk_size ? results.each_slice(chunk_size).to_a : [results]
-          insert_sql = chunks.map { |chunk_rows| adapter.to_bulk_insert(chunk_rows, table) }.join("\n")
+          insert_idx = (idx + 1).to_s.rjust(3, '0')
 
-          @logger.info("  Generated INSERT statement for #{record_num} records (#{chunks.size} statement(s)).")
-          File.open(File.join(@output_dir, "insert-#{insert_idx}-#{table_name}.#{adapter.output_extension}"), 'w') do |file|
-            file.puts(insert_sql)
-            post = adapter.post_insert_sql(table)
-            file.puts(post) if post
-          end
-        end
+          if @output_format == 'copy'
+            phase = "generating COPY statement"
+            @logger.debug("  Generate COPY statement...")
+            copy_sql = adapter.to_copy_from_stdin(results, table)
+            @logger.info("  Generated COPY statement for #{record_num} records.")
 
-        if adapter.supports_bulk_delete? && !@insert_only && !(table.respond_to?(:rails_managed?) && table.rails_managed?)
-          @logger.debug("  Generate DELETE statement...")
-          delete_sql = adapter.to_bulk_delete(query_ast, table)
-          if @logger.debug?
-            @logger.debug("  Generated DELETE statement:\n#{delete_sql}")
+            File.open(File.join(@output_dir, "insert-#{insert_idx}-#{table_name}.#{adapter.output_extension}"), 'w') do |file|
+              file.puts(copy_sql)
+              post = adapter.post_insert_sql(table)
+              file.puts(post) if post
+            end
           else
-            @logger.info("  Generated DELETE statement.")
+            phase = "generating INSERT statement"
+            @logger.debug("  Generate INSERT statement...")
+            chunk_size = table.bulk_insert_chunk_size
+            chunks = chunk_size ? results.each_slice(chunk_size).to_a : [results]
+            insert_sql = chunks.map { |chunk_rows| adapter.to_bulk_insert(chunk_rows, table) }.join("\n")
+
+            @logger.info("  Generated INSERT statement for #{record_num} records (#{chunks.size} statement(s)).")
+            File.open(File.join(@output_dir, "insert-#{insert_idx}-#{table_name}.#{adapter.output_extension}"), 'w') do |file|
+              file.puts(insert_sql)
+              post = adapter.post_insert_sql(table)
+              file.puts(post) if post
+            end
           end
-          delete_idx = (total_size - idx).to_s.rjust(3, '0')
-          File.open(File.join(@output_dir, "delete-#{delete_idx}-#{table_name}.#{adapter.output_extension}"), 'w') do |file|
-            file.puts(delete_sql)
+
+          if adapter.supports_bulk_delete? && !@insert_only && !(table.respond_to?(:rails_managed?) && table.rails_managed?)
+            phase = "generating DELETE statement"
+            @logger.debug("  Generate DELETE statement...")
+            delete_sql = adapter.to_bulk_delete(query_ast, table)
+            if @logger.debug?
+              @logger.debug("  Generated DELETE statement:\n#{delete_sql}")
+            else
+              @logger.info("  Generated DELETE statement.")
+            end
+            delete_idx = (total_size - idx).to_s.rjust(3, '0')
+            File.open(File.join(@output_dir, "delete-#{delete_idx}-#{table_name}.#{adapter.output_extension}"), 'w') do |file|
+              file.puts(delete_sql)
+            end
           end
+        rescue => e
+          @logger.error("Error while #{phase} for table '#{table_name}' (#{idx + 1}/#{total_size}): #{e.class}: #{e.message}")
+          @logger.error("  Extraction query that produced the data being processed:")
+          @logger.error("    #{adapter.describe_query(query_ast)}")
+          raise
         end
       end
 

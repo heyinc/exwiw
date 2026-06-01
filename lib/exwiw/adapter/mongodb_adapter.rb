@@ -120,6 +120,12 @@ module Exwiw
         raise NotImplementedError, "MongodbAdapter does not support explain yet"
       end
 
+      def describe_query(query)
+        "find collection=#{query.collection} filter=#{query.filter.inspect} projection=#{query.projection.inspect}"
+      rescue => e
+        "<unavailable: #{e.class}: #{e.message}>"
+      end
+
       def output_extension
         'jsonl'
       end

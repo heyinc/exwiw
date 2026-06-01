@@ -139,6 +139,23 @@ module Exwiw
       def commented_sql(query_ast)
         "#{sql_query_comment(query_ast)} #{compile_ast(query_ast)}"
       end
+
+      # One-line, human-readable description of the extraction query, used by the
+      # Runner in error messages so a failure during INSERT/COPY generation (or
+      # query execution) can be traced back to the query that produced the data.
+      # SQL adapters expose the compiled, comment-prefixed SELECT; non-SQL
+      # adapters (e.g. MongodbAdapter) override or fall back to the query object's
+      # own inspect output. Best-effort: never raise from here, since it runs on
+      # an error path.
+      def describe_query(query_ast)
+        if respond_to?(:compile_ast)
+          commented_sql(query_ast)
+        else
+          query_ast.inspect
+        end
+      rescue => e
+        "<unavailable: #{e.class}: #{e.message}>"
+      end
     end
 
     # @params [Exwiw::QueryAst] query_ast
