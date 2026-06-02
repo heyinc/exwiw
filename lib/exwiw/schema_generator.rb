@@ -5,6 +5,30 @@ require "json"
 
 module Exwiw
   class SchemaGenerator
+    # Summary of what `SchemaGenerator#tidy!` removed, returned so callers can
+    # report it. `removed_columns` maps a surviving table's name to the column
+    # names that were dropped from its config.
+    class TidyResult
+      attr_reader :removed_tables, :removed_columns
+
+      def initialize
+        @removed_tables = []
+        @removed_columns = {}
+      end
+
+      def add_removed_table(table_name)
+        @removed_tables << table_name
+      end
+
+      def add_removed_column(table_name, column_name)
+        (@removed_columns[table_name] ||= []) << column_name
+      end
+
+      def empty?
+        @removed_tables.empty? && @removed_columns.empty?
+      end
+    end
+
     # ActiveStorage tracks generated image variants in this table. Its rows are
     # derivative and regenerable — ActiveStorage lazily (re)creates a variant the
     # next time it is requested — so there is little value in exporting them. More
@@ -33,6 +57,52 @@ module Exwiw
       groups = build_table_groups
       write_groups(groups)
       groups
+    end
+
+    # Reconcile the config files already on disk against the current
+    # application schema, removing only what no longer exists:
+    #
+    # - a config file whose table is no longer present is deleted, and
+    # - columns recorded in a surviving table's config that the table no
+    #   longer has are dropped from that file.
+    #
+    # Unlike `generate!`, tidy never adds or regenerates entries: every
+    # surviving table/column — including its hand-edited `comment` / `ignore` /
+    # `replace_with` — is left untouched, and only the stale entries are
+    # stripped. (Removing a deleted column is something `generate!` already does
+    # incidentally via #merge, but `generate!` can never delete the config file
+    # of a removed table, which is the gap this fills.) Returns a TidyResult
+    # describing the removals so callers (e.g. the rake task) can report them.
+    def tidy!
+      result = TidyResult.new
+
+      build_table_groups.each do |db_name, current_tables|
+        dir = config_dir_for(db_name)
+        next unless Dir.exist?(dir)
+
+        current_by_name = current_tables.each_with_object({}) { |t, h| h[t.name] = t }
+
+        Dir[File.join(dir, "*.json")].sort.each do |path|
+          existing = TableConfig.from(JSON.parse(File.read(path)))
+          current_table = current_by_name[existing.name]
+
+          if current_table.nil?
+            File.delete(path)
+            result.add_removed_table(existing.name)
+            next
+          end
+
+          valid_column_names = current_table.column_names.to_set
+          stale_columns = existing.columns.reject { |column| valid_column_names.include?(column.name) }
+          next if stale_columns.empty?
+
+          existing.columns = existing.columns.select { |column| valid_column_names.include?(column.name) }
+          File.write(path, JSON.pretty_generate(existing.to_hash) + "\n")
+          stale_columns.each { |column| result.add_removed_column(existing.name, column.name) }
+        end
+      end
+
+      result
     end
 
     # Returns a Hash keyed by the database name.
@@ -67,9 +137,16 @@ module Exwiw
 
     def write_groups(groups)
       groups.each do |db_name, tables|
-        dir = db_name.nil? ? @output_dir : File.join(@output_dir, db_name)
-        write_files(dir, tables)
+        write_files(config_dir_for(db_name), tables)
       end
+    end
+
+    # The directory a database group's config files live in. A single-database
+    # setup (`db_name` is nil) writes flat into `output_dir`; a multi-database
+    # setup writes into `output_dir/<db_name>/`. Shared by `write_groups` and
+    # `tidy!` so the two operations agree on file locations.
+    private def config_dir_for(db_name)
+      db_name.nil? ? @output_dir : File.join(@output_dir, db_name)
     end
 
     def write_files(dir, tables)

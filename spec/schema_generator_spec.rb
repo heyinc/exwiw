@@ -304,6 +304,26 @@ module Exwiw
             .to contain_exactly("analytics_events.json", "schema_migrations.json")
         end
       end
+
+      describe "#tidy!" do
+        it "tidies each database's own subdirectory" do
+          described_class.new(models: multidb_models, output_dir: output_dir).generate!
+          stale_path = File.join(output_dir, "primary", "legacy_things.json")
+          File.write(stale_path, JSON.pretty_generate(
+            "name" => "legacy_things",
+            "primary_key" => "id",
+            "belongs_tos" => [],
+            "columns" => [{ "name" => "id" }],
+          ) + "\n")
+
+          result = described_class.new(models: multidb_models, output_dir: output_dir).tidy!
+
+          expect(File).not_to exist(stale_path)
+          expect(File).to exist(File.join(output_dir, "primary", "shops.json"))
+          expect(File).to exist(File.join(output_dir, "analytics", "analytics_events.json"))
+          expect(result.removed_tables).to contain_exactly("legacy_things")
+        end
+      end
     end
 
     describe "#generate!" do
@@ -348,6 +368,81 @@ module Exwiw
           expected = JSON.parse(File.read(fixture_path))
           expect(actual).to eq(expected), "snapshot mismatch in #{File.basename(fixture_path)}"
         end
+      end
+    end
+
+    describe "#tidy!" do
+      def write_config(name, hash)
+        File.write(File.join(output_dir, "#{name}.json"), JSON.pretty_generate(hash) + "\n")
+      end
+
+      it "deletes the config file of a table that no longer exists" do
+        described_class.new(models: models, output_dir: output_dir).generate!
+        write_config("legacy_things", {
+          "name" => "legacy_things",
+          "primary_key" => "id",
+          "belongs_tos" => [],
+          "columns" => [{ "name" => "id" }, { "name" => "value" }],
+        })
+
+        result = described_class.new(models: models, output_dir: output_dir).tidy!
+
+        expect(File).not_to exist(File.join(output_dir, "legacy_things.json"))
+        expect(File).to exist(File.join(output_dir, "shops.json"))
+        expect(result.removed_tables).to contain_exactly("legacy_things")
+        expect(result.removed_columns).to be_empty
+      end
+
+      it "drops columns that the table no longer has from a surviving config" do
+        write_config("shops", {
+          "name" => "shops",
+          "primary_key" => "id",
+          "belongs_tos" => [],
+          "columns" => [
+            { "name" => "id" },
+            { "name" => "name", "replace_with" => "masked" },
+            { "name" => "ghost_column" },
+          ],
+        })
+
+        result = described_class.new(models: [Shop], output_dir: output_dir).tidy!
+
+        written = JSON.parse(File.read(File.join(output_dir, "shops.json")))
+        expect(written["columns"].map { |c| c["name"] }).not_to include("ghost_column")
+        expect(written["columns"].map { |c| c["name"] }).to include("id", "name")
+        expect(result.removed_columns).to eq("shops" => ["ghost_column"])
+        expect(result.removed_tables).to be_empty
+      end
+
+      it "preserves hand-edited attributes on surviving columns" do
+        write_config("shops", {
+          "name" => "shops",
+          "primary_key" => "id",
+          "belongs_tos" => [],
+          "columns" => [
+            { "name" => "id" },
+            { "name" => "name", "replace_with" => "masked", "comment" => "PII" },
+            { "name" => "ghost_column" },
+          ],
+        })
+
+        described_class.new(models: [Shop], output_dir: output_dir).tidy!
+
+        written = JSON.parse(File.read(File.join(output_dir, "shops.json")))
+        name_column = written["columns"].find { |c| c["name"] == "name" }
+        expect(name_column["replace_with"]).to eq("masked")
+        expect(name_column["comment"]).to eq("PII")
+      end
+
+      it "reports nothing and leaves files intact when the config already matches the schema" do
+        described_class.new(models: models, output_dir: output_dir).generate!
+        before = Dir[File.join(output_dir, "*.json")].sort.map { |p| [File.basename(p), File.read(p)] }
+
+        result = described_class.new(models: models, output_dir: output_dir).tidy!
+
+        expect(result).to be_empty
+        after = Dir[File.join(output_dir, "*.json")].sort.map { |p| [File.basename(p), File.read(p)] }
+        expect(after).to eq(before)
       end
     end
   end
