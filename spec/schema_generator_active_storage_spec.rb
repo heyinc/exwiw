@@ -96,6 +96,25 @@ module Exwiw
                class_name: "Exwiw::ActiveStorageFixtures::AsBlob",
                source: :blob
     end
+
+    # ActiveStorage::VariantRecord — tracks generated image variants. It is a
+    # plain ActiveRecord model that `belongs_to :blob` and itself declares
+    # `has_one_attached :image` (=> `has_one :image_attachment, as: :record`),
+    # so the polymorphic `record` belongs_to on AsAttachment would otherwise
+    # expand to include it just like User / Product.
+    class Variant < ::ActiveRecord::Base
+      self.table_name = "active_storage_variant_records"
+      belongs_to :blob, class_name: "Exwiw::ActiveStorageFixtures::AsBlob"
+      has_one :image_attachment,
+              -> { where(name: "image") },
+              class_name: "Exwiw::ActiveStorageFixtures::AsAttachment",
+              as: :record,
+              inverse_of: :record
+      has_one :image_blob,
+              through: :image_attachment,
+              class_name: "Exwiw::ActiveStorageFixtures::AsBlob",
+              source: :blob
+    end
   end
 
   RSpec.describe SchemaGenerator do
@@ -120,6 +139,10 @@ module Exwiw
         end
         conn.create_table(:as_users) { |t| t.string :name }
         conn.create_table(:as_products) { |t| t.string :name }
+        conn.create_table(:active_storage_variant_records) do |t|
+          t.bigint :blob_id, null: false
+          t.string :variation_digest, null: false
+        end
       end
 
       after(:all) do
@@ -185,6 +208,57 @@ module Exwiw
         # as_products configs.
         expect(tables_by_name["as_users"].belongs_tos).to be_empty
         expect(tables_by_name["as_products"].belongs_tos).to be_empty
+      end
+
+      context "when ActiveStorage::VariantRecord is present" do
+        # active_storage_variant_records holds derivative, lazily/async-generated
+        # variant tracking rows. It has no belongs_to path to any dump target, so
+        # exwiw would otherwise dump it in full (the "no relation -> dump all"
+        # branch). That is both wasteful and unsafe: variant_records.blob_id
+        # references active_storage_blobs, which the reverse "referenced_by"
+        # extraction narrows to only the attachment-referenced blobs, so a
+        # full variant_records dump can point at blobs that were never exported
+        # (foreign-key violation on import). The variants are regenerable, so the
+        # table should be marked ignore:true and excluded from extraction.
+        let(:models) do
+          [
+            ActiveStorageFixtures::AsBlob,
+            ActiveStorageFixtures::AsAttachment,
+            ActiveStorageFixtures::User,
+            ActiveStorageFixtures::Product,
+            ActiveStorageFixtures::Variant,
+          ]
+        end
+
+        it "marks active_storage_variant_records as ignore:true" do
+          expect(tables_by_name["active_storage_variant_records"].ignore).to eq(true)
+        end
+
+        it "keeps a non-empty config (columns/primary_key) as a signpost" do
+          variant = tables_by_name["active_storage_variant_records"]
+          expect(variant.primary_key).to eq("id")
+          expect(variant.column_names).to include("blob_id", "variation_digest")
+        end
+
+        it "excludes variant records from the attachments polymorphic `record` expansion" do
+          poly = tables_by_name["active_storage_attachments"].belongs_tos
+            .select(&:polymorphic?)
+            .map(&:table_name)
+
+          # Only the genuine owning models (User / Product) should be expanded;
+          # ActiveStorage::VariantRecord must not become a belongs_to target,
+          # otherwise the non-ignored attachments table would carry a dangling
+          # belongs_to to the ignored variant records table (rejected on load).
+          expect(poly).to contain_exactly("as_users", "as_products")
+        end
+
+        it "leaves no non-ignored table referencing the ignored variant records table" do
+          ignored = tables.select(&:ignore).map(&:name).to_set
+          dangling = tables.reject(&:ignore).flat_map do |t|
+            t.belongs_tos.map(&:table_name).select { |n| ignored.include?(n) }
+          end
+          expect(dangling).to be_empty
+        end
       end
     end
   end

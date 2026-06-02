@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- ActiveStorage support is now complete. `schema:generate` follows `has_one_attached` / `has_many_attached` macros so `active_storage_attachments` is extracted correctly via its polymorphic `belongs_to`. `active_storage_blobs` is no longer dumped wholesale: a reverse "referenced_by" extraction (a `SELECT` subquery) narrows it to only the blobs referenced by the extracted attachments. `active_storage_variant_records` (derivative, regenerable variant-tracking rows) is now emitted with `ignore: true` instead of being dumped in full — it has no path to a dump target and its `blob_id` could otherwise reference blobs outside the narrowed set, causing a foreign-key violation on import. It is also dropped from the attachments `record` polymorphic expansion so the non-ignored attachments table carries no dangling belongs_to to it. ([#69](https://github.com/heyinc/exwiw/pull/69))
+
 ## [0.3.7] - 2026-06-01
 
 - bug fix https://github.com/heyinc/exwiw/pull/67

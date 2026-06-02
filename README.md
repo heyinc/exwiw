@@ -358,6 +358,7 @@ ActiveStorage is handled automatically — no ActiveStorage-specific configurati
   ```
 
   `active_storage_variant_records` also references blobs, but since it has no path of its own to the dump target it doesn't constrain anything and is ignored as a referencer — blobs stays narrowed to the attachment-referenced ids. (A parent referenced by *multiple* constrained children currently falls back to dumping all of its rows.)
+- **`active_storage_variant_records`** holds derivative variant-tracking rows that ActiveStorage regenerates lazily, and it too has no path to the dump target — left alone it would land in the "no relation → dump all" branch and, worse, its `blob_id` could point at blobs outside the narrowed set above (a foreign-key violation on import). `exwiw:schema:generate` therefore emits it with **`ignore: true`** (and drops it from the attachments `record` polymorphic expansion so nothing carries a dangling reference to it), so its data is skipped while the DDL is still written. Remove `ignore` from the generated config if you really need to export it.
 
 ### Rails-managed tables (special `type` values)
 
