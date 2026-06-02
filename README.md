@@ -341,6 +341,25 @@ WHERE reviews.reviewable_id IN (/* products subquery */)
 
 The same type filter is applied on the join path — and in the matching `delete-*.sql` bulk-delete subquery — when the polymorphic table is an intermediate hop rather than the directly-dumped table.
 
+### ActiveStorage (`has_one_attached` / `has_many_attached`)
+
+ActiveStorage is handled automatically — no ActiveStorage-specific configuration is required. The `has_one_attached` / `has_many_attached` macros don't add a column to the owning model; they generate ordinary associations that exwiw already understands:
+
+- **`active_storage_attachments`** is the polymorphic join row (`belongs_to :record, polymorphic: true` + `belongs_to :blob`). `exwiw:schema:generate` expands the polymorphic `record` into one `belongs_to` per model that declared `has_*_attached` (found via the generated `has_* ..., as: :record` reflections), exactly like any other [polymorphic `belongs_to`](#polymorphic-belongs_to). So only the attachments whose owner is among the dumped rows are extracted.
+- **`active_storage_blobs`** has no `belongs_to` of its own (attachments point *at* it), so it has no path to the dump target. exwiw narrows it via **reverse / "referenced_by" extraction**: a parent table referenced by exactly one constrained, non-polymorphic child is constrained to just the referenced ids instead of dumping every row:
+
+  ```sql
+  SELECT active_storage_blobs.* FROM active_storage_blobs
+  WHERE active_storage_blobs.id IN (
+    SELECT active_storage_attachments.blob_id FROM active_storage_attachments
+    WHERE active_storage_attachments.record_id IN (/* owner subquery */)
+      AND active_storage_attachments.record_type = '...'
+  )
+  ```
+
+  `active_storage_variant_records` also references blobs, but since it has no path of its own to the dump target it doesn't constrain anything and is ignored as a referencer — blobs stays narrowed to the attachment-referenced ids. (A parent referenced by *multiple* constrained children currently falls back to dumping all of its rows.)
+- **`active_storage_variant_records`** holds derivative variant-tracking rows that ActiveStorage regenerates lazily, and it too has no path to the dump target — left alone it would land in the "no relation → dump all" branch and, worse, its `blob_id` could point at blobs outside the narrowed set above (a foreign-key violation on import). `exwiw:schema:generate` therefore emits it with **`ignore: true`** (and drops it from the attachments `record` polymorphic expansion so nothing carries a dangling reference to it), so its data is skipped while the DDL is still written. Remove `ignore` from the generated config if you really need to export it.
+
 ### Rails-managed tables (special `type` values)
 
 Some tables are owned by Rails itself rather than the application — they have no ActiveRecord model and Rails reserves the right to evolve their column shape between versions (e.g. `schema_migrations`, `ar_internal_metadata`). exwiw treats them as a distinct category via the `type` field on a table config:

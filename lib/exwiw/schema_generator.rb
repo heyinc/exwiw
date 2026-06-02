@@ -5,6 +5,20 @@ require "json"
 
 module Exwiw
   class SchemaGenerator
+    # ActiveStorage tracks generated image variants in this table. Its rows are
+    # derivative and regenerable — ActiveStorage lazily (re)creates a variant the
+    # next time it is requested — so there is little value in exporting them. More
+    # importantly, the table has no belongs_to path to any dump target, which
+    # would land it in QueryAstBuilder's "no relation -> dump all" branch, while
+    # its `blob_id` references active_storage_blobs, which the reverse
+    # "referenced_by" extraction narrows to only the attachment-referenced blobs.
+    # A full variant_records dump can therefore reference blobs that were never
+    # exported (a foreign-key violation on import). So the table is emitted with
+    # `ignore: true` (data extraction skipped) and excluded as a polymorphic
+    # `record` target so the non-ignored attachments table carries no dangling
+    # belongs_to to it.
+    ACTIVE_STORAGE_VARIANT_RECORDS_TABLE = "active_storage_variant_records"
+
     def self.from_rails_application(output_dir:)
       Rails.application.eager_load!
       new(models: ActiveRecord::Base.descendants, output_dir: output_dir)
@@ -91,6 +105,20 @@ module Exwiw
             ignore: true,
             comment: "exwiw does not support composite primary keys " \
                      "(#{primary_key.join(', ')}); data extraction is skipped.",
+            belongs_tos: aggregate_belongs_tos(model_group),
+            columns: representative.column_names.map { |name| { name: name } },
+          )
+        elsif table_name == ACTIVE_STORAGE_VARIANT_RECORDS_TABLE
+          # See ACTIVE_STORAGE_VARIANT_RECORDS_TABLE. Emitted with ignore:true so
+          # the derivative variant rows are not dumped; primary_key/columns are
+          # kept so a user can remove `ignore` to opt back in if they really want
+          # to export them.
+          TableConfig.from_symbol_keys(
+            name: table_name,
+            primary_key: primary_key,
+            ignore: true,
+            comment: "ActiveStorage variant tracking records are derivative and " \
+                     "regenerable; data extraction is skipped. Remove `ignore` to export them.",
             belongs_tos: aggregate_belongs_tos(model_group),
             columns: representative.column_names.map { |name| { name: name } },
           )
@@ -203,6 +231,12 @@ module Exwiw
     # belongs_to ordering stable.
     private def polymorphic_target_models(association_name)
       concrete_models.select do |model|
+        # active_storage_variant_records is ignored (see the constant), so it must
+        # not be expanded as a polymorphic target — otherwise the non-ignored
+        # attachments table would carry a dangling belongs_to to an ignored table,
+        # which is rejected at load time.
+        next false if model.table_name == ACTIVE_STORAGE_VARIANT_RECORDS_TABLE
+
         (model.reflect_on_all_associations(:has_many) +
          model.reflect_on_all_associations(:has_one))
           .any? { |reflection| reflection.options[:as] == association_name }

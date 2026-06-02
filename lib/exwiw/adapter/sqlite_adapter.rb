@@ -198,6 +198,10 @@ module Exwiw
       end
 
       private def compile_subquery(subquery)
+        # A SelectSubquery wraps a full Select (the referencing table's
+        # extraction query, projected to a foreign key); compile it as-is.
+        return compile_ast(subquery.query) if subquery.is_a?(Exwiw::QueryAst::SelectSubquery)
+
         inner_values = subquery.where_values.map { |v| escape_value(v) }
         "SELECT #{subquery.table_name}.#{subquery.select_column} " \
           "FROM #{subquery.table_name} " \

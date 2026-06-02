@@ -394,6 +394,164 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
     end
 
+    context 'when the table is referenced by an extractable child but has no relation of its own (ActiveStorage blobs)' do
+      # Mirrors ActiveStorage: active_storage_blobs has no belongs_to, but
+      # active_storage_attachments.blob_id references it AND attachments are
+      # extractable via the polymorphic `record` belongs_to to the dump target.
+      # The blobs query should be narrowed to just the referenced blob ids
+      # instead of dumping every blob.
+      let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'as_users', ids: [1]) }
+      let(:blobs_table) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'active_storage_blobs',
+          primary_key: 'id',
+          belongs_tos: [],
+          columns: [{ name: 'id' }, { name: 'key' }, { name: 'filename' }],
+        )
+      end
+      let(:attachments_table) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'active_storage_attachments',
+          primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'active_storage_blobs', foreign_key: 'blob_id' },
+            {
+              table_name: 'as_users',
+              foreign_key: 'record_id',
+              foreign_type: 'record_type',
+              type_value: 'AsUser',
+            },
+          ],
+          columns: [
+            { name: 'id' },
+            { name: 'name' },
+            { name: 'record_type' },
+            { name: 'record_id' },
+            { name: 'blob_id' },
+          ],
+        )
+      end
+      let(:as_users_table) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'as_users',
+          primary_key: 'id',
+          belongs_tos: [],
+          columns: [{ name: 'id' }, { name: 'name' }],
+        )
+      end
+      let(:all_tables) { [blobs_table, attachments_table, as_users_table] }
+      let(:table) { blobs_table }
+
+      it 'constrains blobs to the ids referenced by the extracted attachments' do
+        expect(built_query_ast.from_table_name).to eq('active_storage_blobs')
+        expect(built_query_ast.join_clauses).to eq([])
+        expect(built_query_ast.where_clauses.map(&:to_h)).to eq([
+          {
+            column_name: 'id',
+            operator: :in_subquery,
+            value: {
+              query: {
+                from: 'active_storage_attachments',
+                columns: [{ name: 'blob_id', value: 'blob_id' }],
+                joins: [],
+                where: [
+                  { column_name: 'record_id', operator: :eq, value: [1] },
+                  { column_name: 'record_type', operator: :eq, value: ['AsUser'] },
+                ],
+              },
+            },
+          },
+        ])
+      end
+
+      it 'compiles to a nested IN-subquery SELECT for SQLite' do
+        adapter = Exwiw::Adapter::SqliteAdapter.new(
+          Exwiw::ConnectionConfig.new(
+            adapter: 'sqlite', database_name: 'tmp/test.sqlite3',
+            host: nil, port: nil, user: nil, password: nil
+          ),
+          logger,
+        )
+
+        expect(adapter.compile_ast(built_query_ast)).to eq(
+          'SELECT active_storage_blobs.id, active_storage_blobs.key, active_storage_blobs.filename ' \
+          'FROM active_storage_blobs ' \
+          'WHERE active_storage_blobs.id IN (' \
+          'SELECT active_storage_attachments.blob_id FROM active_storage_attachments ' \
+          "WHERE active_storage_attachments.record_id = 1 AND active_storage_attachments.record_type = 'AsUser')"
+        )
+      end
+
+      context 'when the referencer is itself unconstrained (no path to the dump target)' do
+        # If active_storage_attachments has no relation to the dump target, it
+        # would dump all attachments, so reverse extraction cannot narrow blobs
+        # and we fall back to dumping all blobs.
+        let(:attachments_table) do
+          Exwiw::TableConfig.from_symbol_keys(
+            name: 'active_storage_attachments',
+            primary_key: 'id',
+            belongs_tos: [
+              { table_name: 'active_storage_blobs', foreign_key: 'blob_id' },
+            ],
+            columns: [{ name: 'id' }, { name: 'blob_id' }],
+          )
+        end
+
+        it 'falls back to dumping all blobs' do
+          expect(built_query_ast.where_clauses).to eq([])
+          expect(built_query_ast.join_clauses).to eq([])
+        end
+      end
+
+      context 'when an additional unconstrained referencer exists (active_storage_variant_records)' do
+        # Real ActiveStorage also has active_storage_variant_records.blob_id
+        # pointing at blobs. On paper that makes blobs a *multi-referencer*
+        # table, which the reverse-extraction guards against (multiple
+        # referencers would need OR'd subqueries, not yet supported). But
+        # variant_records has no path of its own to the dump target, so its
+        # child query is unconstrained and filtered out as a candidate. blobs
+        # therefore stays a single-referencer case (attachments only) and is
+        # still narrowed correctly rather than dumping every blob.
+        let(:variant_records_table) do
+          Exwiw::TableConfig.from_symbol_keys(
+            name: 'active_storage_variant_records',
+            primary_key: 'id',
+            belongs_tos: [
+              { table_name: 'active_storage_blobs', foreign_key: 'blob_id' },
+            ],
+            columns: [
+              { name: 'id' },
+              { name: 'blob_id' },
+              { name: 'variation_digest' },
+            ],
+          )
+        end
+        let(:all_tables) { [blobs_table, attachments_table, variant_records_table, as_users_table] }
+
+        it 'still narrows blobs to the attachments-referenced ids only' do
+          expect(built_query_ast.from_table_name).to eq('active_storage_blobs')
+          expect(built_query_ast.join_clauses).to eq([])
+          expect(built_query_ast.where_clauses.map(&:to_h)).to eq([
+            {
+              column_name: 'id',
+              operator: :in_subquery,
+              value: {
+                query: {
+                  from: 'active_storage_attachments',
+                  columns: [{ name: 'blob_id', value: 'blob_id' }],
+                  joins: [],
+                  where: [
+                    { column_name: 'record_id', operator: :eq, value: [1] },
+                    { column_name: 'record_type', operator: :eq, value: ['AsUser'] },
+                  ],
+                },
+              },
+            },
+          ])
+        end
+      end
+    end
+
     context 'when the table has no relation with dump target table' do
       let(:table) { system_announcements_table(:sqlite) }
 

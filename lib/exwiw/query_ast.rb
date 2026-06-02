@@ -41,7 +41,7 @@ module Exwiw
         {
           column_name: column_name,
           operator: operator,
-          value: value.is_a?(Subquery) ? value.to_h : value,
+          value: value.is_a?(Subquery) || value.is_a?(SelectSubquery) ? value.to_h : value,
         }
       end
     end
@@ -62,6 +62,24 @@ module Exwiw
           where_column: where_column,
           where_values: where_values,
         }
+      end
+    end
+
+    # A subquery whose body is a full `Select`, projected down to a single
+    # column. Unlike the flat `Subquery` above (one column = one IN-list), this
+    # carries the referencing table's complete extraction query — joins,
+    # multiple where conditions, polymorphic type filters and all. Used by the
+    # reverse / "referenced_by" extraction so a parent table with no belongs_to
+    # path to the dump target (e.g. active_storage_blobs) is constrained to only
+    # the rows referenced by an extractable child table:
+    #
+    #   <parent>.<pk> IN (SELECT <child>.<fk> FROM <child> WHERE <child filters>)
+    #
+    # `query` is the child's `Select` already projected to the foreign-key
+    # column that points at the parent.
+    SelectSubquery = Struct.new(:query, keyword_init: true) do
+      def to_h
+        { query: query.to_h }
       end
     end
 
@@ -101,6 +119,15 @@ module Exwiw
 
       def join(join_clause)
         @join_clauses << join_clause
+      end
+
+      def to_h
+        {
+          from: from_table_name,
+          columns: select_all ? "*" : columns.map { |c| { name: c.name, value: c.value } },
+          joins: join_clauses.map(&:to_h),
+          where: where_clauses.map { |w| w.is_a?(String) ? w : w.to_h },
+        }
       end
 
       private def map_column_value(columns)
