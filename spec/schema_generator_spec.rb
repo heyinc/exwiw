@@ -46,6 +46,21 @@ module Exwiw
     end
   end
 
+  # Plain models backed by throwaway tables, used by the end-to-end tidy test
+  # that applies a real DDL change to the live database and checks that tidy
+  # reconciles the on-disk config to match. They are ::ActiveRecord::Base
+  # descendants (not ApplicationRecord) so they stay out of the `models` list
+  # the other examples build from `ApplicationRecord.descendants`.
+  module SchemaGeneratorE2eFixtures
+    class KeptTable < ::ActiveRecord::Base
+      self.table_name = "e2e_kept"
+    end
+
+    class DoomedTable < ::ActiveRecord::Base
+      self.table_name = "e2e_doomed"
+    end
+  end
+
   # Real Rails multi-DB setup: two abstract bases wired through
   # `connects_to` against named entries in `ActiveRecord::Base.configurations`,
   # exactly as a `database.yml`-backed app would. This makes
@@ -491,6 +506,59 @@ module Exwiw
           expect(written["columns"].find { |c| c["name"] == "kept" }["replace_with"]).to eq("masked")
           expect(result.removed_columns).to eq("orphan_records" => ["ghost_column"])
         end
+      end
+    end
+
+    # End-to-end: start from config that `generate!` produced against the live
+    # schema, apply a real DDL change to the database (drop a table, drop a
+    # column), then check that `tidy!` reconciles the on-disk config to match.
+    # Unlike the focused `#tidy!` examples above (which hand-write config with
+    # made-up names), this drives the generate -> schema-change -> tidy flow
+    # against actual tables.
+    describe "reconciling config after a real schema change" do
+      before(:all) do
+        conn = ActiveRecord::Base.connection
+        conn.execute("DROP TABLE IF EXISTS e2e_kept")
+        conn.execute("DROP TABLE IF EXISTS e2e_doomed")
+        conn.execute("CREATE TABLE e2e_kept (id INTEGER PRIMARY KEY, name TEXT, doomed_col TEXT)")
+        conn.execute("CREATE TABLE e2e_doomed (id INTEGER PRIMARY KEY)")
+      end
+
+      after(:all) do
+        conn = ActiveRecord::Base.connection
+        conn.execute("DROP TABLE IF EXISTS e2e_kept")
+        conn.execute("DROP TABLE IF EXISTS e2e_doomed")
+      end
+
+      it "deletes config for a dropped table and prunes a dropped column" do
+        e2e_models = [
+          SchemaGeneratorE2eFixtures::KeptTable,
+          SchemaGeneratorE2eFixtures::DoomedTable,
+        ]
+        kept_path = File.join(output_dir, "e2e_kept.json")
+        doomed_path = File.join(output_dir, "e2e_doomed.json")
+        column_names = ->(path) { JSON.parse(File.read(path))["columns"].map { |c| c["name"] } }
+
+        # 1. Generate config from the real schema.
+        described_class.new(models: e2e_models, output_dir: output_dir).generate!
+        expect(File).to exist(doomed_path)
+        expect(column_names.call(kept_path)).to include("id", "name", "doomed_col")
+
+        # 2. Apply a real schema change to the live database.
+        conn = ActiveRecord::Base.connection
+        conn.execute("DROP TABLE e2e_doomed")
+        conn.execute("ALTER TABLE e2e_kept DROP COLUMN doomed_col")
+        conn.schema_cache.clear!
+        e2e_models.each(&:reset_column_information)
+
+        # 3. Tidy reconciles the on-disk config to the new schema.
+        result = described_class.new(models: e2e_models, output_dir: output_dir).tidy!
+
+        expect(File).not_to exist(doomed_path)
+        expect(File).to exist(kept_path)
+        expect(column_names.call(kept_path)).to contain_exactly("id", "name")
+        expect(result.removed_tables).to contain_exactly("e2e_doomed")
+        expect(result.removed_columns).to eq("e2e_kept" => ["doomed_col"])
       end
     end
   end
