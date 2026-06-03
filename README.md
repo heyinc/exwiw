@@ -152,10 +152,12 @@ OUTPUT_DIR_PATH=custom_directory bundle exec rake exwiw:schema:generate
 bundle exec rake exwiw:schema:tidy
 ```
 
-`schema:tidy` compares the config files already on disk with the current application schema and removes only what no longer exists:
+`schema:tidy` compares the config files already on disk with the **live database** (read through the database connection, not the models) and removes only what no longer exists there:
 
-- a config file whose table has been removed from the application is **deleted**, and
+- a config file whose table has been dropped from the database is **deleted**, and
 - columns recorded in a surviving table's config that the table no longer has are **dropped** from that file.
+
+Because it reads the database directly, a table that still exists in the database but has lost (or never had) an ActiveRecord model is **kept** — only a table that is genuinely gone is removed. (This is the deliberate counterpart to `generate`, which is model-driven and only ever adds what the models know about.)
 
 It respects `OUTPUT_DIR_PATH` and the per-database subdirectory layout in the same way as `schema:generate`. Unlike `generate`, `tidy` never adds or regenerates entries — every surviving table/column (including hand-edited `comment` / `ignore` / `replace_with`) is left untouched, so it is safe to run on a customized config. The task prints which tables and columns it removed (or that the config was already tidy). Stale `belongs_tos` are not pruned by `tidy`; rerun `schema:generate` to refresh those.
 

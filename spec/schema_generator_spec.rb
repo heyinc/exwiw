@@ -444,6 +444,54 @@ module Exwiw
         after = Dir[File.join(output_dir, "*.json")].sort.map { |p| [File.basename(p), File.read(p)] }
         expect(after).to eq(before)
       end
+
+      # tidy reconciles against the live database, not against the models. A
+      # table that still exists in the database but has lost (or never had) a
+      # model must keep its config; only its genuinely-absent columns are
+      # pruned. Reconciling against `build_table_groups` (model-driven) would
+      # wrongly delete this config file.
+      context "for a table that exists in the database but has no model" do
+        before(:all) do
+          ActiveRecord::Base.connection.execute(<<~SQL)
+            CREATE TABLE IF NOT EXISTS orphan_records (
+              id INTEGER PRIMARY KEY,
+              kept TEXT
+            )
+          SQL
+        end
+
+        after(:all) do
+          ActiveRecord::Base.connection.execute("DROP TABLE IF EXISTS orphan_records")
+        end
+
+        it "keeps the config and prunes only the columns missing from the database" do
+          write_config("orphan_records", {
+            "name" => "orphan_records",
+            "primary_key" => "id",
+            "belongs_tos" => [],
+            "columns" => [
+              { "name" => "id" },
+              { "name" => "kept", "replace_with" => "masked" },
+              { "name" => "ghost_column" },
+            ],
+          })
+
+          # No model maps to orphan_records, so a model-driven reconcile would
+          # delete the file. Pass only Shop to make that unambiguous.
+          result = described_class.new(models: [Shop], output_dir: output_dir).tidy!
+
+          path = File.join(output_dir, "orphan_records.json")
+          expect(File).to exist(path)
+          expect(result.removed_tables).to be_empty
+
+          written = JSON.parse(File.read(path))
+          column_names = written["columns"].map { |c| c["name"] }
+          expect(column_names).to include("id", "kept")
+          expect(column_names).not_to include("ghost_column")
+          expect(written["columns"].find { |c| c["name"] == "kept" }["replace_with"]).to eq("masked")
+          expect(result.removed_columns).to eq("orphan_records" => ["ghost_column"])
+        end
+      end
     end
   end
 end

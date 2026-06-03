@@ -59,12 +59,21 @@ module Exwiw
       groups
     end
 
-    # Reconcile the config files already on disk against the current
-    # application schema, removing only what no longer exists:
+    # Reconcile the config files already on disk against the live database,
+    # removing only what no longer exists there:
     #
     # - a config file whose table is no longer present is deleted, and
     # - columns recorded in a surviving table's config that the table no
     #   longer has are dropped from that file.
+    #
+    # The source of truth is the database connection (`data_sources` for table
+    # existence — which covers views too — and `columns` for the column list),
+    # NOT `build_table_groups`. `build_table_groups` only knows about tables
+    # that still have an ActiveRecord model, so reconciling against it would
+    # delete the config of a table that is still present in the database but
+    # has merely lost (or never had) a model. Reading the connection directly
+    # avoids that: only a table that is genuinely gone from the database is
+    # removed.
     #
     # Unlike `generate!`, tidy never adds or regenerates entries: every
     # surviving table/column — including its hand-edited `comment` / `ignore` /
@@ -76,23 +85,22 @@ module Exwiw
     def tidy!
       result = TidyResult.new
 
-      build_table_groups.each do |db_name, current_tables|
+      model_db_groups.each do |db_name, _group_models, conn|
         dir = config_dir_for(db_name)
         next unless Dir.exist?(dir)
 
-        current_by_name = current_tables.each_with_object({}) { |t, h| h[t.name] = t }
+        existing_data_sources = conn.data_sources.to_set
 
         Dir[File.join(dir, "*.json")].sort.each do |path|
           existing = TableConfig.from(JSON.parse(File.read(path)))
-          current_table = current_by_name[existing.name]
 
-          if current_table.nil?
+          unless existing_data_sources.include?(existing.name)
             File.delete(path)
             result.add_removed_table(existing.name)
             next
           end
 
-          valid_column_names = current_table.column_names.to_set
+          valid_column_names = conn.columns(existing.name).map(&:name).to_set
           stale_columns = existing.columns.reject { |column| valid_column_names.include?(column.name) }
           next if stale_columns.empty?
 
@@ -114,18 +122,35 @@ module Exwiw
     #   mapping to that database's table configs. They are written into
     #   `output_dir/<db_name>/`.
     def build_table_groups
+      model_db_groups.each_with_object({}) do |(db_name, group_models, conn), result|
+        result[db_name] = build_tables_for(group_models, conn)
+      end
+    end
+
+    # The per-database grouping that both `build_table_groups` and `tidy!` work
+    # from: `[[db_name, models, connection], ...]`.
+    #
+    # - Single-database setup: one entry keyed by `nil` (configs written flat
+    #   into `output_dir`). When there are no models at all, fall back to the
+    #   default connection so callers still have a connection to inspect.
+    # - Multi-database setup (Rails `connects_to`): one entry per database,
+    #   keyed by `connection_db_config.name` ("primary" / "analytics", ...).
+    #
+    # The db_name <-> connection mapping is necessarily model-derived: which
+    # databases the app talks to is only declared on the model side (via
+    # `connects_to`). What each consumer reads *through* that connection differs
+    # — `build_table_groups` builds configs from the models, while `tidy!`
+    # reads the live database's actual tables/columns.
+    private def model_db_groups
       models = concrete_models
       grouped = models.group_by { |model| database_name_for(model) }
 
       if grouped.size <= 1
         conn = models.empty? ? ActiveRecord::Base.connection : models.first.connection
-        return { nil => build_tables_for(models, conn) }
+        return [[nil, models, conn]]
       end
 
-      grouped.each_with_object({}) do |(db_name, group_models), result|
-        conn = group_models.first.connection
-        result[db_name] = build_tables_for(group_models, conn)
-      end
+      grouped.map { |db_name, group_models| [db_name, group_models, group_models.first.connection] }
     end
 
     # Backwards-compatible flat list of all table configs. Only meaningful for
