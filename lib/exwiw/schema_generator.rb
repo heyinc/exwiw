@@ -5,6 +5,30 @@ require "json"
 
 module Exwiw
   class SchemaGenerator
+    # Summary of what `SchemaGenerator#tidy!` removed, returned so callers can
+    # report it. `removed_columns` maps a surviving table's name to the column
+    # names that were dropped from its config.
+    class TidyResult
+      attr_reader :removed_tables, :removed_columns
+
+      def initialize
+        @removed_tables = []
+        @removed_columns = {}
+      end
+
+      def add_removed_table(table_name)
+        @removed_tables << table_name
+      end
+
+      def add_removed_column(table_name, column_name)
+        (@removed_columns[table_name] ||= []) << column_name
+      end
+
+      def empty?
+        @removed_tables.empty? && @removed_columns.empty?
+      end
+    end
+
     # ActiveStorage tracks generated image variants in this table. Its rows are
     # derivative and regenerable — ActiveStorage lazily (re)creates a variant the
     # next time it is requested — so there is little value in exporting them. More
@@ -35,6 +59,60 @@ module Exwiw
       groups
     end
 
+    # Reconcile the config files already on disk against the live database,
+    # removing only what no longer exists there:
+    #
+    # - a config file whose table is no longer present is deleted, and
+    # - columns recorded in a surviving table's config that the table no
+    #   longer has are dropped from that file.
+    #
+    # The source of truth is the database connection (`data_sources` for table
+    # existence — which covers views too — and `columns` for the column list),
+    # NOT `build_table_groups`. `build_table_groups` only knows about tables
+    # that still have an ActiveRecord model, so reconciling against it would
+    # delete the config of a table that is still present in the database but
+    # has merely lost (or never had) a model. Reading the connection directly
+    # avoids that: only a table that is genuinely gone from the database is
+    # removed.
+    #
+    # Unlike `generate!`, tidy never adds or regenerates entries: every
+    # surviving table/column — including its hand-edited `comment` / `ignore` /
+    # `replace_with` — is left untouched, and only the stale entries are
+    # stripped. (Removing a deleted column is something `generate!` already does
+    # incidentally via #merge, but `generate!` can never delete the config file
+    # of a removed table, which is the gap this fills.) Returns a TidyResult
+    # describing the removals so callers (e.g. the rake task) can report them.
+    def tidy!
+      result = TidyResult.new
+
+      model_db_groups.each do |db_name, _group_models, conn|
+        dir = config_dir_for(db_name)
+        next unless Dir.exist?(dir)
+
+        existing_data_sources = conn.data_sources.to_set
+
+        Dir[File.join(dir, "*.json")].sort.each do |path|
+          existing = TableConfig.from(JSON.parse(File.read(path)))
+
+          unless existing_data_sources.include?(existing.name)
+            File.delete(path)
+            result.add_removed_table(existing.name)
+            next
+          end
+
+          valid_column_names = conn.columns(existing.name).map(&:name).to_set
+          stale_columns = existing.columns.reject { |column| valid_column_names.include?(column.name) }
+          next if stale_columns.empty?
+
+          existing.columns = existing.columns.select { |column| valid_column_names.include?(column.name) }
+          File.write(path, JSON.pretty_generate(existing.to_hash) + "\n")
+          stale_columns.each { |column| result.add_removed_column(existing.name, column.name) }
+        end
+      end
+
+      result
+    end
+
     # Returns a Hash keyed by the database name.
     #
     # - Single-database setup: the only key is `nil`, signalling that the table
@@ -44,18 +122,35 @@ module Exwiw
     #   mapping to that database's table configs. They are written into
     #   `output_dir/<db_name>/`.
     def build_table_groups
+      model_db_groups.each_with_object({}) do |(db_name, group_models, conn), result|
+        result[db_name] = build_tables_for(group_models, conn)
+      end
+    end
+
+    # The per-database grouping that both `build_table_groups` and `tidy!` work
+    # from: `[[db_name, models, connection], ...]`.
+    #
+    # - Single-database setup: one entry keyed by `nil` (configs written flat
+    #   into `output_dir`). When there are no models at all, fall back to the
+    #   default connection so callers still have a connection to inspect.
+    # - Multi-database setup (Rails `connects_to`): one entry per database,
+    #   keyed by `connection_db_config.name` ("primary" / "analytics", ...).
+    #
+    # The db_name <-> connection mapping is necessarily model-derived: which
+    # databases the app talks to is only declared on the model side (via
+    # `connects_to`). What each consumer reads *through* that connection differs
+    # — `build_table_groups` builds configs from the models, while `tidy!`
+    # reads the live database's actual tables/columns.
+    private def model_db_groups
       models = concrete_models
       grouped = models.group_by { |model| database_name_for(model) }
 
       if grouped.size <= 1
         conn = models.empty? ? ActiveRecord::Base.connection : models.first.connection
-        return { nil => build_tables_for(models, conn) }
+        return [[nil, models, conn]]
       end
 
-      grouped.each_with_object({}) do |(db_name, group_models), result|
-        conn = group_models.first.connection
-        result[db_name] = build_tables_for(group_models, conn)
-      end
+      grouped.map { |db_name, group_models| [db_name, group_models, group_models.first.connection] }
     end
 
     # Backwards-compatible flat list of all table configs. Only meaningful for
@@ -67,9 +162,16 @@ module Exwiw
 
     def write_groups(groups)
       groups.each do |db_name, tables|
-        dir = db_name.nil? ? @output_dir : File.join(@output_dir, db_name)
-        write_files(dir, tables)
+        write_files(config_dir_for(db_name), tables)
       end
+    end
+
+    # The directory a database group's config files live in. A single-database
+    # setup (`db_name` is nil) writes flat into `output_dir`; a multi-database
+    # setup writes into `output_dir/<db_name>/`. Shared by `write_groups` and
+    # `tidy!` so the two operations agree on file locations.
+    private def config_dir_for(db_name)
+      db_name.nil? ? @output_dir : File.join(@output_dir, db_name)
     end
 
     def write_files(dir, tables)

@@ -46,6 +46,21 @@ module Exwiw
     end
   end
 
+  # Plain models backed by throwaway tables, used by the end-to-end tidy test
+  # that applies a real DDL change to the live database and checks that tidy
+  # reconciles the on-disk config to match. They are ::ActiveRecord::Base
+  # descendants (not ApplicationRecord) so they stay out of the `models` list
+  # the other examples build from `ApplicationRecord.descendants`.
+  module SchemaGeneratorE2eFixtures
+    class KeptTable < ::ActiveRecord::Base
+      self.table_name = "e2e_kept"
+    end
+
+    class DoomedTable < ::ActiveRecord::Base
+      self.table_name = "e2e_doomed"
+    end
+  end
+
   # Real Rails multi-DB setup: two abstract bases wired through
   # `connects_to` against named entries in `ActiveRecord::Base.configurations`,
   # exactly as a `database.yml`-backed app would. This makes
@@ -304,6 +319,26 @@ module Exwiw
             .to contain_exactly("analytics_events.json", "schema_migrations.json")
         end
       end
+
+      describe "#tidy!" do
+        it "tidies each database's own subdirectory" do
+          described_class.new(models: multidb_models, output_dir: output_dir).generate!
+          stale_path = File.join(output_dir, "primary", "legacy_things.json")
+          File.write(stale_path, JSON.pretty_generate(
+            "name" => "legacy_things",
+            "primary_key" => "id",
+            "belongs_tos" => [],
+            "columns" => [{ "name" => "id" }],
+          ) + "\n")
+
+          result = described_class.new(models: multidb_models, output_dir: output_dir).tidy!
+
+          expect(File).not_to exist(stale_path)
+          expect(File).to exist(File.join(output_dir, "primary", "shops.json"))
+          expect(File).to exist(File.join(output_dir, "analytics", "analytics_events.json"))
+          expect(result.removed_tables).to contain_exactly("legacy_things")
+        end
+      end
     end
 
     describe "#generate!" do
@@ -348,6 +383,182 @@ module Exwiw
           expected = JSON.parse(File.read(fixture_path))
           expect(actual).to eq(expected), "snapshot mismatch in #{File.basename(fixture_path)}"
         end
+      end
+    end
+
+    describe "#tidy!" do
+      def write_config(name, hash)
+        File.write(File.join(output_dir, "#{name}.json"), JSON.pretty_generate(hash) + "\n")
+      end
+
+      it "deletes the config file of a table that no longer exists" do
+        described_class.new(models: models, output_dir: output_dir).generate!
+        write_config("legacy_things", {
+          "name" => "legacy_things",
+          "primary_key" => "id",
+          "belongs_tos" => [],
+          "columns" => [{ "name" => "id" }, { "name" => "value" }],
+        })
+
+        result = described_class.new(models: models, output_dir: output_dir).tidy!
+
+        expect(File).not_to exist(File.join(output_dir, "legacy_things.json"))
+        expect(File).to exist(File.join(output_dir, "shops.json"))
+        expect(result.removed_tables).to contain_exactly("legacy_things")
+        expect(result.removed_columns).to be_empty
+      end
+
+      it "drops columns that the table no longer has from a surviving config" do
+        write_config("shops", {
+          "name" => "shops",
+          "primary_key" => "id",
+          "belongs_tos" => [],
+          "columns" => [
+            { "name" => "id" },
+            { "name" => "name", "replace_with" => "masked" },
+            { "name" => "ghost_column" },
+          ],
+        })
+
+        result = described_class.new(models: [Shop], output_dir: output_dir).tidy!
+
+        written = JSON.parse(File.read(File.join(output_dir, "shops.json")))
+        expect(written["columns"].map { |c| c["name"] }).not_to include("ghost_column")
+        expect(written["columns"].map { |c| c["name"] }).to include("id", "name")
+        expect(result.removed_columns).to eq("shops" => ["ghost_column"])
+        expect(result.removed_tables).to be_empty
+      end
+
+      it "preserves hand-edited attributes on surviving columns" do
+        write_config("shops", {
+          "name" => "shops",
+          "primary_key" => "id",
+          "belongs_tos" => [],
+          "columns" => [
+            { "name" => "id" },
+            { "name" => "name", "replace_with" => "masked", "comment" => "PII" },
+            { "name" => "ghost_column" },
+          ],
+        })
+
+        described_class.new(models: [Shop], output_dir: output_dir).tidy!
+
+        written = JSON.parse(File.read(File.join(output_dir, "shops.json")))
+        name_column = written["columns"].find { |c| c["name"] == "name" }
+        expect(name_column["replace_with"]).to eq("masked")
+        expect(name_column["comment"]).to eq("PII")
+      end
+
+      it "reports nothing and leaves files intact when the config already matches the schema" do
+        described_class.new(models: models, output_dir: output_dir).generate!
+        before = Dir[File.join(output_dir, "*.json")].sort.map { |p| [File.basename(p), File.read(p)] }
+
+        result = described_class.new(models: models, output_dir: output_dir).tidy!
+
+        expect(result).to be_empty
+        after = Dir[File.join(output_dir, "*.json")].sort.map { |p| [File.basename(p), File.read(p)] }
+        expect(after).to eq(before)
+      end
+
+      # tidy reconciles against the live database, not against the models. A
+      # table that still exists in the database but has lost (or never had) a
+      # model must keep its config; only its genuinely-absent columns are
+      # pruned. Reconciling against `build_table_groups` (model-driven) would
+      # wrongly delete this config file.
+      context "for a table that exists in the database but has no model" do
+        before(:all) do
+          ActiveRecord::Base.connection.execute(<<~SQL)
+            CREATE TABLE IF NOT EXISTS orphan_records (
+              id INTEGER PRIMARY KEY,
+              kept TEXT
+            )
+          SQL
+        end
+
+        after(:all) do
+          ActiveRecord::Base.connection.execute("DROP TABLE IF EXISTS orphan_records")
+        end
+
+        it "keeps the config and prunes only the columns missing from the database" do
+          write_config("orphan_records", {
+            "name" => "orphan_records",
+            "primary_key" => "id",
+            "belongs_tos" => [],
+            "columns" => [
+              { "name" => "id" },
+              { "name" => "kept", "replace_with" => "masked" },
+              { "name" => "ghost_column" },
+            ],
+          })
+
+          # No model maps to orphan_records, so a model-driven reconcile would
+          # delete the file. Pass only Shop to make that unambiguous.
+          result = described_class.new(models: [Shop], output_dir: output_dir).tidy!
+
+          path = File.join(output_dir, "orphan_records.json")
+          expect(File).to exist(path)
+          expect(result.removed_tables).to be_empty
+
+          written = JSON.parse(File.read(path))
+          column_names = written["columns"].map { |c| c["name"] }
+          expect(column_names).to include("id", "kept")
+          expect(column_names).not_to include("ghost_column")
+          expect(written["columns"].find { |c| c["name"] == "kept" }["replace_with"]).to eq("masked")
+          expect(result.removed_columns).to eq("orphan_records" => ["ghost_column"])
+        end
+      end
+    end
+
+    # End-to-end: start from config that `generate!` produced against the live
+    # schema, apply a real DDL change to the database (drop a table, drop a
+    # column), then check that `tidy!` reconciles the on-disk config to match.
+    # Unlike the focused `#tidy!` examples above (which hand-write config with
+    # made-up names), this drives the generate -> schema-change -> tidy flow
+    # against actual tables.
+    describe "reconciling config after a real schema change" do
+      before(:all) do
+        conn = ActiveRecord::Base.connection
+        conn.execute("DROP TABLE IF EXISTS e2e_kept")
+        conn.execute("DROP TABLE IF EXISTS e2e_doomed")
+        conn.execute("CREATE TABLE e2e_kept (id INTEGER PRIMARY KEY, name TEXT, doomed_col TEXT)")
+        conn.execute("CREATE TABLE e2e_doomed (id INTEGER PRIMARY KEY)")
+      end
+
+      after(:all) do
+        conn = ActiveRecord::Base.connection
+        conn.execute("DROP TABLE IF EXISTS e2e_kept")
+        conn.execute("DROP TABLE IF EXISTS e2e_doomed")
+      end
+
+      it "deletes config for a dropped table and prunes a dropped column" do
+        e2e_models = [
+          SchemaGeneratorE2eFixtures::KeptTable,
+          SchemaGeneratorE2eFixtures::DoomedTable,
+        ]
+        kept_path = File.join(output_dir, "e2e_kept.json")
+        doomed_path = File.join(output_dir, "e2e_doomed.json")
+        column_names = ->(path) { JSON.parse(File.read(path))["columns"].map { |c| c["name"] } }
+
+        # 1. Generate config from the real schema.
+        described_class.new(models: e2e_models, output_dir: output_dir).generate!
+        expect(File).to exist(doomed_path)
+        expect(column_names.call(kept_path)).to include("id", "name", "doomed_col")
+
+        # 2. Apply a real schema change to the live database.
+        conn = ActiveRecord::Base.connection
+        conn.execute("DROP TABLE e2e_doomed")
+        conn.execute("ALTER TABLE e2e_kept DROP COLUMN doomed_col")
+        conn.schema_cache.clear!
+        e2e_models.each(&:reset_column_information)
+
+        # 3. Tidy reconciles the on-disk config to the new schema.
+        result = described_class.new(models: e2e_models, output_dir: output_dir).tidy!
+
+        expect(File).not_to exist(doomed_path)
+        expect(File).to exist(kept_path)
+        expect(column_names.call(kept_path)).to contain_exactly("id", "name")
+        expect(result.removed_tables).to contain_exactly("e2e_doomed")
+        expect(result.removed_columns).to eq("e2e_kept" => ["doomed_col"])
       end
     end
   end
