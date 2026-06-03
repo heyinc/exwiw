@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-06-03
+
 ### Added
 
 - New `exwiw:schema:tidy` rake task. It reconciles the existing schema config against the live database (read through the database connection, not the models) and removes only what no longer exists there: a config file whose table has been dropped is deleted, and columns recorded in a surviving table's config that the table no longer has are dropped from that file. Because it reads the database directly, a table that still exists in the database but has lost (or never had) a model is kept — only a genuinely-dropped table is removed. Unlike `schema:generate` it never adds or regenerates entries, so hand-edited `comment` / `ignore` / `replace_with` on surviving tables/columns are preserved. It honors `OUTPUT_DIR_PATH` and the per-database subdirectory layout, and prints the tables/columns it removed.
