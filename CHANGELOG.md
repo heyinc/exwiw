@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `MongoidSchemaGenerator` gains an opt-in `skip_unsupported:` mode (via the rake task, `EXWIW_SKIP_UNSUPPORTED=1 bundle exec rake exwiw:schema:generate_mongoid`). When enabled, generation no longer aborts on a construct exwiw cannot represent: an unresolvable `belongs_to` (whose target class no longer exists — e.g. a stale relation left behind after the model was removed) is skipped with a stderr warning while its foreign-key column is still kept as a field, and a polymorphic / self-referential-cyclic / unresolvable-parent `embedded_in` collection is emitted as a top-level `ignore: true` config annotated with a `comment` explaining why — so it is not wrongly dumped as its own collection — instead of raising. Off by default, so the existing fail-loud behavior is unchanged for callers that do not opt in. `MongodbCollectionConfig` now also carries an optional collection-level `comment` attribute, preserved across regeneration like the field / belongs_to `comment`.
+
 ## [0.4.0] - 2026-06-04
 
 ### Fixed
