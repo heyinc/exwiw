@@ -277,6 +277,88 @@ module Exwiw
       end
     end
 
+    describe "#build_collections with skip_unsupported: true" do
+      def build(models)
+        described_class.new(models: models, output_dir: output_dir, skip_unsupported: true).build_collections
+      end
+
+      it "skips an unresolvable belongs_to but keeps its foreign-key field instead of raising" do
+        # StaleReferencer#ghost points at a class that does not exist, so
+        # `assoc.klass` raises NameError. With skip_unsupported the relation is
+        # dropped from belongs_tos while the auto-added `ghost_id` field survives,
+        # mirroring how polymorphic / HABTM relations are handled.
+        config = nil
+        expect { config = build([MongoidDummy::StaleReferencer]).first }
+          .to output(/skipping belongs_to ':ghost'/).to_stderr
+        expect(config.belongs_tos).to be_empty
+        expect(config.fields.map(&:name)).to include("ghost_id")
+        expect(config.ignore).to be_nil
+      end
+
+      it "emits a polymorphic embedded_in collection as ignore:true with a comment instead of raising" do
+        config = nil
+        expect { config = build([MongoidDummy::PolymorphicAddress]).first }
+          .to output(/polymorphic embedded_in :addressable/).to_stderr
+        expect(config.name).to eq("polymorphic_addresses")
+        expect(config.ignore).to eq(true)
+        expect(config.embedded_in).to be_nil
+        expect(config.belongs_tos).to be_empty
+        expect(config.comment).to match(/polymorphic embedded_in :addressable/)
+      end
+
+      it "emits a self-referential (cyclic) embedded_in collection as ignore:true instead of raising" do
+        config = nil
+        expect { config = build([MongoidDummy::TreeNode]).first }
+          .to output(/self-referential \(cyclic\) embedded_in/).to_stderr
+        expect(config.name).to eq("tree_nodes")
+        expect(config.ignore).to eq(true)
+        expect(config.embedded_in).to be_nil
+        expect(config.comment).to match(/cyclic/)
+      end
+
+      it "emits an embedded_in collection with an unresolvable parent class as ignore:true instead of raising" do
+        config = nil
+        expect { config = build([MongoidDummy::OrphanEmbedded]).first }
+          .to output(/parent class is unresolvable/).to_stderr
+        expect(config.name).to eq("orphan_embeddeds")
+        expect(config.ignore).to eq(true)
+        expect(config.embedded_in).to be_nil
+        expect(config.comment).to match(/unresolvable/)
+      end
+
+      it "emits an embedded_in collection with an ambiguous inverse as ignore:true instead of raising" do
+        # AmbiguousChild is embedded under two keys in AmbiguousParent without
+        # inverse_of, so Mongoid raises AmbiguousRelationship resolving the
+        # inverse. exwiw cannot pick the single path, so under skip_unsupported it
+        # marks the collection ignore:true rather than aborting.
+        config = nil
+        expect { config = build([MongoidDummy::AmbiguousChild]).first }
+          .to output(%r{ambiguous/unresolvable inverse}).to_stderr
+        expect(config.name).to eq("ambiguous_children")
+        expect(config.ignore).to eq(true)
+        expect(config.embedded_in).to be_nil
+        expect(config.comment).to match(/ambiguous/)
+      end
+
+      it "still raises by default (skip_unsupported off) on an ambiguous embedded_in inverse" do
+        expect {
+          described_class.new(models: [MongoidDummy::AmbiguousChild], output_dir: output_dir).build_collections
+        }.to raise_error(MongoidSchemaGenerator::UnsupportedEmbedding, /ambiguous or unresolvable/)
+      end
+
+      it "still raises by default (skip_unsupported off) on an unresolvable belongs_to" do
+        expect {
+          described_class.new(models: [MongoidDummy::StaleReferencer], output_dir: output_dir).build_collections
+        }.to raise_error(NameError, /uninitialized constant/)
+      end
+
+      it "still raises by default (skip_unsupported off) on an unresolvable embedded_in parent" do
+        expect {
+          described_class.new(models: [MongoidDummy::OrphanEmbedded], output_dir: output_dir).build_collections
+        }.to raise_error(MongoidSchemaGenerator::UnsupportedEmbedding, /parent class cannot be resolved/)
+      end
+    end
+
     describe "#generate!" do
       it "writes one JSON file per collection" do
         described_class.new(models: models, output_dir: output_dir).generate!

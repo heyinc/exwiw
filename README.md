@@ -200,6 +200,15 @@ Models in an inheritance hierarchy whose subclasses share the base's collection 
 
 Regeneration preserves hand-edited `replace_with`, `filter`, `ignore`, and `bulk_insert_chunk_size` values, like the ActiveRecord generator. Indexes are not written to the config — they are introspected from the live database at dump time (see [MongoDB notes](#mongodb-notes)). Polymorphic `belongs_to` is not yet expanded by this task.
 
+By default the task **aborts** when a model uses a construct exwiw cannot represent: a `belongs_to` whose target class can no longer be resolved (a stale relation left behind after its model was removed), or a polymorphic / self-referential-cyclic / unresolvable-parent `embedded_in` (see the cases above). Set `EXWIW_SKIP_UNSUPPORTED=1` to keep going instead:
+
+```bash
+EXWIW_SKIP_UNSUPPORTED=1 bundle exec rake exwiw:schema:generate_mongoid
+```
+
+- An unresolvable `belongs_to` is dropped from the collection's `belongs_tos` (its foreign-key column is still kept as an ordinary field, like the polymorphic / HABTM cases) and a warning naming the relation is printed to stderr.
+- An unrepresentable `embedded_in` collection is emitted as a **top-level** config marked `"ignore": true` with a `comment` recording why, and a warning is printed. `ignore: true` keeps it out of extraction so it is not wrongly dumped as its own collection; to actually dump/mask such an embedded collection, define its `embedded_in` config by hand (see [Embedded documents](#embedded-documents)). This is useful for bootstrapping a config against a large app where a handful of legacy/polymorphic collections would otherwise block the whole run.
+
 ### Configuration
 
 This is an example of the one table schema:

@@ -14,6 +14,12 @@ module Exwiw
     attribute :fields, array(MongodbField)
     attribute :bulk_insert_chunk_size, optional(Integer), skip_serializing_if_nil: true
     attribute :ignore, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
+    # Free-form note. Purely informational — exwiw never reads it — and preserved
+    # across `MongoidSchemaGenerator` regeneration like the field / belongs_to
+    # `comment`. The generator also emits one when, under `skip_unsupported`, it
+    # marks an unrepresentable collection `ignore: true`, to record why extraction
+    # was skipped.
+    attribute :comment, optional(String), skip_serializing_if_nil: true
 
     # Marks this config as physically embedded inside another collection's
     # documents. When set, this config is not processed as a standalone dump
@@ -62,6 +68,10 @@ module Exwiw
         merged.filter = filter
         merged.bulk_insert_chunk_size = bulk_insert_chunk_size
         merged.ignore = ignore
+        # A freshly generated comment (e.g. the skip_unsupported marker) wins so
+        # it stays accurate; otherwise a hand-added note on a normal collection
+        # is kept.
+        merged.comment = passed.comment || comment
         merged.embedded_in = passed.embedded_in
 
         # Structural facts of each belongs_to come from the freshly generated

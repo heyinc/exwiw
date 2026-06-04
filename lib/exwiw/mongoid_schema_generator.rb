@@ -14,14 +14,38 @@ module Exwiw
   # (`fields`, `relations`, `collection_name`), so it does not require a live
   # MongoDB connection.
   class MongoidSchemaGenerator
-    def self.from_rails_application(output_dir:)
-      Rails.application.eager_load!
-      new(models: ::Mongoid.models, output_dir: output_dir)
+    # Raised when an embedded collection's `embedded_in` cannot be expressed as
+    # an exwiw config (polymorphic embedding, self-referential/cyclic embedding,
+    # or an unresolvable embedding-parent class). A subclass of ArgumentError so
+    # the historical `raise_error(ArgumentError, ...)` contract is preserved.
+    # Under `skip_unsupported` the generator rescues this and emits an
+    # `ignore: true` config instead of aborting the whole run.
+    class UnsupportedEmbedding < ArgumentError
+      # A concise phrase (as opposed to the long, actionable exception message)
+      # recorded as the generated config's `comment`.
+      attr_reader :reason
+
+      def initialize(message, reason:)
+        super(message)
+        @reason = reason
+      end
     end
 
-    def initialize(models:, output_dir:)
+    # `skip_unsupported`: when true, the generator does not abort on a construct
+    # it cannot represent. It skips an unresolvable `belongs_to` (keeping the
+    # foreign-key field) and emits an unrepresentable embedded collection as an
+    # `ignore: true` top-level config annotated with a `comment`, warning to
+    # stderr in both cases. Off by default, so the historical fail-loud behavior
+    # is unchanged unless a caller opts in.
+    def self.from_rails_application(output_dir:, skip_unsupported: false)
+      Rails.application.eager_load!
+      new(models: ::Mongoid.models, output_dir: output_dir, skip_unsupported: skip_unsupported)
+    end
+
+    def initialize(models:, output_dir:, skip_unsupported: false)
       @models = models
       @output_dir = output_dir
+      @skip_unsupported = skip_unsupported
     end
 
     def generate!
@@ -78,7 +102,31 @@ module Exwiw
         # supported (MongodbCollectionConfig rejects them), so embedded configs
         # always carry an empty belongs_tos and instead declare where they live.
         attrs[:belongs_tos] = []
-        attrs[:embedded_in] = embedded_in_for(ordered.find(&:embedded?))
+        begin
+          attrs[:embedded_in] = embedded_in_for(ordered.find(&:embedded?))
+        rescue => e
+          # Known-unrepresentable shapes arrive as UnsupportedEmbedding (with a
+          # concise reason). Without skip_unsupported, re-raise so the historical
+          # fail-loud behavior is preserved. The broad rescue is a deliberate
+          # safety net for skip_unsupported (a best-effort bootstrapping mode):
+          # any other error while deriving the embedding is turned into an
+          # `ignore: true` config too, so a single odd model never aborts the run.
+          raise e unless @skip_unsupported
+
+          reason =
+            if e.is_a?(UnsupportedEmbedding)
+              e.reason
+            else
+              "raised #{e.class} while deriving embedded_in (#{e.message.lines.first&.strip})"
+            end
+
+          # Emit the collection as a top-level config marked `ignore: true` so it
+          # is NOT (wrongly) dumped as its own collection, and record why. The
+          # user can hand-write its embedded_in config later to dump/mask it.
+          warn("exwiw: skip_unsupported: '#{collection_name}' #{reason}; emitting ignore:true (define embedded_in by hand to dump/mask it).")
+          attrs[:ignore] = true
+          attrs[:comment] = "exwiw could not derive embedded_in (#{reason}); marked ignore:true. Define this collection's embedded_in config by hand to dump/mask it."
+        end
       else
         attrs[:belongs_tos] = aggregate_belongs_tos(ordered)
       end
@@ -168,8 +216,23 @@ module Exwiw
       # same belongs_to twice, so uniq them.
       belongs_to_assocs
         .reject(&:polymorphic?)
-        .map { |assoc| { table_name: assoc.klass.collection_name.to_s, foreign_key: assoc.foreign_key } }
+        .filter_map { |assoc| belongs_to_for(assoc) }
         .uniq
+    end
+
+    # Resolves a referenced belongs_to to a `{ table_name, foreign_key }` pair.
+    # `assoc.klass` raises NameError when the association's target class no longer
+    # exists (a stale/legacy `belongs_to`, e.g. pointing at a model removed years
+    # ago). Under `skip_unsupported` such a relation is skipped with a warning —
+    # its foreign-key column is still tracked as an ordinary field by
+    # `aggregate_fields`, mirroring how polymorphic / HABTM relations are dropped.
+    private def belongs_to_for(assoc)
+      { table_name: assoc.klass.collection_name.to_s, foreign_key: assoc.foreign_key }
+    rescue NameError, ::Mongoid::Errors::MongoidError => e
+      raise e unless @skip_unsupported
+
+      warn("exwiw: skip_unsupported: skipping belongs_to ':#{assoc.name}' that could not be resolved (#{e.class}: #{e.message.lines.first&.strip}); its foreign key '#{assoc.foreign_key}' is still kept as a field.")
+      nil
     end
 
     # Resolves the `embedded_in` config for an embedded model. Each embedded
@@ -196,14 +259,30 @@ module Exwiw
       # names exactly one parent collection + path, so this shape cannot be
       # represented; fail loudly with an actionable message instead of crashing.
       if assoc.polymorphic?
-        raise ArgumentError,
-              "MongoidSchemaGenerator: '#{model.name}' (collection '#{model.collection_name}') " \
-              "declares a polymorphic `embedded_in :#{assoc.name}`, which has no single embedding " \
-              "parent collection and cannot be expressed as an exwiw `embedded_in` config. " \
-              "Define the collection's config by hand, or make the relation non-polymorphic."
+        raise UnsupportedEmbedding.new(
+          "MongoidSchemaGenerator: '#{model.name}' (collection '#{model.collection_name}') " \
+          "declares a polymorphic `embedded_in :#{assoc.name}`, which has no single embedding " \
+          "parent collection and cannot be expressed as an exwiw `embedded_in` config. " \
+          "Define the collection's config by hand, or make the relation non-polymorphic.",
+          reason: "has a polymorphic embedded_in :#{assoc.name}",
+        )
       end
 
-      parent = assoc.klass
+      parent =
+        begin
+          assoc.klass
+        rescue NameError => e
+          # The embedding-parent class named by `class_name` (or inferred from
+          # the relation) does not exist — a stale/renamed parent. exwiw cannot
+          # name a parent collection it cannot resolve.
+          raise UnsupportedEmbedding.new(
+            "MongoidSchemaGenerator: '#{model.name}' (collection '#{model.collection_name}') " \
+            "declares `embedded_in :#{assoc.name}` whose parent class cannot be resolved " \
+            "(#{e.message.lines.first&.strip}). Fix the association's class_name, or define the " \
+            "collection's config by hand.",
+            reason: "has an embedded_in :#{assoc.name} whose parent class is unresolvable",
+          )
+        end
 
       # A self-referential / cyclic `embedded_in` — Mongoid's
       # `recursively_embeds_many` / `recursively_embeds_one` (which declare a
@@ -216,19 +295,47 @@ module Exwiw
       # `MongodbAdapter#dumpable?` (`!embedded?`) would silently never dump the
       # collection's root documents. Fail loudly instead.
       if parent.collection_name.to_s == model.collection_name.to_s
-        raise ArgumentError,
-              "MongoidSchemaGenerator: '#{model.name}' (collection '#{model.collection_name}') " \
-              "declares a self-referential (cyclic) `embedded_in :#{assoc.name}` that embeds the " \
-              "collection inside documents of its own type (e.g. `recursively_embeds_many` / " \
-              "`recursively_embeds_one`). " \
-              "exwiw represents a collection as either top-level or embedded, not both, so this " \
-              "cannot be expressed as an exwiw `embedded_in` config. Define the collection's config " \
-              "by hand."
+        raise UnsupportedEmbedding.new(
+          "MongoidSchemaGenerator: '#{model.name}' (collection '#{model.collection_name}') " \
+          "declares a self-referential (cyclic) `embedded_in :#{assoc.name}` that embeds the " \
+          "collection inside documents of its own type (e.g. `recursively_embeds_many` / " \
+          "`recursively_embeds_one`). " \
+          "exwiw represents a collection as either top-level or embedded, not both, so this " \
+          "cannot be expressed as an exwiw `embedded_in` config. Define the collection's config " \
+          "by hand.",
+          reason: "has a self-referential (cyclic) embedded_in :#{assoc.name}",
+        )
       end
 
       # `store_as` defaults to the relation name and is the actual document key
       # the subdocuments are stored under inside the immediate parent.
-      parent_relation = parent.relations[assoc.inverse.to_s]
+      parent_relation =
+        begin
+          parent.relations[assoc.inverse.to_s]
+        rescue ::Mongoid::Errors::MongoidError, NameError => e
+          # e.g. AmbiguousRelationship: the embedded class is embedded under
+          # several document keys in the parent (or otherwise has no single
+          # resolvable inverse), so exwiw cannot pick the one path it lives under.
+          raise UnsupportedEmbedding.new(
+            "MongoidSchemaGenerator: '#{model.name}' (collection '#{model.collection_name}') " \
+            "declares `embedded_in :#{assoc.name}` whose inverse on '#{parent.name}' is ambiguous " \
+            "or unresolvable (#{e.class}: #{e.message.lines.first&.strip}). Add an `inverse_of:` to " \
+            "disambiguate, or define the collection's config by hand.",
+            reason: "has an embedded_in :#{assoc.name} with an ambiguous/unresolvable inverse",
+          )
+        end
+
+      unless parent_relation
+        # `assoc.inverse` resolved to a name that is not an association on the
+        # parent (or to nothing), so there is no document key to embed under.
+        raise UnsupportedEmbedding.new(
+          "MongoidSchemaGenerator: '#{model.name}' (collection '#{model.collection_name}') " \
+          "declares `embedded_in :#{assoc.name}` but its inverse relation could not be located on " \
+          "'#{parent.name}' (the embedding document key is indeterminable). Add an `inverse_of:`, or " \
+          "define the collection's config by hand.",
+          reason: "has an embedded_in :#{assoc.name} whose inverse relation could not be located",
+        )
+      end
 
       { collection_name: parent.collection_name.to_s, path: parent_relation.store_as }
     end
