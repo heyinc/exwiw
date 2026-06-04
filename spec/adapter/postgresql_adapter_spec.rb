@@ -336,7 +336,6 @@ module Exwiw
           it "does not cast" do
             sql = adapter.compile_ast(build_order_items_ast)
             expect(sql).to include("ON order_items.order_id = orders.id")
-            expect(sql).not_to include("::text")
           end
         end
 

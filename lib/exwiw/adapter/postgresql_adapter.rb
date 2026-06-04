@@ -179,7 +179,7 @@ module Exwiw
         foreign_key = first_join.foreign_key
         outer_table = select_query_ast.from_table_name
         inner_table = first_join.join_table_name
-        inner_column = table.primary_key
+        inner_column = first_join.primary_key
         cast_to = types_need_cast?(
           column_pg_type(outer_table, foreign_key),
           column_pg_type(inner_table, inner_column)
@@ -267,14 +267,8 @@ module Exwiw
           end
         elsif where_clause.operator == :in_subquery
           subquery_sql = compile_subquery(where_clause.value, outer_table: table_name, outer_column: where_clause.column_name)
-          outer_key = key
-          inner_table, inner_column = subquery_select_target(where_clause.value)
-          if inner_table && types_need_cast?(
-            column_pg_type(table_name, where_clause.column_name),
-            column_pg_type(inner_table, inner_column)
-          )
-            outer_key = "#{key}::text"
-          end
+          cast_to = subquery_cast_to(where_clause.value, table_name, where_clause.column_name)
+          outer_key = cast_to ? "#{key}::#{cast_to}" : key
           "#{outer_key} IN (#{subquery_sql})"
         else
           raise "Unsupported operator: #{where_clause.operator}"
