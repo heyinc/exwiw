@@ -316,6 +316,113 @@ module Exwiw
         end
       end
 
+      describe "uuid/varchar type cast" do
+        before do
+          # Default: all columns are int8 (no cast needed)
+          allow(adapter).to receive(:column_pg_type).and_return('int8')
+        end
+
+        context "compile_ast JOIN with uuid/varchar mismatch" do
+          it "casts both sides to ::text" do
+            allow(adapter).to receive(:column_pg_type).with("order_items", "order_id").and_return('varchar')
+            allow(adapter).to receive(:column_pg_type).with("orders", "id").and_return('uuid')
+
+            sql = adapter.compile_ast(build_order_items_ast)
+            expect(sql).to include("ON order_items.order_id::text = orders.id::text")
+          end
+        end
+
+        context "compile_ast JOIN with matching types" do
+          it "does not cast" do
+            sql = adapter.compile_ast(build_order_items_ast)
+            expect(sql).to include("ON order_items.order_id = orders.id")
+          end
+        end
+
+        context "compile_where_condition with :in_subquery (flat Subquery) and uuid mismatch" do
+          it "casts outer key and inner select column" do
+            allow(adapter).to receive(:column_pg_type).with("users", "shop_id").and_return('varchar')
+            allow(adapter).to receive(:column_pg_type).with("shops", "id").and_return('uuid')
+
+            users_table = users_table(adapter_name)
+            ast = Exwiw::QueryAst::Select.new.tap do |a|
+              a.from(users_table.name)
+              a.select(users_table.columns)
+              a.where(
+                Exwiw::QueryAst::WhereClause.new(
+                  column_name: "shop_id",
+                  operator: :in_subquery,
+                  value: Exwiw::QueryAst::Subquery.new(
+                    table_name: "shops",
+                    select_column: "id",
+                    where_column: "name",
+                    where_values: ["Shop 1"]
+                  )
+                )
+              )
+            end
+
+            sql = adapter.compile_ast(ast)
+            expect(sql).to include("users.shop_id::text IN (SELECT shops.id::text FROM shops")
+          end
+        end
+
+        context "compile_where_condition with :in_subquery (SelectSubquery) and uuid mismatch" do
+          it "casts outer key and inner select column" do
+            allow(adapter).to receive(:column_pg_type).with("shops", "id").and_return('uuid')
+            allow(adapter).to receive(:column_pg_type).with("users", "shop_id").and_return('varchar')
+
+            fk_column = Exwiw::TableColumn.from_symbol_keys(name: "shop_id")
+            inner_query = Exwiw::QueryAst::Select.new
+            inner_query.from("users")
+            inner_query.select([fk_column])
+            inner_query.where(
+              Exwiw::QueryAst::WhereClause.new(
+                column_name: "name",
+                operator: :eq,
+                value: ["Alice"]
+              )
+            )
+
+            shops_table = shops_table(adapter_name)
+            ast = Exwiw::QueryAst::Select.new.tap do |a|
+              a.from(shops_table.name)
+              a.select(shops_table.columns)
+              a.where(
+                Exwiw::QueryAst::WhereClause.new(
+                  column_name: "id",
+                  operator: :in_subquery,
+                  value: Exwiw::QueryAst::SelectSubquery.new(query: inner_query)
+                )
+              )
+            end
+
+            sql = adapter.compile_ast(ast)
+            expect(sql).to include("shops.id::text IN (SELECT users.shop_id::text FROM users")
+          end
+        end
+
+        context "to_bulk_delete with uuid/varchar mismatch" do
+          it "casts both sides in the IN clause" do
+            allow(adapter).to receive(:column_pg_type).with("order_items", "order_id").and_return('varchar')
+            allow(adapter).to receive(:column_pg_type).with("orders", "id").and_return('uuid')
+
+            sql = adapter.to_bulk_delete(build_order_items_ast, order_items_table(adapter_name))
+            expect(sql).to include("order_items.order_id::text IN (SELECT orders.id::text FROM orders")
+          end
+        end
+
+        context "column_pg_type returns nil (graceful fallback)" do
+          it "does not cast and does not raise" do
+            allow(adapter).to receive(:column_pg_type).and_return(nil)
+
+            sql = adapter.compile_ast(build_order_items_ast)
+            expect(sql).to include("ON order_items.order_id = orders.id")
+            expect(sql).not_to include("::text")
+          end
+        end
+      end
+
       describe "#to_bulk_delete" do
         context "simple select query" do
           let(:bulk_delete_sql) { adapter.to_bulk_delete(build_select_shops_ast, shops_table(adapter_name)) }

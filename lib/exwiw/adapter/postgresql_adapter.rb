@@ -177,8 +177,17 @@ module Exwiw
         end
 
         foreign_key = first_join.foreign_key
-        subquery_sql = compile_ast(subquery_ast)
-        sql += "\nWHERE #{select_query_ast.from_table_name}.#{foreign_key} IN (#{subquery_sql})"
+        outer_table = select_query_ast.from_table_name
+        inner_table = first_join.join_table_name
+        inner_column = first_join.primary_key
+        cast_to = types_need_cast?(
+          column_pg_type(outer_table, foreign_key),
+          column_pg_type(inner_table, inner_column)
+        ) ? 'text' : nil
+        subquery_sql = compile_ast(subquery_ast, select_cast_to: cast_to)
+        outer_expr = "#{outer_table}.#{foreign_key}"
+        outer_expr = "#{outer_expr}::text" if cast_to
+        sql += "\nWHERE #{outer_expr} IN (#{subquery_sql})"
 
         # first_join.base_where_clauses holds conditions on the outer
         # delete-target table (from_table_name), such as a polymorphic type
@@ -195,19 +204,30 @@ module Exwiw
         sql
       end
 
-      def compile_ast(query_ast)
+      def compile_ast(query_ast, select_cast_to: nil)
         raise NotImplementedError unless query_ast.is_a?(Exwiw::QueryAst::Select)
 
         sql = "SELECT "
         sql += if query_ast.select_all
                  "*"
                else
-                 query_ast.columns.map { |col| compile_column_name(query_ast, col) }.join(', ')
+                 cols = query_ast.columns.map { |col| compile_column_name(query_ast, col) }
+                 cols = cols.map { |c| "#{c}::#{select_cast_to}" } if select_cast_to
+                 cols.join(', ')
                end
         sql += " FROM #{query_ast.from_table_name}"
 
         query_ast.join_clauses.each do |join|
-          sql += " JOIN #{join.join_table_name} ON #{join.base_table_name}.#{join.foreign_key} = #{join.join_table_name}.#{join.primary_key}"
+          fk_expr = "#{join.base_table_name}.#{join.foreign_key}"
+          pk_expr = "#{join.join_table_name}.#{join.primary_key}"
+          if types_need_cast?(
+            column_pg_type(join.base_table_name, join.foreign_key),
+            column_pg_type(join.join_table_name, join.primary_key)
+          )
+            fk_expr = "#{fk_expr}::text"
+            pk_expr = "#{pk_expr}::text"
+          end
+          sql += " JOIN #{join.join_table_name} ON #{fk_expr} = #{pk_expr}"
 
           join.where_clauses.each do |where|
             compiled_where_condition = compile_where_condition(where, join.join_table_name)
@@ -246,21 +266,52 @@ module Exwiw
             "#{key} IN (#{values.join(', ')})"
           end
         elsif where_clause.operator == :in_subquery
-          "#{key} IN (#{compile_subquery(where_clause.value)})"
+          subquery_sql = compile_subquery(where_clause.value, outer_table: table_name, outer_column: where_clause.column_name)
+          cast_to = subquery_cast_to(where_clause.value, table_name, where_clause.column_name)
+          outer_key = cast_to ? "#{key}::#{cast_to}" : key
+          "#{outer_key} IN (#{subquery_sql})"
         else
           raise "Unsupported operator: #{where_clause.operator}"
         end
       end
 
-      private def compile_subquery(subquery)
-        # A SelectSubquery wraps a full Select (the referencing table's
-        # extraction query, projected to a foreign key); compile it as-is.
-        return compile_ast(subquery.query) if subquery.is_a?(Exwiw::QueryAst::SelectSubquery)
+      private def compile_subquery(subquery, outer_table: nil, outer_column: nil)
+        cast_to = subquery_cast_to(subquery, outer_table, outer_column)
+
+        if subquery.is_a?(Exwiw::QueryAst::SelectSubquery)
+          return compile_ast(subquery.query, select_cast_to: cast_to)
+        end
 
         inner_values = subquery.where_values.map { |v| escape_value(v) }
-        "SELECT #{subquery.table_name}.#{subquery.select_column} " \
+        select_expr = "#{subquery.table_name}.#{subquery.select_column}"
+        select_expr = "#{select_expr}::#{cast_to}" if cast_to
+        "SELECT #{select_expr} " \
           "FROM #{subquery.table_name} " \
           "WHERE #{subquery.table_name}.#{subquery.where_column} IN (#{inner_values.join(', ')})"
+      end
+
+      private def subquery_select_target(subquery)
+        case subquery
+        when Exwiw::QueryAst::SelectSubquery
+          q = subquery.query
+          col = q.columns.first
+          col ? [q.from_table_name, col.name] : [nil, nil]
+        when Exwiw::QueryAst::Subquery
+          [subquery.table_name, subquery.select_column]
+        else
+          [nil, nil]
+        end
+      end
+
+      private def subquery_cast_to(subquery, outer_table, outer_column)
+        return nil if outer_table.nil? || outer_column.nil?
+
+        inner_table, inner_column = subquery_select_target(subquery)
+        return nil if inner_table.nil?
+
+        outer_type = column_pg_type(outer_table, outer_column)
+        inner_type = column_pg_type(inner_table, inner_column)
+        types_need_cast?(outer_type, inner_type) ? 'text' : nil
       end
 
       private def escape_value(value)
@@ -349,6 +400,36 @@ module Exwiw
             labels: decoder.decode(row['enum_labels']),
           }
         end
+      end
+
+      private def column_pg_type(table_name, column_name)
+        @column_type_cache ||= {}
+        cache_key = [table_name, column_name]
+        return @column_type_cache[cache_key] if @column_type_cache.key?(cache_key)
+
+        sql = <<~SQL
+          SELECT t.typname
+          FROM pg_attribute a
+          JOIN pg_class c ON c.oid = a.attrelid
+          JOIN pg_type t  ON t.oid = a.atttypid
+          WHERE c.relname = $1
+            AND a.attname = $2
+            AND a.attnum > 0
+            AND NOT a.attisdropped
+          LIMIT 1
+        SQL
+
+        result = connection.exec_params(sql, [table_name, column_name])
+        @column_type_cache[cache_key] = result.ntuples > 0 ? result.getvalue(0, 0) : nil
+      end
+
+      private def types_need_cast?(type_a, type_b)
+        return false if type_a.nil? || type_b.nil?
+        return false if type_a == type_b
+
+        string_types = %w[varchar text bpchar name].freeze
+        (type_a == 'uuid' && string_types.include?(type_b)) ||
+          (type_b == 'uuid' && string_types.include?(type_a))
       end
 
       private def connection
