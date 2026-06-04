@@ -4,6 +4,10 @@
 
 ## [0.4.0] - 2026-06-04
 
+### Fixed
+
+- PostgreSQL: extraction no longer fails with `operator does not exist: character varying = uuid` when a `belongs_to` chain crosses a varchar foreign key and a uuid primary key. The adapter now introspects column types via `pg_attribute`/`pg_type` at query compile time and injects `::text` casts on both sides of the comparison when a uuid/varchar mismatch is detected. Covers JOIN ON conditions, WHERE IN subqueries, and bulk-delete IN clauses. ([#73](https://github.com/heyinc/exwiw/pull/73))
+
 ## [0.3.9] - 2026-06-03
 
 ### Added
