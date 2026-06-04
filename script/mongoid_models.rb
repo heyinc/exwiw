@@ -407,6 +407,63 @@ module MongoidDummy
     recursively_embeds_one
   end
 
+  # A referenced `belongs_to` whose target class does not exist (e.g. pointing at
+  # a model removed long ago). Mongoid resolves association classes lazily, so
+  # the model itself loads fine; only `assoc.klass` — which the generator calls
+  # to derive the target collection — raises a NameError. By default that aborts
+  # the run; under `skip_unsupported` the generator skips the relation while
+  # still tracking the auto-added `ghost_id` foreign-key field. Kept OUT of
+  # `MODELS`/`SEED` and exercised in isolation.
+  class StaleReferencer
+    include Mongoid::Document
+    store_in collection: "stale_referencers"
+
+    field :note, type: String
+
+    # No class_name, so Mongoid infers a `Ghost` class that does not exist
+    # (mirroring a real stale `belongs_to :delivery_method` left behind after its
+    # model was removed). The auto-added `ghost_id` field still rides along.
+    belongs_to :ghost
+  end
+
+  # An embedded document whose embedding-parent class does not exist (a renamed /
+  # removed parent named by `class_name`). The `embedded_in` association loads
+  # lazily, but `assoc.klass` raises a NameError, which `embedded_in_for`
+  # surfaces as an UnsupportedEmbedding. By default that aborts the run; under
+  # `skip_unsupported` the collection is emitted as `ignore: true`. Kept OUT of
+  # `MODELS`/`SEED` and exercised in isolation.
+  class OrphanEmbedded
+    include Mongoid::Document
+    store_in collection: "orphan_embeddeds"
+
+    field :note, type: String
+
+    embedded_in :ghost_parent, class_name: "MongoidDummy::GhostParent"
+  end
+
+  # A parent that embeds the SAME child class under multiple document keys
+  # without `inverse_of:`, so the child's `embedded_in` has no single resolvable
+  # inverse. Mongoid raises `AmbiguousRelationship` when resolving
+  # `assoc.inverse`, which `embedded_in_for` surfaces as an UnsupportedEmbedding
+  # (exwiw cannot pick which of the several paths the child lives under). Kept
+  # OUT of `MODELS`/`SEED` and exercised in isolation.
+  class AmbiguousParent
+    include Mongoid::Document
+    store_in collection: "ambiguous_parents"
+
+    embeds_many :primary_children, class_name: "MongoidDummy::AmbiguousChild"
+    embeds_many :secondary_children, class_name: "MongoidDummy::AmbiguousChild"
+  end
+
+  class AmbiguousChild
+    include Mongoid::Document
+    store_in collection: "ambiguous_children"
+
+    field :value, type: String
+
+    embedded_in :ambiguous_parent, class_name: "MongoidDummy::AmbiguousParent"
+  end
+
   # All concrete document models in this dummy app, in a deterministic order.
   #
   # Mongoid only registers the *base* class of an inheritance hierarchy in
