@@ -278,7 +278,7 @@ module Exwiw
           begin
             version_output, _, status = Open3.capture3(mysqldump_bin, '--version')
             status.success? && version_output.match?(/mariadb/i)
-          rescue Errno::ENOENT
+          rescue SystemCallError
             false
           end
       end
