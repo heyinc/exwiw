@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- MySQL: `mysqldump` no longer fails with `unknown variable 'set-gtid-purged=OFF'` when the client binary is MariaDB's. The adapter detects the variant via `mysqldump --version` and omits the MySQL-specific flag for MariaDB.
+
 ## [0.4.1] - 2026-06-04
 
 ### Added
