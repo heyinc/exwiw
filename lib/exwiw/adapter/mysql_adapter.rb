@@ -55,6 +55,7 @@ module Exwiw
           '--skip-add-drop-table',
           '--skip-comments',
           '--skip-set-charset',
+          '--no-tablespaces',
           *gtid_flags,
           '--compact',
           @connection_config.database_name,

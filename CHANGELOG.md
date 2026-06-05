@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- MySQL: `mysqldump` no longer fails with `Access denied; you need (at least one of) the PROCESS privilege(s)` on RDS and other managed MySQL instances where the DB user lacks `PROCESS`. The `--no-tablespaces` flag is now always passed, skipping the tablespace query that requires the privilege. Both MySQL and MariaDB support the flag.
+
 ## [0.4.2] - 2026-06-05
 
 ### Fixed
