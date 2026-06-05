@@ -1,5 +1,5 @@
 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0;
-INSERT INTO orders (id, shop_id, user_id, updated_at, created_at) VALUES
+INSERT INTO `orders` (`id`, `shop_id`, `user_id`, `updated_at`, `created_at`) VALUES
 ('3', '1', '1', '2025-01-01 00:00:00.000000', '2025-01-01 00:00:00.000000'),
 ('4', '1', '2', '2025-01-01 00:00:00.000000', '2025-01-01 00:00:00.000000'),
 ('5', '1', '2', '2025-01-01 00:00:00.000000', '2025-01-01 00:00:00.000000'),

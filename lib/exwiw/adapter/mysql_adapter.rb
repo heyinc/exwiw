@@ -111,10 +111,10 @@ module Exwiw
         values = value_list.join(",\n")
 
         if table.rails_managed?
-          "INSERT INTO #{table_name} VALUES\n#{values};"
+          "INSERT INTO `#{table_name}` VALUES\n#{values};"
         else
-          column_names = table.columns.map(&:name).join(', ')
-          "INSERT INTO #{table_name} (#{column_names}) VALUES\n#{values};"
+          column_names = table.columns.map { |c| "`#{c.name}`" }.join(', ')
+          "INSERT INTO `#{table_name}` (#{column_names}) VALUES\n#{values};"
         end
       end
 

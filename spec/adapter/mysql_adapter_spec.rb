@@ -338,7 +338,7 @@ module Exwiw
 
           it "returns correct bulk insert sql" do
             expect(bulk_insert_sql.strip).to eq(<<~SQL.strip)
-              INSERT INTO shops (id, name, updated_at, created_at) VALUES
+              INSERT INTO `shops` (`id`, `name`, `updated_at`, `created_at`) VALUES
               ('1', 'Shop 1', '2025-01-01 00:00:00.000000', '2025-01-01 00:00:00.000000'),
               ('2', 'Shop 2', '2025-01-01 00:00:00.000000', '2025-01-01 00:00:00.000000'),
               ('3', 'Shop 3', '2025-01-01 00:00:00.000000', '2025-01-01 00:00:00.000000');
@@ -359,7 +359,7 @@ module Exwiw
 
           it "returns correct bulk insert sql" do
             expect(bulk_insert_sql.strip).to eq(<<~SQL.strip)
-              INSERT INTO shops (id, name, updated_at, created_at) VALUES
+              INSERT INTO `shops` (`id`, `name`, `updated_at`, `created_at`) VALUES
               ('1', 'Shop'' 1', '2025-01-01 00:00:00.000000', '2025-01-01 00:00:00.000000'),
               ('2', 'Shop 2', '2025-01-01 00:00:00.000000', '2025-01-01 00:00:00.000000'),
               ('3', 'Shop 3', '2025-01-01 00:00:00.000000', '2025-01-01 00:00:00.000000');
