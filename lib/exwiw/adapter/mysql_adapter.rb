@@ -55,6 +55,7 @@ module Exwiw
           '--skip-add-drop-table',
           '--skip-comments',
           '--skip-set-charset',
+          '--no-tablespaces', # skip tablespace query that requires PROCESS privilege (unavailable on managed MySQL like RDS)
           *gtid_flags,
           '--compact',
           @connection_config.database_name,

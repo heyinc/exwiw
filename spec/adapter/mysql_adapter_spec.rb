@@ -53,6 +53,12 @@ module Exwiw
             adapter.dump_schema(tables, schema_path)
             expect(@captured_cmd).not_to include('--set-gtid-purged=OFF')
           end
+
+          it "includes --no-tablespaces" do
+            tables = [shops_table(adapter_name)]
+            adapter.dump_schema(tables, schema_path)
+            expect(@captured_cmd).to include('--no-tablespaces')
+          end
         end
 
         context "when mysqldump is MySQL" do
@@ -75,6 +81,12 @@ module Exwiw
             tables = [shops_table(adapter_name)]
             adapter.dump_schema(tables, schema_path)
             expect(@captured_cmd).to include('--set-gtid-purged=OFF')
+          end
+
+          it "includes --no-tablespaces" do
+            tables = [shops_table(adapter_name)]
+            adapter.dump_schema(tables, schema_path)
+            expect(@captured_cmd).to include('--no-tablespaces')
           end
         end
 
