@@ -83,6 +83,8 @@ module Exwiw
             @logger.info("  Generated COPY statement for #{record_num} records.")
 
             File.open(File.join(@output_dir, "insert-#{insert_idx}-#{table_name}.#{adapter.output_extension}"), 'w') do |file|
+              pre = adapter.pre_insert_sql(table)
+              file.puts(pre) if pre
               file.puts(copy_sql)
               post = adapter.post_insert_sql(table)
               file.puts(post) if post
@@ -96,6 +98,8 @@ module Exwiw
 
             @logger.info("  Generated INSERT statement for #{record_num} records (#{chunks.size} statement(s)).")
             File.open(File.join(@output_dir, "insert-#{insert_idx}-#{table_name}.#{adapter.output_extension}"), 'w') do |file|
+              pre = adapter.pre_insert_sql(table)
+              file.puts(pre) if pre
               file.puts(insert_sql)
               post = adapter.post_insert_sql(table)
               file.puts(post) if post

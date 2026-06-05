@@ -32,6 +32,15 @@ module Exwiw
           expect(sql).not_to match(/`products`/) # not in scope
         end
 
+        it "wraps output with SET FOREIGN_KEY_CHECKS" do
+          tables = [shops_table(adapter_name)]
+          adapter.dump_schema(tables, schema_path)
+
+          lines = File.readlines(schema_path).map(&:chomp)
+          expect(lines[1]).to eq("SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0;")
+          expect(lines.last).to eq("SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS;")
+        end
+
         context "when mysqldump is MariaDB" do
           let(:success_status) { instance_double(Process::Status, success?: true, exitstatus: 0) }
           let(:dump_output) { "CREATE TABLE `shops` (\n  `id` int NOT NULL\n) ENGINE=InnoDB;\n" }

@@ -93,6 +93,14 @@ module Exwiw
       def validate_as_dump_target!(_config)
       end
 
+      # Optional SQL prepended to the per-table insert-NNN-<table>.* file before
+      # the bulk INSERT/COPY statements. Use for session-level setup required
+      # before loading data (e.g. MySQL FOREIGN_KEY_CHECKS).
+      # Default: nil (nothing prepended).
+      def pre_insert_sql(_table)
+        nil
+      end
+
       # Optional SQL appended to the per-table insert-NNN-<table>.* file after
       # the bulk INSERT statements. Use to bring side-state in sync with the
       # explicit IDs that were just inserted (e.g. PostgreSQL sequences).
