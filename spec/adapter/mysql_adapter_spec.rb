@@ -32,6 +32,76 @@ module Exwiw
           expect(sql).not_to match(/`products`/) # not in scope
         end
 
+        context "when mysqldump is MariaDB" do
+          let(:success_status) { instance_double(Process::Status, success?: true, exitstatus: 0) }
+          let(:dump_output) { "CREATE TABLE `shops` (\n  `id` int NOT NULL\n) ENGINE=InnoDB;\n" }
+
+          before do
+            allow(Open3).to receive(:capture3)
+              .with('mysqldump', '--version')
+              .and_return(["mysqldump  Ver 10.11.6-MariaDB, for debian-linux-gnu (x86_64)\n", '', success_status])
+
+            allow(Open3).to receive(:capture3)
+              .with(hash_including('MYSQL_PWD'), 'mysqldump', any_args) do |_env, *cmd|
+                @captured_cmd = cmd
+                [dump_output, '', success_status]
+              end
+          end
+
+          it "does not pass --set-gtid-purged=OFF" do
+            tables = [shops_table(adapter_name)]
+            adapter.dump_schema(tables, schema_path)
+            expect(@captured_cmd).not_to include('--set-gtid-purged=OFF')
+          end
+        end
+
+        context "when mysqldump is MySQL" do
+          let(:success_status) { instance_double(Process::Status, success?: true, exitstatus: 0) }
+          let(:dump_output) { "CREATE TABLE `shops` (\n  `id` int NOT NULL\n) ENGINE=InnoDB;\n" }
+
+          before do
+            allow(Open3).to receive(:capture3)
+              .with('mysqldump', '--version')
+              .and_return(["mysqldump  Ver 8.0.36 Distrib 8.0.36, for Linux on x86_64\n", '', success_status])
+
+            allow(Open3).to receive(:capture3)
+              .with(hash_including('MYSQL_PWD'), 'mysqldump', any_args) do |_env, *cmd|
+                @captured_cmd = cmd
+                [dump_output, '', success_status]
+              end
+          end
+
+          it "passes --set-gtid-purged=OFF" do
+            tables = [shops_table(adapter_name)]
+            adapter.dump_schema(tables, schema_path)
+            expect(@captured_cmd).to include('--set-gtid-purged=OFF')
+          end
+        end
+
+        context "when mysqldump --version fails" do
+          let(:failure_status) { instance_double(Process::Status, success?: false, exitstatus: 1) }
+          let(:success_status) { instance_double(Process::Status, success?: true, exitstatus: 0) }
+          let(:dump_output) { "CREATE TABLE `shops` (\n  `id` int NOT NULL\n) ENGINE=InnoDB;\n" }
+
+          before do
+            allow(Open3).to receive(:capture3)
+              .with('mysqldump', '--version')
+              .and_return(['', 'some error', failure_status])
+
+            allow(Open3).to receive(:capture3)
+              .with(hash_including('MYSQL_PWD'), 'mysqldump', any_args) do |_env, *cmd|
+                @captured_cmd = cmd
+                [dump_output, '', success_status]
+              end
+          end
+
+          it "defaults to including --set-gtid-purged=OFF" do
+            tables = [shops_table(adapter_name)]
+            adapter.dump_schema(tables, schema_path)
+            expect(@captured_cmd).to include('--set-gtid-purged=OFF')
+          end
+        end
+
         context "when EXWIW_MYSQLDUMP points at a missing binary" do
           around do |example|
             original = ENV['EXWIW_MYSQLDUMP']
