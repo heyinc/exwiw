@@ -1,2 +1,4 @@
+SET FOREIGN_KEY_CHECKS = 0;
 INSERT INTO shops (id, name, updated_at, created_at) VALUES
 ('1', 'Shop 1', '2025-01-01 00:00:00.000000', '2025-01-01 00:00:00.000000');
+SET FOREIGN_KEY_CHECKS = 1;
