@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-06-05
+
+### Fixed
+
+- MySQL: generated schema and data files now wrap statements with `SET FOREIGN_KEY_CHECKS=0` / restore, following the `mysqldump` save/restore convention (`@OLD_FOREIGN_KEY_CHECKS`). Previously the FK check preamble was lost when exwiw split `mysqldump` output into per-file schema and data files, causing `Failed to open the referenced table` errors on restore when CREATE TABLE or INSERT order didn't satisfy FK dependencies. Each file is now self-contained and restorable regardless of load order. ([#81](https://github.com/heyinc/exwiw/pull/81))
+
 ## [0.4.3] - 2026-06-05
 
 ### Fixed
