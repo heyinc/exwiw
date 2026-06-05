@@ -37,8 +37,8 @@ module Exwiw
           adapter.dump_schema(tables, schema_path)
 
           lines = File.readlines(schema_path).map(&:chomp)
-          expect(lines[1]).to eq("SET FOREIGN_KEY_CHECKS = 0;")
-          expect(lines.last).to eq("SET FOREIGN_KEY_CHECKS = 1;")
+          expect(lines[1]).to eq("SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0;")
+          expect(lines.last).to eq("SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS;")
         end
 
         context "when mysqldump is MariaDB" do
