@@ -366,6 +366,22 @@ module Exwiw
             SQL
           end
         end
+
+        context "has backslash in JSON value" do
+          let(:json_value) { '{"key":"val"}' }
+          let(:results) do
+            [
+              ["1", json_value, "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
+            ]
+          end
+
+          let(:bulk_insert_sql) { adapter.to_bulk_insert(results, shops_table(adapter_name)) }
+
+          it "doubles backslashes so MySQL preserves them on restore" do
+            escaped = json_value.gsub('\\') { '\\\\' }
+            expect(bulk_insert_sql).to include("'#{escaped}'")
+          end
+        end
       end
 
       describe "#to_bulk_delete" do
