@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- MySQL: INSERT statements now backtick-quote table and column names. Previously, columns whose name is a MySQL reserved word (e.g. `key` in `active_storage_blobs`) caused syntax errors on restore. ([#83](https://github.com/heyinc/exwiw/pull/83))
+
 ## [0.4.4] - 2026-06-05
 
 ### Fixed
