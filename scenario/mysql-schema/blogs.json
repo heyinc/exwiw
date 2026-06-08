@@ -1,7 +1,12 @@
 {
   "name": "blogs",
   "primary_key": "id",
-  "belongs_tos": [],
+  "belongs_tos": [
+    {
+      "foreign_key": "merchant_id",
+      "table_name": "merchants"
+    }
+  ],
   "columns": [
     {
       "name": "id"
