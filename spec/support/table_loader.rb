@@ -15,7 +15,6 @@ module TableLoader
     reviews
     system_announcements
     posts
-    blogs
   ].each do |table_name|
     define_method("#{table_name}_table") do |adapter|
       adapter = adapter.to_sym
