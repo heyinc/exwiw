@@ -33,7 +33,7 @@ module Exwiw
 
           lines = File.readlines(schema_path).map(&:chomp)
           expect(lines[1]).to eq("SET session_replication_role = 'replica';")
-          expect(lines.last).to eq("SET session_replication_role = 'DEFAULT';")
+          expect(lines.last).to eq("RESET session_replication_role;")
         end
 
         it "writes CREATE TABLE IF NOT EXISTS and wraps ADD CONSTRAINT in DO block" do

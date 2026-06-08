@@ -5,4 +5,4 @@ COPY system_announcements (id, title, content, updated_at, created_at) FROM stdi
 3	Announcement 3	This is the content of announcement 3.	2025-01-01 00:00:00	2025-01-01 00:00:00
 \.
 SELECT pg_catalog.setval('public.system_announcements_id_seq', 3, true);
-SET session_replication_role = 'DEFAULT';
+RESET session_replication_role;

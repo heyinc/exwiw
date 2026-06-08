@@ -517,4 +517,4 @@ END $exwiw$;
 
 \unrestrict <NONCE>
 
-SET session_replication_role = 'DEFAULT';
+RESET session_replication_role;

@@ -6,4 +6,4 @@ COPY transactions (id, type, amount, order_id, updated_at, created_at) FROM stdi
 6	PaymentTransaction	30.00	6	2025-01-01 00:00:00	2025-01-01 00:00:00
 \.
 SELECT pg_catalog.setval('public.transactions_id_seq', 30, true);
-SET session_replication_role = 'DEFAULT';
+RESET session_replication_role;

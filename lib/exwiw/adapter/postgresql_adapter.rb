@@ -71,7 +71,7 @@ module Exwiw
           file.puts("SET session_replication_role = 'replica';")
           file.puts
           file.write(idempotent)
-          file.puts("SET session_replication_role = 'DEFAULT';")
+          file.puts("RESET session_replication_role;")
         end
         @logger.info("  Wrote schema for #{table_names.size} table(s) to #{output_path}.")
       end
@@ -118,7 +118,7 @@ module Exwiw
         lines = []
         setval = sequence_setval_sql(table)
         lines << setval if setval
-        lines << "SET session_replication_role = 'DEFAULT';"
+        lines << "RESET session_replication_role;"
         lines.join("\n")
       end
 

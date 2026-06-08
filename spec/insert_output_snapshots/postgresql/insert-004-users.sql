@@ -3,4 +3,4 @@ INSERT INTO users (id, name, email, shop_id, updated_at, created_at, role) VALUE
 ('1', 'masked1', 'masked1@example.com', '1', '2025-01-01 00:00:00', '2025-01-01 00:00:00', NULL),
 ('2', 'masked2', 'masked2@example.com', '1', '2025-01-01 00:00:00', '2025-01-01 00:00:00', NULL);
 SELECT pg_catalog.setval('public.users_id_seq', 10, true);
-SET session_replication_role = 'DEFAULT';
+RESET session_replication_role;
