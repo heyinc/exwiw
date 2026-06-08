@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-06-08
+
+### Fixed
+
+- MySQL: INSERT statements now escape backslashes (`\` → `\\`) in string literals. Previously, values containing backslashes — such as JSON columns with `\"` sequences — were corrupted on restore because MySQL interprets `\` as an escape character in single-quoted strings. ([#85](https://github.com/heyinc/exwiw/pull/85))
+
 ## [0.4.5] - 2026-06-08
 
 ### Fixed
