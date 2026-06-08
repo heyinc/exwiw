@@ -367,20 +367,23 @@ module Exwiw
           end
         end
 
-        context "has backslash" do
+        context "has backslash in JSON value" do
+          let(:json_description) do
+            '"{\"blocks\":[{\"key\":\"ed8q3\",\"text\":\"ブログってやつなんだ\",\"type\":\"unstyled\",\"depth\":0,\"inlineStyleRanges\":[],\"entityRanges\":[],\"data\":{}}],\"entityMap\":{}}"'
+          end
           let(:results) do
             [
-              ["1", "Shop \\n 1", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
+              ["6", "858131", "647", "ああ、これがブログなんだな", json_description, "ブログってやつなんだ", "2025-09-05 02:09:40", "2025-09-05 02:09:40.923085", "2025-09-05 02:09:40.923085"],
             ]
           end
 
-          let(:bulk_insert_sql) { adapter.to_bulk_insert(results, shops_table(adapter_name)) }
+          let(:bulk_insert_sql) { adapter.to_bulk_insert(results, blogs_table(adapter_name)) }
 
-          it "escapes backslashes" do
-            expect(bulk_insert_sql.strip).to eq(<<~SQL.strip)
-              INSERT INTO `shops` (`id`, `name`, `updated_at`, `created_at`) VALUES
-              ('1', 'Shop \\\\n 1', '2025-01-01 00:00:00.000000', '2025-01-01 00:00:00.000000');
-            SQL
+          it "doubles backslashes so MySQL preserves them on restore" do
+            escaped_description = json_description.gsub('\\') { '\\\\' }
+            expected = "INSERT INTO `blogs` (`id`, `public_id`, `merchant_id`, `name`, `description`, `description_text`, `published_at`, `created_at`, `updated_at`) VALUES\n" \
+              "('6', '858131', '647', 'ああ、これがブログなんだな', '#{escaped_description}', 'ブログってやつなんだ', '2025-09-05 02:09:40', '2025-09-05 02:09:40.923085', '2025-09-05 02:09:40.923085');"
+            expect(bulk_insert_sql).to eq(expected)
           end
         end
       end
