@@ -22,6 +22,20 @@ module Exwiw
       describe "#dump_schema" do
         let(:schema_path) { Tempfile.new(['postgresql_schema', '.sql']).path }
 
+        it "wraps output with SET session_replication_role" do
+          tables = [shops_table(adapter_name)]
+          begin
+            adapter.dump_schema(tables, schema_path)
+          rescue RuntimeError => e
+            skip "pg_dump server/client version mismatch: #{e.message}" if e.message.include?('server version')
+            raise
+          end
+
+          lines = File.readlines(schema_path).map(&:chomp)
+          expect(lines[1]).to eq("SET session_replication_role = 'replica';")
+          expect(lines.last).to eq("SET session_replication_role = 'DEFAULT';")
+        end
+
         it "writes CREATE TABLE IF NOT EXISTS and wraps ADD CONSTRAINT in DO block" do
           tables = [shops_table(adapter_name), users_table(adapter_name)]
           begin

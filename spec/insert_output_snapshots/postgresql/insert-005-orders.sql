@@ -1,6 +1,8 @@
+SET session_replication_role = 'replica';
 INSERT INTO orders (id, shop_id, user_id, updated_at, created_at) VALUES
 ('3', '1', '1', '2025-01-01 00:00:00', '2025-01-01 00:00:00'),
 ('4', '1', '2', '2025-01-01 00:00:00', '2025-01-01 00:00:00'),
 ('5', '1', '2', '2025-01-01 00:00:00', '2025-01-01 00:00:00'),
 ('6', '1', '2', '2025-01-01 00:00:00', '2025-01-01 00:00:00');
 SELECT pg_catalog.setval('public.orders_id_seq', 30, true);
+SET session_replication_role = 'DEFAULT';
