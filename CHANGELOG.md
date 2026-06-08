@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- PostgreSQL: generated schema and data files now wrap statements with `SET session_replication_role = 'replica'` / `RESET session_replication_role`, disabling FK constraint triggers for the duration of each file. Previously, tables with circular FK dependencies caused constraint violation errors on restore when the INSERT order did not satisfy FK dependencies. Each file is now self-contained and restorable regardless of load order, matching the MySQL `FOREIGN_KEY_CHECKS` behaviour added in v0.4.4.
+- PostgreSQL: generated data files now wrap statements with `SET session_replication_role = 'replica'` / `RESET session_replication_role`, disabling FK constraint triggers for the duration of each file. Previously, tables with circular FK dependencies caused constraint violation errors on restore when the INSERT order did not satisfy FK dependencies. Each file is now self-contained and restorable regardless of load order, matching the MySQL `FOREIGN_KEY_CHECKS` behaviour added in v0.4.4. Note: `session_replication_role` requires superuser or `rds_superuser` privileges.
 
 ## [0.4.6] - 2026-06-08
 
