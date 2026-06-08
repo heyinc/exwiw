@@ -366,6 +366,23 @@ module Exwiw
             SQL
           end
         end
+
+        context "has backslash" do
+          let(:results) do
+            [
+              ["1", "Shop \\n 1", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
+            ]
+          end
+
+          let(:bulk_insert_sql) { adapter.to_bulk_insert(results, shops_table(adapter_name)) }
+
+          it "escapes backslashes" do
+            expect(bulk_insert_sql.strip).to eq(<<~SQL.strip)
+              INSERT INTO `shops` (`id`, `name`, `updated_at`, `created_at`) VALUES
+              ('1', 'Shop \\\\n 1', '2025-01-01 00:00:00.000000', '2025-01-01 00:00:00.000000');
+            SQL
+          end
+        end
       end
 
       describe "#to_bulk_delete" do

@@ -249,7 +249,8 @@ module Exwiw
         when nil
           "NULL"
         when String
-          qv = escape_single_quote(value)
+          qv = value.gsub('\\') { '\\\\' }
+          qv = escape_single_quote(qv)
           "'#{qv}'"
         else
           value
