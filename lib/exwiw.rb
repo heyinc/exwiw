@@ -40,5 +40,9 @@ module Exwiw
   # the target table. When nil the table's primary key is used (the historical
   # behavior). Currently only honored by the mongodb adapter.
   DumpTarget = Struct.new(:table_name, :ids, :ids_field, keyword_init: true)
-  ConnectionConfig = Struct.new(:adapter, :host, :port, :user, :password, :database_name, keyword_init: true)
+  # `uri` is an optional full connection string (currently only honored by the
+  # mongodb adapter, e.g. `mongodb+srv://...`). When present it is the source of
+  # truth for the connection — host/port/user/password are ignored — so TLS,
+  # replica_set, auth_source, etc. can be expressed via the URI's query string.
+  ConnectionConfig = Struct.new(:adapter, :host, :port, :user, :password, :database_name, :uri, keyword_init: true)
 end

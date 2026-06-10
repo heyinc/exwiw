@@ -160,6 +160,32 @@ module Exwiw
       end
     end
 
+    describe '--uri option' do
+      def run_cli(argv)
+        CLI.new(argv).run
+      end
+
+      it 'parses --uri onto the connection for the mongodb adapter' do
+        cli = CLI.new(['--adapter=mongodb', '--database=app', '--config-dir=scenario/mongodb-schema',
+                       '--uri=mongodb+srv://u:p@cluster.example.com/app?authSource=admin&tls=true'])
+        expect(cli.instance_variable_get(:@connection_uri))
+          .to eq('mongodb+srv://u:p@cluster.example.com/app?authSource=admin&tls=true')
+      end
+
+      it 'rejects --uri for non-mongodb adapters' do
+        argv = ['--adapter=postgresql', '--database=app', '--config-dir=scenario/postgresql-schema',
+                '--uri=mongodb://localhost:27017/app']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--uri is only supported by the mongodb adapter/).to_stderr
+      end
+
+      it 'does not require --host/--port/--database when --uri is given' do
+        cli = CLI.new(['--adapter=mongodb', '--config-dir=scenario/mongodb-schema',
+                       '--uri=mongodb+srv://u:p@cluster.example.com/app'])
+        expect { cli.send(:validate_options!) }.not_to raise_error
+      end
+    end
+
     describe 'output dir clear confirmation' do
       around do |example|
         Dir.mktmpdir do |dir|
