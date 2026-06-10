@@ -373,20 +373,22 @@ module Exwiw
 
         placeholders = table_names.each_with_index.map { |_, i| "$#{i + 1}" }.join(', ')
         sql = <<~SQL
-          SELECT DISTINCT
+          SELECT
             n.nspname  AS type_schema,
             t.typname  AS type_name,
             array_agg(e.enumlabel ORDER BY e.enumsortorder) AS enum_labels
-          FROM pg_attribute a
-          JOIN pg_class c      ON c.oid = a.attrelid
-          JOIN pg_namespace cn ON cn.oid = c.relnamespace
-          JOIN pg_type t       ON t.oid = a.atttypid
-          JOIN pg_namespace n  ON n.oid = t.typnamespace
-          JOIN pg_enum e       ON e.enumtypid = t.oid
-          WHERE c.relname IN (#{placeholders})
-            AND a.attnum > 0
-            AND NOT a.attisdropped
-            AND t.typtype = 'e'
+          FROM pg_type t
+          JOIN pg_namespace n ON n.oid = t.typnamespace
+          JOIN pg_enum e      ON e.enumtypid = t.oid
+          WHERE t.typtype = 'e'
+            AND t.oid IN (
+              SELECT a.atttypid
+              FROM pg_attribute a
+              JOIN pg_class c ON c.oid = a.attrelid
+              WHERE c.relname IN (#{placeholders})
+                AND a.attnum > 0
+                AND NOT a.attisdropped
+            )
           GROUP BY n.nspname, t.typname
           ORDER BY n.nspname, t.typname
         SQL
