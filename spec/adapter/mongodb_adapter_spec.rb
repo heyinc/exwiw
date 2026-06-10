@@ -382,6 +382,52 @@ module Exwiw
       describe "#supports_bulk_delete?" do
         it { expect(adapter.supports_bulk_delete?).to eq(false) }
       end
+
+      describe "#db connection construction" do
+        before { require 'mongo' }
+
+        def adapter_for(config)
+          described_class.new(config, Logger.new(nil))
+        end
+
+        it "passes the connection URI straight to Mongo::Client when uri is set" do
+          config = ConnectionConfig.new(
+            adapter: 'mongodb',
+            uri: 'mongodb+srv://u:p@cluster.example.com/app?authSource=admin&tls=true',
+            database_name: nil,
+          )
+          client = double('client')
+          expect(Mongo::Client).to receive(:new)
+            .with('mongodb+srv://u:p@cluster.example.com/app?authSource=admin&tls=true')
+            .and_return(client)
+          expect(adapter_for(config).send(:db)).to eq(client)
+        end
+
+        it "passes --database as an override option alongside the URI" do
+          config = ConnectionConfig.new(
+            adapter: 'mongodb',
+            uri: 'mongodb+srv://u:p@cluster.example.com/?authSource=admin',
+            database_name: 'app',
+          )
+          client = double('client')
+          expect(Mongo::Client).to receive(:new)
+            .with('mongodb+srv://u:p@cluster.example.com/?authSource=admin', database: 'app')
+            .and_return(client)
+          expect(adapter_for(config).send(:db)).to eq(client)
+        end
+
+        it "falls back to host:port addressing when no uri is given" do
+          config = ConnectionConfig.new(
+            adapter: 'mongodb', host: 'db.example.com', port: 27017,
+            database_name: 'app', user: nil, password: nil, uri: nil,
+          )
+          client = double('client')
+          expect(Mongo::Client).to receive(:new)
+            .with(['db.example.com:27017'], database: 'app')
+            .and_return(client)
+          expect(adapter_for(config).send(:db)).to eq(client)
+        end
+      end
     end
   end
 end
