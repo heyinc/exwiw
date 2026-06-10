@@ -1,0 +1,20 @@
+{
+  "name": "sites",
+  "primary_key": "_id",
+  "belongs_tos": [{
+    "table_name": "business_entities",
+    "foreign_key": "business_entity_uuid",
+    "references": "uuid"
+  }],
+  "fields": [{
+    "name": "_id"
+  }, {
+    "name": "name"
+  }, {
+    "name": "business_entity_uuid"
+  }, {
+    "name": "updated_at"
+  }, {
+    "name": "created_at"
+  }]
+}

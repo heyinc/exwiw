@@ -155,6 +155,62 @@ module Exwiw
           end
         end
 
+        context "when a belongs_to references a non-_id parent field (e.g. uuid)" do
+          # Repro from the issue: stores.maja_business_entity_id holds
+          # maja_business_entities.uuid (a String), not the parent's ObjectId
+          # _id. The child belongs_to declares `references: "uuid"` so the FK is
+          # propagated off `uuid` rather than `_id`.
+          let(:dump_target) do
+            Exwiw::DumpTarget.new(table_name: "maja_business_entities", ids: ["be-uuid-1"], ids_field: "uuid")
+          end
+          let(:business_entities) do
+            MongodbCollectionConfig.from(
+              "name" => "maja_business_entities",
+              "primary_key" => "_id",
+              "belongs_tos" => [],
+              "fields" => [{ "name" => "_id" }, { "name" => "uuid" }],
+            )
+          end
+          let(:stores) do
+            MongodbCollectionConfig.from(
+              "name" => "stores",
+              "primary_key" => "_id",
+              "belongs_tos" => [{
+                "table_name" => "maja_business_entities",
+                "foreign_key" => "maja_business_entity_id",
+                "references" => "uuid",
+              }],
+              "fields" => [{ "name" => "_id" }, { "name" => "maja_business_entity_id" }],
+            )
+          end
+          let(:local_config_by_name) { { business_entities.name => business_entities, stores.name => stores } }
+
+          it "projects the referenced parent field so #execute can capture it" do
+            query = adapter.build_query(business_entities, dump_target, local_config_by_name)
+            expect(query.projection).to include("uuid" => 1, "_id" => 1)
+          end
+
+          it "propagates the parent's referenced field value into the child's $in filter" do
+            # Drive the parent collection through a stubbed db: build_query
+            # decides which fields to capture, execute stashes them into @state,
+            # and the child's build_query reads them back.
+            be_oid = BSON::ObjectId.new
+            parent_view = double("view")
+            allow(parent_view).to receive(:find).and_return(parent_view)
+            allow(parent_view).to receive(:projection).and_return(parent_view)
+            allow(parent_view).to receive(:comment).and_return(parent_view)
+            allow(parent_view).to receive(:to_a).and_return([{ "_id" => be_oid, "uuid" => "be-uuid-1" }])
+            db_stub = double("db")
+            allow(db_stub).to receive(:[]).with("maja_business_entities").and_return(parent_view)
+            allow(adapter).to receive(:db).and_return(db_stub)
+
+            adapter.execute(adapter.build_query(business_entities, dump_target, local_config_by_name))
+
+            child_query = adapter.build_query(stores, dump_target, local_config_by_name)
+            expect(child_query.filter).to eq("maja_business_entity_id" => { "$in" => ["be-uuid-1"] })
+          end
+        end
+
         context "when called with an embedded config" do
           let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: [1]) }
 

@@ -464,6 +464,29 @@ module MongoidDummy
     embedded_in :ambiguous_parent, class_name: "MongoidDummy::AmbiguousParent"
   end
 
+  # A referenced `belongs_to` whose foreign key points at a *non-_id* field on
+  # the parent. `belongs_to :entity, primary_key: :uuid` makes the child store
+  # the parent's `uuid` (a String) in `entity_id` rather than the parent's
+  # ObjectId `_id`. The generator must surface this as a `references: "uuid"`
+  # attribute so MongodbAdapter constrains children by `entity.uuid` instead of
+  # `entity._id` (issue B1 — a uuid-`$in` against ObjectId `_id` matches nothing).
+  # The parent must exist so `assoc.klass` resolves; both are kept OUT of
+  # `MODELS`/`SEED` and exercised in isolation (so the snapshot/collection-count
+  # contracts above are unaffected).
+  class UuidReferencedParent
+    include Mongoid::Document
+    store_in collection: "uuid_referenced_parents"
+
+    field :uuid, type: String
+  end
+
+  class UuidReferencingChild
+    include Mongoid::Document
+    store_in collection: "uuid_referencing_children"
+
+    belongs_to :entity, class_name: "MongoidDummy::UuidReferencedParent", primary_key: :uuid
+  end
+
   # All concrete document models in this dummy app, in a deterministic order.
   #
   # Mongoid only registers the *base* class of an inheritance hierarchy in

@@ -28,6 +28,15 @@ expected = {
   "order_items" => 6,
   "products" => 3,
   "transactions" => 6,
+  # Non-_id foreign-key propagation (belongs_to `references`): only the two
+  # business_entities owned by the target shop are dumped (the third belongs to
+  # another shop), and only the three sites whose `business_entity_uuid` points
+  # at one of those two are pulled in (the fourth references the other shop's
+  # entity). Crucially, `sites` is non-zero: its FK is a String `uuid`, and
+  # before the `references` fix it was `$in`-matched against the parent's
+  # ObjectId `_id` and matched nothing. See scenario/mongodb-schema/sites.json.
+  "business_entities" => 2,
+  "sites" => 3,
 }
 
 failed = false
@@ -68,6 +77,21 @@ if embedded_titles == expected_titles
   puts "OK  users._id=#{USER1_HEX} embedded posts titles masked: #{embedded_titles.inspect}"
 else
   puts "NG  users._id=#{USER1_HEX} embedded posts titles unexpected: #{embedded_titles.inspect}"
+  failed = true
+end
+
+# Verify the `references` propagation matched on the parent `uuid`, not `_id`:
+# every dumped site's `business_entity_uuid` must be one of the dumped
+# business_entities' uuids, and the other shop's uuid (be-uuid-0003) must be
+# absent. This guards against a future regression silently dumping the wrong
+# rows (or, with the pre-fix behaviour, none) while the counts happen to align.
+dumped_be_uuids = client["business_entities"].find({}).map { |d| d["uuid"] }.sort
+site_fk_uuids = client["sites"].find({}).map { |d| d["business_entity_uuid"] }.uniq.sort
+if dumped_be_uuids == ["be-uuid-0001", "be-uuid-0002"] &&
+   site_fk_uuids == ["be-uuid-0001", "be-uuid-0002"]
+  puts "OK  sites propagated via business_entities.uuid: entities=#{dumped_be_uuids.inspect}, site FKs=#{site_fk_uuids.inspect}"
+else
+  puts "NG  references propagation off: entities=#{dumped_be_uuids.inspect}, site FKs=#{site_fk_uuids.inspect}"
   failed = true
 end
 

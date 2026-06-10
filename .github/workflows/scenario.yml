@@ -176,3 +176,6 @@ jobs:
 
       - name: Run exwiw (from clean target DB)
         run: scenario/test_with_mongodb_from_clean.sh
+
+      - name: Run exwiw (--ids-field target)
+        run: scenario/test_with_mongodb_ids_field.sh

@@ -55,6 +55,31 @@ module Exwiw
         expect(by_name["system_announcements"].belongs_tos).to be_empty
       end
 
+      it "does not emit references for a belongs_to whose FK points at the parent _id" do
+        # A plain `belongs_to` references the parent's default `_id`, so the
+        # generator must leave `references` nil — existing configs (and the
+        # snapshots) behave exactly as before, with the adapter defaulting the
+        # propagation field to the parent primary_key.
+        orders = by_name["orders"].belongs_tos
+        expect(orders.map(&:references)).to all(be_nil)
+      end
+
+      it "emits references for a belongs_to declared with a non-_id primary_key (issue B1)" do
+        # Mongoid's `belongs_to :entity, primary_key: :uuid` makes the child's
+        # foreign key reference the parent's `uuid`, not its `_id`. The generator
+        # must surface that as `references: "uuid"` so MongodbAdapter constrains
+        # children by the right field instead of $in-matching uuids against
+        # ObjectId `_id` (which matches nothing).
+        collections = described_class.new(
+          models: [MongoidDummy::UuidReferencingChild], output_dir: output_dir,
+        ).build_collections
+        child = collections.find { |c| c.name == "uuid_referencing_children" }
+
+        belongs_to = child.belongs_tos.find { |b| b.foreign_key == "entity_id" }
+        expect(belongs_to.table_name).to eq("uuid_referenced_parents")
+        expect(belongs_to.references).to eq("uuid")
+      end
+
       it "derives table_name from the target collection and foreign_key from the association" do
         # Transaction#payer and Transaction#reviewer both point at the User
         # model but under relation names that differ from the class. The
@@ -752,8 +777,9 @@ module Exwiw
       it "filters a child collection by the generated foreign_key against upstream ids" do
         # dump_target is a *different* collection, so `users` is reached only via
         # its generated belongs_to (shops/shop_id). Prime the state `execute`
-        # would have set after dumping shops.
-        adapter.instance_variable_set(:@state, { "shops" => [1] })
+        # would have set after dumping shops — keyed per captured field (`_id`,
+        # the field shop_id references by default).
+        adapter.instance_variable_set(:@state, { "shops" => { "_id" => [1] } })
         dump_target = Exwiw::DumpTarget.new(table_name: "shops", ids: [1])
 
         query = adapter.build_query(config_by_name.fetch("users"), dump_target, config_by_name)
@@ -775,13 +801,34 @@ module Exwiw
         expect(coerced.to_s).to eq("5f5e7c1e1c9d440000000001")
       end
 
+      it "constrains a child by the parent's referenced non-_id field (generated references)" do
+        # `belongs_to :entity, primary_key: :uuid` makes the generator emit
+        # `references: "uuid"`. After the parent is dumped, `execute` stashes its
+        # uuid values under @state["uuid_referenced_parents"]["uuid"]; the child
+        # must $in-match `entity_id` against those uuid strings (issue B1), NOT
+        # against the parent's ObjectId `_id`. Built in isolation since the uuid
+        # models are intentionally kept out of MODELS/SEED.
+        by_name = described_class.new(
+          models: [MongoidDummy::UuidReferencingChild], output_dir: output_dir,
+        ).build_collections.each_with_object({}) { |c, h| h[c.name] = c }
+
+        adapter.instance_variable_set(
+          :@state,
+          { "uuid_referenced_parents" => { "_id" => [BSON::ObjectId.new], "uuid" => ["u-1", "u-2"] } },
+        )
+        dump_target = Exwiw::DumpTarget.new(table_name: "uuid_referenced_parents", ids: ["u-1"])
+
+        query = adapter.build_query(by_name.fetch("uuid_referencing_children"), dump_target, by_name)
+        expect(query.filter).to eq("entity_id" => { "$in" => ["u-1", "u-2"] })
+      end
+
       it "emits independent $in filters for two belongs_tos targeting the same collection" do
         # transactions has TWO belongs_to -> users (paid_by_id, reviewer_id) plus
         # one -> orders. Each generated foreign_key must produce its own filter
         # key, the two user-targeting ones both constrained by the single
         # upstream "users" id set — proving the custom/relation-derived FKs the
         # generator emitted extract independently.
-        adapter.instance_variable_set(:@state, { "users" => [10], "orders" => [30] })
+        adapter.instance_variable_set(:@state, { "users" => { "_id" => [10] }, "orders" => { "_id" => [30] } })
         dump_target = Exwiw::DumpTarget.new(table_name: "users", ids: [10])
 
         query = adapter.build_query(config_by_name.fetch("transactions"), dump_target, config_by_name)
