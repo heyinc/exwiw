@@ -76,4 +76,5 @@ if adapter == "postgresql"
     END $$;
   SQL
   conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role public.user_role;")
+  conn.execute("ALTER TABLE shops ADD COLUMN IF NOT EXISTS owner_role public.user_role;")
 end

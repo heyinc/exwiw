@@ -43,6 +43,9 @@ module Exwiw
           end
           expect(sql).to include('CREATE TYPE')
           expect(sql).to include("AS ENUM ('admin', 'member')")
+          enum_match = sql.match(/AS ENUM \(([^)]+)\)/)
+          labels = enum_match[1].scan(/'([^']*(?:''[^']*)*)'/).flatten
+          expect(labels).to eq(labels.uniq), "enum labels should not be duplicated: #{labels}"
         end
       end
 
