@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- PostgreSQL: `CREATE TYPE ... AS ENUM` statements in schema dumps no longer duplicate labels when the same enum type is used by multiple columns across the target tables. The `query_enum_types` query now filters by column in a subquery so the `pg_type` / `pg_enum` join produces each label exactly once.
+
 ## [0.4.6] - 2026-06-08
 
 ### Fixed
