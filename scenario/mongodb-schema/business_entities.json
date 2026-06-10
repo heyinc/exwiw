@@ -1,0 +1,21 @@
+{
+  "name": "business_entities",
+  "primary_key": "_id",
+  "belongs_tos": [{
+    "table_name": "shops",
+    "foreign_key": "shop_id"
+  }],
+  "fields": [{
+    "name": "_id"
+  }, {
+    "name": "uuid"
+  }, {
+    "name": "name"
+  }, {
+    "name": "shop_id"
+  }, {
+    "name": "updated_at"
+  }, {
+    "name": "created_at"
+  }]
+}
