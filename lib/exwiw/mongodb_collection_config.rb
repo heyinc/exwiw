@@ -75,8 +75,9 @@ module Exwiw
         merged.embedded_in = passed.embedded_in
 
         # Structural facts of each belongs_to come from the freshly generated
-        # config, but the user-owned `comment`/`ignore`/`references` carry over
-        # when the same relation still exists.
+        # config (including a generator-derived `references`), but the user-owned
+        # `comment`/`ignore` — and a hand-edited `references`, which overrides the
+        # generated one — carry over when the same relation still exists.
         receiver_belongs_to_by_identity = belongs_tos.each_with_object({}) { |bt, h| h[bt.identity] = bt }
         merged.belongs_tos = passed.belongs_tos.map do |pbt|
           receiver_bt = receiver_belongs_to_by_identity[pbt.identity]

@@ -220,14 +220,24 @@ module Exwiw
         .uniq
     end
 
-    # Resolves a referenced belongs_to to a `{ table_name, foreign_key }` pair.
+    # Resolves a referenced belongs_to to a `{ table_name, foreign_key }` pair
+    # (plus `references` when the FK points at a non-`_id` parent field).
     # `assoc.klass` raises NameError when the association's target class no longer
     # exists (a stale/legacy `belongs_to`, e.g. pointing at a model removed years
     # ago). Under `skip_unsupported` such a relation is skipped with a warning —
     # its foreign-key column is still tracked as an ordinary field by
     # `aggregate_fields`, mirroring how polymorphic / HABTM relations are dropped.
     private def belongs_to_for(assoc)
-      { table_name: assoc.klass.collection_name.to_s, foreign_key: assoc.foreign_key }
+      result = { table_name: assoc.klass.collection_name.to_s, foreign_key: assoc.foreign_key }
+      # Mongoid's `belongs_to ..., primary_key: :uuid` makes the child's foreign
+      # key reference that parent field rather than the parent's `_id`. Surface
+      # it as `references` so MongodbAdapter constrains children by the right
+      # field (issue B1). Omit it for the default `_id` (the parent primary_key
+      # the generator emits) so existing configs/snapshots are unchanged. SQL
+      # adapters ignore `references`; only MongodbAdapter consumes it.
+      reference_field = assoc.primary_key.to_s
+      result[:references] = reference_field unless reference_field == "_id"
+      result
     rescue NameError, ::Mongoid::Errors::MongoidError => e
       raise e unless @skip_unsupported
 
