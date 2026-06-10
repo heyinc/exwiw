@@ -120,7 +120,7 @@ module Exwiw
         described_class.from_symbol_keys(
           name: 'orders',
           primary_key: '_id',
-          belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id', comment: 'bt note', ignore: true }],
+          belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id', references: 'uuid', comment: 'bt note', ignore: true }],
           fields: [
             { name: '_id' },
             { name: 'token', comment: 'secret', ignore: true, replace_with: 'X' },
@@ -136,10 +136,13 @@ module Exwiw
         )
       end
 
-      it 'preserves user-owned comment/ignore on belongs_tos' do
+      it 'preserves user-owned comment/ignore/references on belongs_tos' do
+        # `references` (the non-_id parent field a FK points at) is hand-added and
+        # the generator never emits it, so the merge must carry it forward rather
+        # than letting re-introspection drop it.
         merged = current.merge(passed)
         expect(merged.belongs_tos.map(&:to_hash)).to eq([
-          { 'table_name' => 'shops', 'foreign_key' => 'shop_id', 'comment' => 'bt note', 'ignore' => true },
+          { 'table_name' => 'shops', 'foreign_key' => 'shop_id', 'references' => 'uuid', 'comment' => 'bt note', 'ignore' => true },
         ])
       end
 

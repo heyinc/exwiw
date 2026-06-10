@@ -45,13 +45,20 @@ module Exwiw
         # the same config.
         @embedded_children_by_parent = index_embedded_children(config_by_name)
 
+        # Which of this collection's fields downstream children will `$in`-match
+        # against (always including primary_key). Stashed for the matching
+        # #execute call to capture, by the same build_query-before-execute
+        # invariant the embedded index relies on.
+        @propagation_keys = propagation_keys_for(config, config_by_name)
+
         filter =
           if config.name == dump_target.table_name
             # `--ids-field` may override which field --ids is matched against;
             # otherwise fall back to the primary key. Note this only changes the
             # WHERE filter on the target collection — downstream foreign-key
-            # propagation still keys off `primary_key` (see #execute, which
-            # stashes doc[primary_key] into @state).
+            # propagation keys off each child belongs_to's `references` field
+            # (default: the parent primary_key); see #execute, which stashes
+            # those fields into @state.
             #
             # Type coercion is only applied to the primary key (`_id`), whose
             # stored type we know (Mongoid's default ObjectId). For a custom
@@ -64,16 +71,15 @@ module Exwiw
               { config.primary_key => { "$in" => coerce_ids(dump_target.ids) } }
             end
           else
-            constrained = config.belongs_tos.select do |relation|
-              @state.key?(relation.table_name) && !@state[relation.table_name].empty?
-            end
+            config.belongs_tos.each_with_object({}) do |relation, acc|
+              # Constrain by the parent field this FK actually references
+              # (`relation.references`, default the parent primary_key). The
+              # values were captured from that field's documents in #execute, so
+              # their BSON type already matches the stored FK — no coercion.
+              values = parent_state_for(relation, config_by_name)
+              next if values.nil? || values.empty?
 
-            if constrained.empty?
-              {}
-            else
-              constrained.each_with_object({}) do |relation, acc|
-                acc[relation.foreign_key] = { "$in" => @state[relation.table_name] }
-              end
+              acc[relation.foreign_key] = { "$in" => values }
             end
           end
 
@@ -81,7 +87,7 @@ module Exwiw
           collection: config.name,
           primary_key: config.primary_key,
           filter: filter,
-          projection: build_projection(config),
+          projection: build_projection(config, @propagation_keys),
         )
       end
 
@@ -94,7 +100,14 @@ module Exwiw
           .comment(query_comment_text("collection=#{query.collection}"))
           .to_a
 
-        @state[query.collection] = docs.map { |doc| doc[query.primary_key] }
+        # Stash, per referenced field, the values children will `$in`-match
+        # against. @propagation_keys is set by the build_query call for this same
+        # collection; fall back to the primary key if execute is driven without a
+        # preceding build_query (e.g. in isolation from a test).
+        keys = @propagation_keys || [query.primary_key]
+        @state[query.collection] = keys.each_with_object({}) do |key, acc|
+          acc[key] = docs.map { |doc| doc[key] }
+        end
 
         docs
       end
@@ -227,7 +240,7 @@ module Exwiw
         end
       end
 
-      private def build_projection(config)
+      private def build_projection(config, propagation_keys = [config.primary_key])
         projection = {}
         # Always include primary key so masking templates referencing it work,
         # even if it is not declared in fields.
@@ -240,7 +253,38 @@ module Exwiw
         embedded_children_of(config).each do |child|
           projection[child.embedded_in.path] = 1
         end
+        # Ensure every field a child references is fetched, even one not declared
+        # in `fields` — otherwise doc[ref] would be nil and the child's $in empty.
+        propagation_keys.each { |key| projection[key] = 1 }
         projection
+      end
+
+      # The distinct set of this collection's fields that downstream children
+      # constrain on (each child belongs_to's `references`, defaulting to this
+      # collection's primary_key), with primary_key always included so the
+      # historical primary-key-keyed propagation keeps working.
+      private def propagation_keys_for(config, config_by_name)
+        referenced = config_by_name.each_value.flat_map do |child|
+          next [] if child.embedded?
+
+          child.belongs_tos
+            .select { |relation| relation.table_name == config.name }
+            .map { |relation| relation.references || config.primary_key }
+        end
+        ([config.primary_key] + referenced).uniq
+      end
+
+      # The captured parent-collection values a child belongs_to should be
+      # constrained by: the values of the parent field the FK references
+      # (`relation.references`, default the parent primary_key). nil when the
+      # parent has not been executed yet.
+      private def parent_state_for(relation, config_by_name)
+        parent_fields = @state[relation.table_name]
+        return nil if parent_fields.nil?
+
+        reference_field =
+          relation.references || config_by_name.fetch(relation.table_name).primary_key
+        parent_fields[reference_field]
       end
 
       private def apply_replace_with!(doc, config)

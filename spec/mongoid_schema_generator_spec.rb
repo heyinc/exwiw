@@ -752,8 +752,9 @@ module Exwiw
       it "filters a child collection by the generated foreign_key against upstream ids" do
         # dump_target is a *different* collection, so `users` is reached only via
         # its generated belongs_to (shops/shop_id). Prime the state `execute`
-        # would have set after dumping shops.
-        adapter.instance_variable_set(:@state, { "shops" => [1] })
+        # would have set after dumping shops — keyed per captured field (`_id`,
+        # the field shop_id references by default).
+        adapter.instance_variable_set(:@state, { "shops" => { "_id" => [1] } })
         dump_target = Exwiw::DumpTarget.new(table_name: "shops", ids: [1])
 
         query = adapter.build_query(config_by_name.fetch("users"), dump_target, config_by_name)
@@ -781,7 +782,7 @@ module Exwiw
         # key, the two user-targeting ones both constrained by the single
         # upstream "users" id set — proving the custom/relation-derived FKs the
         # generator emitted extract independently.
-        adapter.instance_variable_set(:@state, { "users" => [10], "orders" => [30] })
+        adapter.instance_variable_set(:@state, { "users" => { "_id" => [10] }, "orders" => { "_id" => [30] } })
         dump_target = Exwiw::DumpTarget.new(table_name: "users", ids: [10])
 
         query = adapter.build_query(config_by_name.fetch("transactions"), dump_target, config_by_name)
