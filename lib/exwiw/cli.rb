@@ -32,6 +32,7 @@ module Exwiw
       @database_port = nil
       @database_user = nil
       @database_password = ENV["DATABASE_PASSWORD"]
+      @connection_uri = nil
       @output_dir = nil
       @config_dir = nil
       @database_adapter = nil
@@ -64,6 +65,7 @@ module Exwiw
         user: @database_user,
         password: @database_password,
         database_name: @database_name,
+        uri: @connection_uri,
       )
 
       dump_target = DumpTarget.new(
@@ -115,17 +117,21 @@ module Exwiw
 
       resolve_target_collection_alias!
       resolve_ids_column_alias!
+      resolve_uri_option!
 
       if @subcommand == "explain"
         validate_explain_only!
       end
 
       if @database_adapter != "sqlite"
-        required_options = {
-          "Target database host" => @database_host,
-          "Target database port" => @database_port,
-          "Target database name" => @database_name,
-        }
+        # When a connection URI is supplied (mongodb only), host/port/database
+        # are read from the URI, so none of them are required on the CLI.
+        required_options = {}
+        unless @connection_uri
+          required_options["Target database host"] = @database_host
+          required_options["Target database port"] = @database_port
+          required_options["Target database name"] = @database_name
+        end
         required_options["Database user"] = @database_user unless @database_adapter == "mongodb"
         required_options.each do |k, v|
           if v.nil?
@@ -253,6 +259,19 @@ module Exwiw
       end
     end
 
+    # `--uri` supplies a full connection string (e.g. `mongodb+srv://...`) and is
+    # mongodb-only — the SQL adapters shell out to their own client binaries with
+    # discrete host/port/user flags and have no equivalent. Runs after the
+    # adapter name has been normalized so the family check is reliable.
+    private def resolve_uri_option!
+      return if @connection_uri.nil?
+
+      if @database_adapter != "mongodb"
+        $stderr.puts "--uri is only supported by the mongodb adapter (use --host/--port)"
+        exit 1
+      end
+    end
+
     private def validate_explain_only!
       if @database_adapter == "mongodb"
         $stderr.puts "mongodb adapter is not yet supported by 'explain' subcommand"
@@ -354,6 +373,7 @@ module Exwiw
           @config_dir = File.expand_path(v)
         end
         opts.on("-a", "--adapter=ADAPTER", "Database adapter: mysql, sqlite, postgresql, mongodb (aliases: mysql2, sqlite3)") { |v| @database_adapter = v }
+        opts.on("--uri=URI", "Full MongoDB connection URI (mongodb:// or mongodb+srv://). mongodb adapter only; takes precedence over --host/--port/--user. TLS, replicaSet, authSource and credentials are read from the URI.") { |v| @connection_uri = v }
         opts.on("--database=DATABASE", "Target database name") { |v| @database_name = v }
         opts.on("--target-table=[TABLE]", "Target table for extraction. If omitted, dump all tables.") { |v| @target_table_name = v }
         opts.on("--target-collection=[COLLECTION]", "Alias of --target-table for the mongodb adapter.") { |v| @target_collection_name = v }

@@ -292,15 +292,33 @@ module Exwiw
         @db ||=
           begin
             require 'mongo'
-            address = "#{@connection_config.host}:#{@connection_config.port}"
-            options = { database: @connection_config.database_name }
-            if @connection_config.user && !@connection_config.user.to_s.empty?
-              options[:user] = @connection_config.user
-              options[:password] = @connection_config.password
-            end
             Mongo::Logger.logger.level = ::Logger::WARN
-            Mongo::Client.new([address], **options)
+            if uri_connection?
+              # A full connection URI (e.g. `mongodb+srv://...`) is the source of
+              # truth: TLS, replicaSet, authSource and credentials are read from
+              # it, so host/port/user/password are ignored. `--database`, if
+              # given, overrides the database in the URI path; otherwise the
+              # URI's own database is used. The URI is never logged (it may carry
+              # credentials).
+              client_options = {}
+              if @connection_config.database_name && !@connection_config.database_name.to_s.empty?
+                client_options[:database] = @connection_config.database_name
+              end
+              Mongo::Client.new(@connection_config.uri, **client_options)
+            else
+              address = "#{@connection_config.host}:#{@connection_config.port}"
+              options = { database: @connection_config.database_name }
+              if @connection_config.user && !@connection_config.user.to_s.empty?
+                options[:user] = @connection_config.user
+                options[:password] = @connection_config.password
+              end
+              Mongo::Client.new([address], **options)
+            end
           end
+      end
+
+      private def uri_connection?
+        !@connection_config.uri.nil? && !@connection_config.uri.to_s.empty?
       end
     end
   end

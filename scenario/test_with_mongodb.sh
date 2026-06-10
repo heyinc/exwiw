@@ -15,12 +15,14 @@ rm -f tmp/mongodb/*.jsonl
 # each target collection before insert).
 bundle exec ruby scenario/setup_with_mongodb.rb "${FROM_DATABASE_NAME}"
 
-# Run exwiw
+# Run exwiw. This scenario connects via a full --uri (rather than
+# --host/--port) so the URI code path is exercised end-to-end against a real
+# server; the from-clean variant still covers the --host/--port path. The
+# database name is intentionally left out of the CLI and taken from the URI
+# path (mongodb://host:port/<db>) to verify it resolves from the URI.
 bundle exec exe/exwiw \
   --adapter=mongodb \
-  --host="${MONGO_HOST}" \
-  --port="${MONGO_PORT}" \
-  --database="${FROM_DATABASE_NAME}" \
+  --uri="mongodb://${MONGO_HOST}:${MONGO_PORT}/${FROM_DATABASE_NAME}" \
   --config-dir=scenario/mongodb-schema \
   --target-table=shops \
   --ids=a00100000000000000000001 \

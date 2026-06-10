@@ -6,6 +6,10 @@
 
 - PostgreSQL: `CREATE TYPE ... AS ENUM` statements in schema dumps no longer duplicate labels when the same enum type is used by multiple columns across the target tables. The `query_enum_types` query now filters by column in a subquery so the `pg_type` / `pg_enum` join produces each label exactly once.
 
+### Added
+
+- MongoDB: `--uri=URI` connects with a full connection string (`mongodb://...` or `mongodb+srv://...`), letting you reach managed/replica-set deployments (e.g. Atlas) where TLS, `replicaSet`, `authSource`, and credentials must be specified — they live in the URI's query string. Previously the adapter was hard-coded to a single `host:port` with no TLS / `authSource` / `replicaSet` / SRV support, so such instances were unreachable. When given, the URI is the source of truth: `--host`/`--port`/`--user`/`DATABASE_PASSWORD` are ignored and `--host`/`--port`/`--database` are no longer required; `--database`, if still passed, overrides the database in the URI path. The flag is mongodb-only, and the URI is never written to logs (it may carry credentials).
+
 ## [0.4.6] - 2026-06-08
 
 ### Fixed
