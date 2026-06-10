@@ -2,9 +2,11 @@
 
 try { db.createCollection("shops"); } catch (e) { if (e.code !== 48) throw e; }
 try { db.createCollection("system_announcements"); } catch (e) { if (e.code !== 48) throw e; }
+try { db.createCollection("business_entities"); } catch (e) { if (e.code !== 48) throw e; }
 try { db.createCollection("products"); } catch (e) { if (e.code !== 48) throw e; }
 try { db.createCollection("users"); } catch (e) { if (e.code !== 48) throw e; }
 try { db.createCollection("orders"); } catch (e) { if (e.code !== 48) throw e; }
+try { db.createCollection("sites"); } catch (e) { if (e.code !== 48) throw e; }
 try { db.createCollection("order_items"); } catch (e) { if (e.code !== 48) throw e; }
 try { db.createCollection("transactions"); } catch (e) { if (e.code !== 48) throw e; }
 
