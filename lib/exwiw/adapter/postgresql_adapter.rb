@@ -65,7 +65,7 @@ module Exwiw
           ext_ddl = extensions.map do |extname, schema|
             stmt = "CREATE EXTENSION IF NOT EXISTS #{connection.quote_ident(extname)}"
             stmt += " SCHEMA #{connection.quote_ident(schema)}" unless schema == "public"
-            "#{stmt};"
+            "DO $$ BEGIN #{stmt}; EXCEPTION WHEN feature_not_supported THEN NULL; END $$;"
           end.join("\n") + "\n\n"
           @logger.debug("  Found #{extensions.size} extension(s) to prepend.")
           stdout = ext_ddl + stdout
@@ -386,6 +386,9 @@ module Exwiw
           FROM pg_extension e
           JOIN pg_namespace n ON n.oid = e.extnamespace
           WHERE e.extname != 'plpgsql'
+            AND e.extname NOT LIKE 'google\\_%' ESCAPE '\\'
+            AND e.extname NOT LIKE 'rds\\_%' ESCAPE '\\'
+            AND e.extname NOT LIKE 'aiven\\_%' ESCAPE '\\'
           ORDER BY e.extname
         SQL
         connection.exec(sql).map { |row| [row["extname"], row["nspname"]] }

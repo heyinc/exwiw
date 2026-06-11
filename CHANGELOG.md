@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- PostgreSQL: schema dump now filters cloud-provider-managed extensions (`google_%`, `rds_%`, `aiven_%`) and wraps remaining `CREATE EXTENSION` statements in exception handling (`EXCEPTION WHEN feature_not_supported THEN NULL`), so dumps extracted from GCP Cloud SQL can be restored on AWS RDS without manual intervention.
+
 ## [0.4.8] - 2026-06-11
 
 ### Added

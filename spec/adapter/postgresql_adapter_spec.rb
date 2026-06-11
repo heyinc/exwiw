@@ -41,8 +41,8 @@ module Exwiw
             expect(sql).to include('DO $exwiw$')
             expect(sql).to include('EXCEPTION WHEN duplicate_object')
           end
-          expect(sql).to include('CREATE EXTENSION IF NOT EXISTS "btree_gist"')
-          ext_pos = sql.index("CREATE EXTENSION")
+          expect(sql).to include('DO $$ BEGIN CREATE EXTENSION IF NOT EXISTS "btree_gist"; EXCEPTION WHEN feature_not_supported THEN NULL; END $$;')
+          ext_pos = sql.index("DO $$ BEGIN CREATE EXTENSION")
           table_pos = sql.index("CREATE TABLE")
           expect(ext_pos).to be < table_pos
           expect(ext_pos).to be < sql.index("CREATE TYPE")
