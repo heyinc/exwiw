@@ -70,6 +70,49 @@ module Exwiw
       end
     end
 
+    describe '.strip_triggers' do
+      it 'removes a single-line CREATE TRIGGER statement' do
+        sql = <<~SQL
+          CREATE TABLE IF NOT EXISTS public.users (id int);
+          CREATE TRIGGER set_timestamp BEFORE UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION public.set_timestamp();
+          CREATE INDEX IF NOT EXISTS idx_users ON public.users (id);
+        SQL
+        out = described_class.strip_triggers(sql)
+        expect(out).not_to include('CREATE TRIGGER')
+        expect(out).to include('CREATE TABLE')
+        expect(out).to include('CREATE INDEX')
+      end
+
+      it 'removes a multi-line CREATE TRIGGER statement' do
+        sql = <<~SQL
+          CREATE TRIGGER audit_changes
+              AFTER INSERT OR UPDATE OR DELETE ON public.users
+              FOR EACH ROW
+              EXECUTE FUNCTION public.audit_changes();
+        SQL
+        out = described_class.strip_triggers(sql)
+        expect(out.strip).to eq('')
+      end
+
+      it 'removes all triggers when multiple are present' do
+        sql = <<~SQL
+          CREATE TRIGGER trg_a BEFORE INSERT ON public.a FOR EACH ROW EXECUTE FUNCTION public.fn_a();
+          CREATE TRIGGER trg_b AFTER UPDATE ON public.b FOR EACH ROW EXECUTE FUNCTION public.fn_b();
+        SQL
+        out = described_class.strip_triggers(sql)
+        expect(out.scan(/CREATE TRIGGER/i).size).to eq(0)
+      end
+
+      it 'preserves non-trigger SQL unchanged' do
+        sql = <<~SQL
+          CREATE TABLE IF NOT EXISTS public.users (id int);
+          ALTER TABLE ONLY public.users ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+          CREATE INDEX IF NOT EXISTS idx_users ON public.users (id);
+        SQL
+        expect(described_class.strip_triggers(sql)).to eq(sql)
+      end
+    end
+
     describe '.create_type_enum_statements' do
       it 'returns empty string for empty input' do
         expect(described_class.create_type_enum_statements([])).to eq("")
