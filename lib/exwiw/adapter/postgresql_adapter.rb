@@ -386,6 +386,9 @@ module Exwiw
           FROM pg_extension e
           JOIN pg_namespace n ON n.oid = e.extnamespace
           WHERE e.extname != 'plpgsql'
+            AND e.extname NOT LIKE 'google\\_%' ESCAPE '\\'
+            AND e.extname NOT LIKE 'rds\\_%' ESCAPE '\\'
+            AND e.extname NOT LIKE 'aiven\\_%' ESCAPE '\\'
           ORDER BY e.extname
         SQL
         connection.exec(sql).map { |row| [row["extname"], row["nspname"]] }
