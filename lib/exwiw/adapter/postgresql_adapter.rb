@@ -52,18 +52,22 @@ module Exwiw
           raise "pg_dump failed (exit #{status.exitstatus}): #{stderr}"
         end
 
-        extensions = query_extensions
-        unless extensions.empty?
-          ext_ddl = extensions.map { |ext| "CREATE EXTENSION IF NOT EXISTS \"#{ext}\";" }.join("\n") + "\n\n"
-          @logger.debug("  Found #{extensions.size} extension(s) to prepend.")
-          stdout = ext_ddl + stdout
-        end
-
         enum_types = query_enum_types(table_names)
         unless enum_types.empty?
           enum_ddl = DdlPostprocessor.create_type_enum_statements(enum_types)
           @logger.debug("  Found #{enum_types.size} enum type(s) to prepend.")
           stdout = enum_ddl + stdout
+        end
+
+        extensions = query_extensions
+        unless extensions.empty?
+          ext_ddl = extensions.map do |extname, schema|
+            stmt = "CREATE EXTENSION IF NOT EXISTS #{connection.quote_ident(extname)}"
+            stmt += " SCHEMA #{connection.quote_ident(schema)}" unless schema == "public"
+            "#{stmt};"
+          end.join("\n") + "\n\n"
+          @logger.debug("  Found #{extensions.size} extension(s) to prepend.")
+          stdout = ext_ddl + stdout
         end
 
         idempotent = stdout
@@ -377,12 +381,13 @@ module Exwiw
 
       private def query_extensions
         sql = <<~SQL
-          SELECT extname
-          FROM pg_extension
-          WHERE extname != 'plpgsql'
-          ORDER BY extname
+          SELECT e.extname, n.nspname
+          FROM pg_extension e
+          JOIN pg_namespace n ON n.oid = e.extnamespace
+          WHERE e.extname != 'plpgsql'
+          ORDER BY e.extname
         SQL
-        connection.exec(sql).map { |row| row["extname"] }
+        connection.exec(sql).map { |row| [row["extname"], row["nspname"]] }
       end
 
       private def query_enum_types(table_names)
