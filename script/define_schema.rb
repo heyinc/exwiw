@@ -69,6 +69,7 @@ end
 
 if adapter == "postgresql"
   conn = ActiveRecord::Base.connection
+  conn.execute("CREATE EXTENSION IF NOT EXISTS btree_gist;")
   conn.execute(<<~SQL)
     DO $$ BEGIN
       CREATE TYPE public.user_role AS ENUM ('admin', 'member');
