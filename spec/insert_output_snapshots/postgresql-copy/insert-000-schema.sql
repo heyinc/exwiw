@@ -4,6 +4,8 @@ DO $exwiw$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $exwiw$;
 
+CREATE EXTENSION IF NOT EXISTS "btree_gist";
+
 --
 -- PostgreSQL database dump
 --

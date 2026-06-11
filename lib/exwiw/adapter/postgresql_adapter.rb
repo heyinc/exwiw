@@ -52,6 +52,13 @@ module Exwiw
           raise "pg_dump failed (exit #{status.exitstatus}): #{stderr}"
         end
 
+        extensions = query_extensions
+        unless extensions.empty?
+          ext_ddl = extensions.map { |ext| "CREATE EXTENSION IF NOT EXISTS \"#{ext}\";" }.join("\n") + "\n\n"
+          @logger.debug("  Found #{extensions.size} extension(s) to prepend.")
+          stdout = ext_ddl + stdout
+        end
+
         enum_types = query_enum_types(table_names)
         unless enum_types.empty?
           enum_ddl = DdlPostprocessor.create_type_enum_statements(enum_types)
@@ -366,6 +373,16 @@ module Exwiw
         else
           raise "Unreachable case: #{column.inspect}"
         end
+      end
+
+      private def query_extensions
+        sql = <<~SQL
+          SELECT extname
+          FROM pg_extension
+          WHERE extname != 'plpgsql'
+          ORDER BY extname
+        SQL
+        connection.exec(sql).map { |row| row["extname"] }
       end
 
       private def query_enum_types(table_names)
