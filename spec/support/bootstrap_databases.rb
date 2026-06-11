@@ -64,8 +64,11 @@ module BootstrapDatabases
     conn.close
 
     test_conn = PG.connect(host: host, port: port, user: username, password: password, dbname: database_name)
-    test_conn.exec("CREATE EXTENSION IF NOT EXISTS btree_gist")
-    test_conn.close
+    begin
+      test_conn.exec("CREATE EXTENSION IF NOT EXISTS btree_gist")
+    ensure
+      test_conn.close
+    end
 
     ret = system({"PGPASSWORD" => password}, "psql -h #{host} -p #{port} -U #{username} -d #{database_name} -f seed/postgresql-dump.sql > /dev/null")
     raise "Failed to setup postgres database" unless ret

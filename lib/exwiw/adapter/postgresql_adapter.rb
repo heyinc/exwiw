@@ -52,6 +52,7 @@ module Exwiw
           raise "pg_dump failed (exit #{status.exitstatus}): #{stderr}"
         end
 
+        # Enums are prepended first, then extensions — so extensions end up at the top of the output.
         enum_types = query_enum_types(table_names)
         unless enum_types.empty?
           enum_ddl = DdlPostprocessor.create_type_enum_statements(enum_types)

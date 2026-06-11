@@ -45,6 +45,7 @@ module Exwiw
           ext_pos = sql.index("CREATE EXTENSION")
           table_pos = sql.index("CREATE TABLE")
           expect(ext_pos).to be < table_pos
+          expect(ext_pos).to be < sql.index("CREATE TYPE")
           expect(sql).to include('CREATE TYPE')
           expect(sql).to include("AS ENUM ('admin', 'member')")
           enum_match = sql.match(/AS ENUM \(([^)]+)\)/)
