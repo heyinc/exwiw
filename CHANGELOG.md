@@ -4,6 +4,10 @@
 
 ## [0.4.8] - 2026-06-11
 
+### Added
+
+- PostgreSQL: schema dump now includes `CREATE EXTENSION IF NOT EXISTS` statements for user-installed extensions (e.g. `btree_gist`, `pgcrypto`, `uuid-ossp`). Extensions are emitted before any `CREATE TYPE` or `CREATE TABLE` definitions so the dump can be restored on a clean database without manually pre-installing extensions. Non-public schema extensions include a `SCHEMA` clause. ([#92](https://github.com/heyinc/exwiw/pull/92))
+
 ## [0.4.7] - 2026-06-10
 
 ### Fixed
