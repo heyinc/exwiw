@@ -61,7 +61,7 @@ module Exwiw
     # pg_dump --table includes triggers but not the referenced function
     # definitions, causing UndefinedFunction errors on the target DB.
     def strip_triggers(sql)
-      sql.gsub(/^CREATE TRIGGER\b.*?;\n?/mi, "")
+      sql.gsub(/^[ \t]*CREATE\s+TRIGGER\b.*?;\r?\n?/mi, "")
     end
 
     # Generate idempotent CREATE TYPE ... AS ENUM statements.

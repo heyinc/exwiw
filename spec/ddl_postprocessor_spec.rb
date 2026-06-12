@@ -103,6 +103,12 @@ module Exwiw
         expect(out.scan(/CREATE TRIGGER/i).size).to eq(0)
       end
 
+      it 'removes a trigger with leading whitespace' do
+        sql = "  \tCREATE TRIGGER set_timestamp BEFORE UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION public.set_timestamp();\n"
+        out = described_class.strip_triggers(sql)
+        expect(out).not_to include('CREATE TRIGGER')
+      end
+
       it 'preserves non-trigger SQL unchanged' do
         sql = <<~SQL
           CREATE TABLE IF NOT EXISTS public.users (id int);
