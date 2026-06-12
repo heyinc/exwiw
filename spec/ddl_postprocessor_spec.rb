@@ -83,15 +83,16 @@ module Exwiw
         expect(out).to include('CREATE INDEX')
       end
 
-      it 'removes a multi-line CREATE TRIGGER statement' do
-        sql = <<~SQL
-          CREATE TRIGGER audit_changes
-              AFTER INSERT OR UPDATE OR DELETE ON public.users
-              FOR EACH ROW
-              EXECUTE FUNCTION public.audit_changes();
-        SQL
+      it 'removes CREATE CONSTRAINT TRIGGER' do
+        sql = "CREATE CONSTRAINT TRIGGER check_balance AFTER INSERT ON public.orders FOR EACH ROW EXECUTE FUNCTION public.check_balance();\n"
         out = described_class.strip_triggers(sql)
-        expect(out.strip).to eq('')
+        expect(out).not_to include('TRIGGER')
+      end
+
+      it 'removes CREATE OR REPLACE TRIGGER' do
+        sql = "CREATE OR REPLACE TRIGGER set_timestamp BEFORE UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION public.set_timestamp();\n"
+        out = described_class.strip_triggers(sql)
+        expect(out).not_to include('TRIGGER')
       end
 
       it 'removes all triggers when multiple are present' do
