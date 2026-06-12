@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.10] - 2026-06-12
+
 ### Fixed
 
 - PostgreSQL: schema dump now strips `CREATE TRIGGER` statements from `insert-000-schema.sql`. `pg_dump --table` includes triggers but not the standalone function definitions they reference, causing `PG::UndefinedFunction` errors on restore. Handles `CREATE CONSTRAINT TRIGGER` and `CREATE OR REPLACE TRIGGER` variants. ([#96](https://github.com/heyinc/exwiw/pull/96))
