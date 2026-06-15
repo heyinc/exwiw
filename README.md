@@ -72,7 +72,7 @@ exwiw \
   --port=3306 \
   --user=reader \
   --database=app_production \
-  --config-dir=exwiw \
+  --config-dir=exwiw/schema \
   --target-table=shops \
   --ids=1 \ # comma separated ids
   --output-dir=dump \
@@ -91,7 +91,7 @@ exwiw \
   --port=5432 \
   --user=reader \
   --database=app_production \
-  --config-dir=exwiw \
+  --config-dir=exwiw/schema \
   --output-dir=dump
 ```
 
@@ -123,7 +123,7 @@ exwiw explain \
   --adapter=postgresql \
   --host=localhost --port=5432 --user=reader \
   --database=app_production \
-  --config-dir=exwiw \
+  --config-dir=exwiw/schema \
   --target-table=shops --ids=1
 ```
 
@@ -134,14 +134,14 @@ The `--output-dir`, `--output-format`, `--insert-only`, and `--after-insert-hook
 The config generator is provided as a Rake task.
 
 ```bash
-# generate table schema under exwiw/
+# generate table schema under exwiw/schema/
 bundle exec rake exwiw:schema:generate
 ```
 
-By default, the schema files will be saved in the `exwiw` directory. You can specify a different output directory by setting the `OUTPUT_DIR_PATH` environment variable:
+By default, the schema files will be saved in the `exwiw/schema` directory. You can specify a different output directory by setting the `EXWIW_SCHEMA_DIR_PATH` environment variable:
 
 ```sh
-OUTPUT_DIR_PATH=custom_directory bundle exec rake exwiw:schema:generate
+EXWIW_SCHEMA_DIR_PATH=custom_directory bundle exec rake exwiw:schema:generate
 ```
 
 #### Tidying stale config (`schema:tidy`)
@@ -159,14 +159,14 @@ bundle exec rake exwiw:schema:tidy
 
 Because it reads the database directly, a table that still exists in the database but has lost (or never had) an ActiveRecord model is **kept** — only a table that is genuinely gone is removed. (This is the deliberate counterpart to `generate`, which is model-driven and only ever adds what the models know about.)
 
-It respects `OUTPUT_DIR_PATH` and the per-database subdirectory layout in the same way as `schema:generate`. Unlike `generate`, `tidy` never adds or regenerates entries — every surviving table/column (including hand-edited `comment` / `ignore` / `replace_with`) is left untouched, so it is safe to run on a customized config. The task prints which tables and columns it removed (or that the config was already tidy). Stale `belongs_tos` are not pruned by `tidy`; rerun `schema:generate` to refresh those.
+It respects `EXWIW_SCHEMA_DIR_PATH` and the per-database subdirectory layout in the same way as `schema:generate`. Unlike `generate`, `tidy` never adds or regenerates entries — every surviving table/column (including hand-edited `comment` / `ignore` / `replace_with`) is left untouched, so it is safe to run on a customized config. The task prints which tables and columns it removed (or that the config was already tidy). Stale `belongs_tos` are not pruned by `tidy`; rerun `schema:generate` to refresh those.
 
 #### Multiple databases
 
 If the application uses Rails' multiple-database support (`connects_to`), `schema:generate` buckets models by the database they connect to and writes each database's config files into its own subdirectory of the output directory, named after the database config name (`primary`, `analytics`, ...):
 
 ```
-exwiw/
+exwiw/schema/
   primary/
     shops.json
     users.json
