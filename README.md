@@ -72,7 +72,7 @@ exwiw \
   --port=3306 \
   --user=reader \
   --database=app_production \
-  --config-dir=exwiw \
+  --config-dir=exwiw/config \
   --target-table=shops \
   --ids=1 \ # comma separated ids
   --output-dir=dump \
@@ -91,7 +91,7 @@ exwiw \
   --port=5432 \
   --user=reader \
   --database=app_production \
-  --config-dir=exwiw \
+  --config-dir=exwiw/config \
   --output-dir=dump
 ```
 
@@ -123,7 +123,7 @@ exwiw explain \
   --adapter=postgresql \
   --host=localhost --port=5432 --user=reader \
   --database=app_production \
-  --config-dir=exwiw \
+  --config-dir=exwiw/config \
   --target-table=shops --ids=1
 ```
 
@@ -134,11 +134,11 @@ The `--output-dir`, `--output-format`, `--insert-only`, and `--after-insert-hook
 The config generator is provided as a Rake task.
 
 ```bash
-# generate table schema under exwiw/
+# generate table schema under exwiw/config/
 bundle exec rake exwiw:schema:generate
 ```
 
-By default, the schema files will be saved in the `exwiw` directory. You can specify a different output directory by setting the `OUTPUT_DIR_PATH` environment variable:
+By default, the schema files will be saved in the `exwiw/config` directory. You can specify a different output directory by setting the `OUTPUT_DIR_PATH` environment variable:
 
 ```sh
 OUTPUT_DIR_PATH=custom_directory bundle exec rake exwiw:schema:generate
@@ -166,7 +166,7 @@ It respects `OUTPUT_DIR_PATH` and the per-database subdirectory layout in the sa
 If the application uses Rails' multiple-database support (`connects_to`), `schema:generate` buckets models by the database they connect to and writes each database's config files into its own subdirectory of the output directory, named after the database config name (`primary`, `analytics`, ...):
 
 ```
-exwiw/
+exwiw/config/
   primary/
     shops.json
     users.json

@@ -7,7 +7,7 @@ namespace :exwiw do
       require "exwiw"
 
       Exwiw::SchemaGenerator.from_rails_application(
-        output_dir: ENV["OUTPUT_DIR_PATH"] || "exwiw",
+        output_dir: ENV["OUTPUT_DIR_PATH"] || "exwiw/config",
       ).generate!
     end
 
@@ -16,7 +16,7 @@ namespace :exwiw do
       require "exwiw"
 
       result = Exwiw::SchemaGenerator.from_rails_application(
-        output_dir: ENV["OUTPUT_DIR_PATH"] || "exwiw",
+        output_dir: ENV["OUTPUT_DIR_PATH"] || "exwiw/config",
       ).tidy!
 
       if result.empty?
@@ -47,7 +47,7 @@ namespace :exwiw do
       require "exwiw"
 
       Exwiw::MongoidSchemaGenerator.from_rails_application(
-        output_dir: ENV["OUTPUT_DIR_PATH"] || "exwiw",
+        output_dir: ENV["OUTPUT_DIR_PATH"] || "exwiw/config",
         skip_unsupported: ENV["EXWIW_SKIP_UNSUPPORTED"] == "1",
       ).generate!
     end
