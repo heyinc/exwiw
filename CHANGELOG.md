@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- MongoDB: `schema:generate_mongoid` now resolves an embedded collection's `embedded_in` document key by locating the parent's `embeds_one` / `embeds_many` that stores the collection, instead of trusting Mongoid's computed `assoc.inverse`. Mongoid returns a `nil` inverse for many valid embeddings (when no explicit `inverse_of:` is declared and it declines to infer one), and previously such a model was wrongly reported as having an "unresolvable inverse" and skipped (or aborted the run). Matching by the embedded collection also resolves an STI subclass embedded through a relation declared against its base class. Genuinely ambiguous embeddings (the same collection stored under several keys in the parent) are still reported as unrepresentable.
+
+### Added
+
+- MongoDB: `schema:generate_mongoid` now **honors an explicit `ignore: true` on disk** and skips re-introspecting it, so a construct exwiw cannot represent that you have already triaged no longer aborts the (fail-loud, default) run — and the annotation survives regeneration. Works at two granularities: a whole **collection** marked `ignore: true` is preserved as-is without introspection, and a single **`belongs_to`** marked `ignore: true` (no `table_name` required) is preserved while the rest of its collection still generates and dumps (its foreign-key column stays an ordinary field). This lets you keep the generator strict by default while opting individual stale/unrepresentable constructs out by hand, rather than relying on `EXWIW_SKIP_UNSUPPORTED`.
+- `MongodbCollectionConfig` and `BelongsTo` gain an optional, user-owned **`ignore_type`** tag (free-form; exwiw never interprets or emits it) to record *why* something is ignored — e.g. `"need_code_fix"` for an application-side bug, `"unsupported"` for a shape exwiw cannot express. Preserved across regeneration like `comment`. `BelongsTo#table_name` is now optional so an ignored, no-longer-resolvable relation can be recorded without a target collection (a non-ignored `belongs_to` still requires one).
+
 ## [0.4.10] - 2026-06-12
 
 ### Fixed

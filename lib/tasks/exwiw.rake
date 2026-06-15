@@ -32,11 +32,17 @@ namespace :exwiw do
     end
 
     desc "Generate schema from a Mongoid application"
-    # Set EXWIW_SKIP_UNSUPPORTED=1 to keep generation going past constructs exwiw
-    # cannot represent (an unresolvable `belongs_to`, or a polymorphic / cyclic /
-    # unresolvable `embedded_in`): the unresolvable belongs_to is skipped and an
+    # Fail-loud by default: the task aborts on a construct exwiw cannot represent
+    # (an unresolvable `belongs_to`, or a polymorphic / cyclic / ambiguous /
+    # unresolvable `embedded_in`). To keep a deliberately-unrepresentable
+    # collection or relation from aborting the run, mark it `ignore: true` in its
+    # config on disk (optionally with an `ignore_type` / `comment` recording why);
+    # the generator honors that and skips re-introspecting it. Set
+    # EXWIW_SKIP_UNSUPPORTED=1 to additionally keep going past *un-annotated*
+    # unrepresentable constructs (the unresolvable belongs_to is skipped and an
     # unrepresentable embedded collection is emitted as `ignore: true` with a
-    # `comment`, each warned to stderr, instead of aborting the whole run.
+    # `comment`, each warned to stderr) — useful for the first bootstrap pass
+    # against a large app before the ignores are written.
     task generate_mongoid: :environment do
       require "exwiw"
 

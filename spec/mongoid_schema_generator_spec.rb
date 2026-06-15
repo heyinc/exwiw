@@ -384,6 +384,72 @@ module Exwiw
       end
     end
 
+    describe "#generate! honoring an explicit ignore on disk (fail-loud default)" do
+      # These run WITHOUT skip_unsupported (the default), proving the generator
+      # no longer aborts on a construct the user has already triaged by marking
+      # it ignore:true on disk — distinct from skip_unsupported, which blanket-
+      # skips *un-annotated* constructs.
+      it "preserves a collection-level ignore:true (with ignore_type/comment) and skips introspecting it instead of aborting" do
+        path = File.join(output_dir, "polymorphic_addresses.json")
+        existing = {
+          "name" => "polymorphic_addresses",
+          "primary_key" => "_id",
+          "ignore" => true,
+          "ignore_type" => "unsupported",
+          "comment" => "FIXME: polymorphic embedded_in :addressable; define embedded_in by hand.",
+          "belongs_tos" => [],
+          "fields" => [{ "name" => "_id" }],
+        }
+        File.write(path, JSON.pretty_generate(existing))
+
+        # PolymorphicAddress would otherwise raise UnsupportedEmbedding here.
+        expect {
+          described_class.new(models: [MongoidDummy::PolymorphicAddress], output_dir: output_dir).generate!
+        }.not_to raise_error
+
+        result = JSON.parse(File.read(path))
+        expect(result["ignore"]).to eq(true)
+        expect(result["ignore_type"]).to eq("unsupported")
+        expect(result["comment"]).to match(/FIXME/)
+      end
+
+      it "preserves a belongs_to-level ignore:true (no table_name) and keeps the collection dumpable instead of aborting on the stale relation" do
+        path = File.join(output_dir, "stale_referencers.json")
+        existing = {
+          "name" => "stale_referencers",
+          "primary_key" => "_id",
+          "belongs_tos" => [
+            {
+              "foreign_key" => "ghost_id",
+              "ignore" => true,
+              "ignore_type" => "need_code_fix",
+              "comment" => "FIXME: belongs_to :ghost -> Ghost does not exist (dead relation).",
+            },
+          ],
+          "fields" => [{ "name" => "_id" }, { "name" => "ghost_id" }],
+        }
+        File.write(path, JSON.pretty_generate(existing))
+
+        # StaleReferencer#ghost resolves to a missing class; without the explicit
+        # ignore this raises NameError (see the skip_unsupported section above).
+        expect {
+          described_class.new(models: [MongoidDummy::StaleReferencer], output_dir: output_dir).generate!
+        }.not_to raise_error
+
+        result = JSON.parse(File.read(path))
+        # The collection itself is NOT ignored — it still dumps.
+        expect(result["ignore"]).to be_nil
+        # The stale belongs_to is preserved as an ignored entry carrying its
+        # ignore_type/comment, with no table_name (the target is gone).
+        ghost = result["belongs_tos"].find { |b| b["foreign_key"] == "ghost_id" }
+        expect(ghost["ignore"]).to eq(true)
+        expect(ghost["ignore_type"]).to eq("need_code_fix")
+        expect(ghost).not_to have_key("table_name")
+        # ...and its foreign-key column survives as an ordinary field.
+        expect(result["fields"].map { |f| f["name"] }).to include("ghost_id")
+      end
+    end
+
     describe "#generate!" do
       it "writes one JSON file per collection" do
         described_class.new(models: models, output_dir: output_dir).generate!

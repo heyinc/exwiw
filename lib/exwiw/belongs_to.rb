@@ -5,7 +5,11 @@ module Exwiw
     include Serdes
 
     attribute :foreign_key, String
-    attribute :table_name, String
+    # Optional so an ignored, no-longer-resolvable relation (a stale
+    # `belongs_to` whose target class is gone) can be recorded with no target
+    # collection. A non-ignored belongs_to still requires it — enforced by the
+    # owning config's validation (e.g. MongodbCollectionConfig#validate_belongs_tos!).
+    attribute :table_name, optional(String), skip_serializing_if_nil: true
     # Set only for a polymorphic association. `foreign_type` is the name of the
     # column storing the type (e.g. `reviewable_type`), and `type_value` is the
     # value held in that column (e.g. `"Product"`). Both are nil for a
@@ -32,6 +36,11 @@ module Exwiw
     # extraction once the config is loaded (see #reject_ignored_members!).
     attribute :comment, optional(String), skip_serializing_if_nil: true
     attribute :ignore, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
+    # Free-form tag recording *why* this relation is ignored (e.g.
+    # "need_code_fix" for an application-side bug, "unsupported" for a shape
+    # exwiw cannot express). exwiw never interprets or emits it; purely
+    # informational and preserved across regeneration like `comment`.
+    attribute :ignore_type, optional(String), skip_serializing_if_nil: true
 
     def self.from_symbol_keys(hash)
       from(hash.transform_keys(&:to_s))
