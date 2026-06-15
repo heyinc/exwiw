@@ -4,7 +4,7 @@
 
 ### Changed
 
-- **BREAKING**: `schema:generate`, `schema:tidy`, and `schema:generate_mongoid` now default their output directory to `exwiw/config` (previously `exwiw`) when `OUTPUT_DIR_PATH` is unset. This keeps generated schema config under a dedicated `config/` subdirectory, leaving `exwiw/` free for other artifacts (hooks, dumps). Existing repositories that keep config flat in `exwiw/` should either move those files to `exwiw/config/` or set `OUTPUT_DIR_PATH=exwiw` to preserve the old layout; otherwise a no-`OUTPUT_DIR_PATH` `generate` run will write a second copy into `exwiw/config/` and leave the old `exwiw/*.json` stale. The `export`/`explain` CLI is unaffected (`--config-dir` is still required and has no default), but examples now point at `exwiw/config`.
+- **BREAKING**: the env var that overrides where `schema:generate`, `schema:tidy`, and `schema:generate_mongoid` write their config has been renamed from `OUTPUT_DIR_PATH` to `EXWIW_SCHEMA_DIR_PATH`, and the default output directory is now `exwiw/schema` (previously `exwiw`). The new name disambiguates it from the dump-side `--output-dir`, and the dedicated `schema/` subdirectory leaves `exwiw/` free for other artifacts (hooks, dumps). `OUTPUT_DIR_PATH` is no longer read. Existing repositories should set `EXWIW_SCHEMA_DIR_PATH` (e.g. `EXWIW_SCHEMA_DIR_PATH=exwiw` to preserve the old flat layout) and/or move their config under `exwiw/schema/`; otherwise a `generate` run will write a fresh copy into `exwiw/schema/` and leave the old files stale. The `export`/`explain` CLI is unaffected (`--config-dir` is still required and has no default), but examples now point at `exwiw/schema`.
 
 ## [0.4.11] - 2026-06-15
 
