@@ -49,7 +49,7 @@ module Exwiw
     end
 
     def generate!
-      collections = build_collections
+      collections = build_collections(existing_configs_by_name(@output_dir))
       write_files(@output_dir, collections)
       collections
     end
@@ -61,11 +61,33 @@ module Exwiw
     # subclasses share the base's collection (Mongoid STI, discriminated by the
     # auto-added `_type` field) collapses into a single config that aggregates
     # every class's fields and associations. See `expand_with_descendants`.
-    def build_collections
+    #
+    # `existing_by_name` maps a collection name to its config already on disk, so
+    # the build can honor an explicit `ignore: true` (collection- or
+    # belongs_to-level) without re-introspecting it — and thus without aborting
+    # on a construct the user has deliberately ignored. Empty (the default) when
+    # called directly without an output dir, in which case nothing is honored.
+    def build_collections(existing_by_name = {})
       models = expand_with_descendants(concrete_models)
       models
         .group_by { |model| model.collection_name.to_s }
-        .map { |collection_name, group| build_collection_for(collection_name, group) }
+        .map { |collection_name, group| build_collection_for(collection_name, group, existing_by_name[collection_name]) }
+    end
+
+    # Loads the configs already on disk so the generator can honor an explicit
+    # `ignore: true` without re-introspecting (and thus without aborting on a
+    # construct the user has deliberately ignored). A file that cannot be read or
+    # parsed is skipped — a fresh run simply has none, and write_files surfaces
+    # genuine problems when it later merges/rewrites.
+    private def existing_configs_by_name(dir)
+      return {} unless dir && File.directory?(dir)
+
+      Dir[File.join(dir, "*.json")].each_with_object({}) do |path, acc|
+        config = MongodbCollectionConfig.from(JSON.parse(File.read(path)))
+        acc[config.name] = config
+      rescue JSON::ParserError, ArgumentError
+        next
+      end
     end
 
     def write_files(dir, collections)
@@ -88,7 +110,15 @@ module Exwiw
     # belongs_tos are unioned across the group; processing least-derived first
     # keeps the base's fields leading the list and the output deterministic
     # regardless of input order or sibling subclasses.
-    private def build_collection_for(collection_name, models)
+    private def build_collection_for(collection_name, models, existing = nil)
+      # An explicit on-disk `ignore: true` means the user has triaged this
+      # collection and asked exwiw to leave it alone: preserve their config
+      # (ignore_type / comment intact) and skip introspection entirely, so a
+      # construct exwiw cannot represent never aborts a run the user has already
+      # accounted for. (A collection is never dumped while ignored, so its
+      # fields/structure need not track the model.)
+      return existing if existing&.ignore
+
       ordered = models.sort_by { |model| [model.fields.size, model.name] }
 
       attrs = {
@@ -128,7 +158,7 @@ module Exwiw
           attrs[:comment] = "exwiw could not derive embedded_in (#{reason}); marked ignore:true. Define this collection's embedded_in config by hand to dump/mask it."
         end
       else
-        attrs[:belongs_tos] = aggregate_belongs_tos(ordered)
+        attrs[:belongs_tos] = aggregate_belongs_tos(ordered, existing)
       end
 
       MongodbCollectionConfig.from_symbol_keys(attrs)
@@ -200,7 +230,9 @@ module Exwiw
       end
     end
 
-    private def aggregate_belongs_tos(models)
+    private def aggregate_belongs_tos(models, existing = nil)
+      ignored_by_fk = ignored_belongs_tos_by_foreign_key(existing)
+
       belongs_to_assocs = models.flat_map do |model|
         model.relations.values.select do |assoc|
           assoc.is_a?(::Mongoid::Association::Referenced::BelongsTo)
@@ -216,8 +248,20 @@ module Exwiw
       # same belongs_to twice, so uniq them.
       belongs_to_assocs
         .reject(&:polymorphic?)
-        .filter_map { |assoc| belongs_to_for(assoc) }
+        .filter_map { |assoc| belongs_to_for(assoc, ignored_by_fk) }
         .uniq
+    end
+
+    # Maps foreign_key -> the on-disk `ignore: true` belongs_to entry, so a
+    # relation the user has explicitly ignored is preserved verbatim instead of
+    # re-resolved (which, for a stale relation whose target class is gone, would
+    # otherwise abort the run).
+    private def ignored_belongs_tos_by_foreign_key(existing)
+      return {} unless existing
+
+      existing.belongs_tos.select(&:ignore).each_with_object({}) do |bt, acc|
+        acc[bt.foreign_key] = bt
+      end
     end
 
     # Resolves a referenced belongs_to to a `{ table_name, foreign_key }` pair
@@ -227,7 +271,18 @@ module Exwiw
     # ago). Under `skip_unsupported` such a relation is skipped with a warning —
     # its foreign-key column is still tracked as an ordinary field by
     # `aggregate_fields`, mirroring how polymorphic / HABTM relations are dropped.
-    private def belongs_to_for(assoc)
+    #
+    # `ignored_by_fk` carries the on-disk `ignore: true` belongs_to entries: when
+    # this relation's foreign key is among them, the user has explicitly ignored
+    # it, so preserve their entry verbatim (its `ignore_type` / `comment`) without
+    # resolving the — possibly gone — target. The relation is dropped from
+    # extraction at load (`#reject_ignored_members!`) while its FK column stays a
+    # field, and the run never aborts on a relation already triaged.
+    private def belongs_to_for(assoc, ignored_by_fk = {})
+      if (ignored = ignored_by_fk[assoc.foreign_key])
+        return preserve_ignored_belongs_to(ignored)
+      end
+
       result = { table_name: assoc.klass.collection_name.to_s, foreign_key: assoc.foreign_key }
       # Mongoid's `belongs_to ..., primary_key: :uuid` makes the child's foreign
       # key reference that parent field rather than the parent's `_id`. Surface
@@ -243,6 +298,21 @@ module Exwiw
 
       warn("exwiw: skip_unsupported: skipping belongs_to ':#{assoc.name}' that could not be resolved (#{e.class}: #{e.message.lines.first&.strip}); its foreign key '#{assoc.foreign_key}' is still kept as a field.")
       nil
+    end
+
+    # Re-emits a user's on-disk ignored belongs_to as a symbol-keyed hash (the
+    # shape `build_collection_for` feeds to `from_symbol_keys`), carrying its
+    # `ignore` / `ignore_type` / `comment` (and `table_name` / `references` when
+    # present) so the annotation survives regeneration untouched.
+    private def preserve_ignored_belongs_to(bt)
+      {
+        table_name: bt.table_name,
+        foreign_key: bt.foreign_key,
+        references: bt.references,
+        ignore: true,
+        ignore_type: bt.ignore_type,
+        comment: bt.comment,
+      }.compact
     end
 
     # Resolves the `embedded_in` config for an embedded model. Each embedded
@@ -317,37 +387,81 @@ module Exwiw
         )
       end
 
-      # `store_as` defaults to the relation name and is the actual document key
-      # the subdocuments are stored under inside the immediate parent.
-      parent_relation =
-        begin
-          parent.relations[assoc.inverse.to_s]
-        rescue ::Mongoid::Errors::MongoidError, NameError => e
-          # e.g. AmbiguousRelationship: the embedded class is embedded under
-          # several document keys in the parent (or otherwise has no single
-          # resolvable inverse), so exwiw cannot pick the one path it lives under.
-          raise UnsupportedEmbedding.new(
-            "MongoidSchemaGenerator: '#{model.name}' (collection '#{model.collection_name}') " \
-            "declares `embedded_in :#{assoc.name}` whose inverse on '#{parent.name}' is ambiguous " \
-            "or unresolvable (#{e.class}: #{e.message.lines.first&.strip}). Add an `inverse_of:` to " \
-            "disambiguate, or define the collection's config by hand.",
-            reason: "has an embedded_in :#{assoc.name} with an ambiguous/unresolvable inverse",
-          )
-        end
+      # Resolve the document key (`store_as`, defaulting to the relation name)
+      # the subdocuments live under inside the parent.
+      parent_relation = embedding_relation_in(parent, assoc, model)
 
       unless parent_relation
-        # `assoc.inverse` resolved to a name that is not an association on the
-        # parent (or to nothing), so there is no document key to embed under.
+        # No embeds_one / embeds_many on the parent stores this collection, so
+        # there is no document key to embed under.
         raise UnsupportedEmbedding.new(
           "MongoidSchemaGenerator: '#{model.name}' (collection '#{model.collection_name}') " \
-          "declares `embedded_in :#{assoc.name}` but its inverse relation could not be located on " \
-          "'#{parent.name}' (the embedding document key is indeterminable). Add an `inverse_of:`, or " \
+          "declares `embedded_in :#{assoc.name}` but no embeds_one/embeds_many on '#{parent.name}' " \
+          "stores this collection (the embedding document key is indeterminable). Add an `inverse_of:`, or " \
           "define the collection's config by hand.",
           reason: "has an embedded_in :#{assoc.name} whose inverse relation could not be located",
         )
       end
 
       { collection_name: parent.collection_name.to_s, path: parent_relation.store_as }
+    end
+
+    # Locates the parent's `embeds_one` / `embeds_many` association that stores
+    # this embedded collection — i.e. the document key the subdocuments live
+    # under. Mongoid's computed `assoc.inverse` is preferred when it resolves
+    # cleanly, but it is frequently `nil` (no explicit `inverse_of:` and Mongoid
+    # declines to infer one) or raises `AmbiguousRelationship`; in those cases
+    # fall back to matching the parent's embedding relations by the collection
+    # they store. This resolves the common single-embedding case that
+    # `assoc.inverse` cannot (e.g. an `embeds_one :force_logout` / `embedded_in
+    # :customer` pair with no inverse_of). Returns the relation, `nil` when none
+    # stores this collection, and raises `UnsupportedEmbedding` when several
+    # distinct keys do (genuinely ambiguous — exwiw cannot pick one).
+    private def embedding_relation_in(parent, assoc, model)
+      inverse_name =
+        begin
+          assoc.inverse
+        rescue ::Mongoid::Errors::MongoidError, NameError
+          nil
+        end
+
+      if inverse_name
+        rel = parent.relations[inverse_name.to_s]
+        return rel if rel
+      end
+
+      candidates = parent.relations.values.select do |rel|
+        (rel.is_a?(::Mongoid::Association::Embedded::EmbedsMany) ||
+          rel.is_a?(::Mongoid::Association::Embedded::EmbedsOne)) &&
+          embeds_collection?(rel, model)
+      end
+      paths = candidates.map(&:store_as).uniq
+
+      if paths.size > 1
+        # The same collection is embedded under several document keys in the
+        # parent, so `embedded_in :#{assoc.name}` has no single resolvable path.
+        raise UnsupportedEmbedding.new(
+          "MongoidSchemaGenerator: '#{model.name}' (collection '#{model.collection_name}') " \
+          "is embedded under multiple document keys (#{paths.join(', ')}) in '#{parent.name}', so its " \
+          "`embedded_in :#{assoc.name}` is ambiguous or unresolvable — exwiw cannot pick the single path " \
+          "it lives under. Add an `inverse_of:` to disambiguate, or define the collection's config by hand.",
+          reason: "has an embedded_in :#{assoc.name} with an ambiguous/unresolvable inverse",
+        )
+      end
+
+      candidates.first
+    end
+
+    # True when `rel` (an embeds_one / embeds_many on the parent) stores the same
+    # collection as `model`. Comparing collection names (rather than class
+    # identity) also matches an STI subclass embedded through a relation declared
+    # against its base class, since both share the base's collection. A sibling
+    # embedding relation whose target class no longer resolves is treated as a
+    # non-match rather than blowing up the whole derivation.
+    private def embeds_collection?(rel, model)
+      rel.klass.collection_name.to_s == model.collection_name.to_s
+    rescue NameError, ::Mongoid::Errors::MongoidError
+      false
     end
 
     private def embedded_in_association(model)

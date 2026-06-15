@@ -20,6 +20,11 @@ module Exwiw
     # marks an unrepresentable collection `ignore: true`, to record why extraction
     # was skipped.
     attribute :comment, optional(String), skip_serializing_if_nil: true
+    # Free-form tag recording *why* this collection is ignored (e.g.
+    # "need_code_fix" for an application-side bug, "unsupported" for a shape
+    # exwiw cannot express). exwiw never interprets or emits it; informational
+    # and preserved across regeneration like `comment`.
+    attribute :ignore_type, optional(String), skip_serializing_if_nil: true
 
     # Marks this config as physically embedded inside another collection's
     # documents. When set, this config is not processed as a standalone dump
@@ -30,6 +35,7 @@ module Exwiw
     def self.from(obj)
       instance = super
       instance.__send__(:validate_embedded!)
+      instance.__send__(:validate_belongs_tos!)
       instance
     end
 
@@ -68,6 +74,7 @@ module Exwiw
         merged.filter = filter
         merged.bulk_insert_chunk_size = bulk_insert_chunk_size
         merged.ignore = ignore
+        merged.ignore_type = ignore_type
         # A freshly generated comment (e.g. the skip_unsupported marker) wins so
         # it stays accurate; otherwise a hand-added note on a normal collection
         # is kept.
@@ -84,6 +91,7 @@ module Exwiw
           if receiver_bt
             pbt.comment = receiver_bt.comment if receiver_bt.comment
             pbt.ignore = receiver_bt.ignore unless receiver_bt.ignore.nil?
+            pbt.ignore_type = receiver_bt.ignore_type if receiver_bt.ignore_type
             pbt.references = receiver_bt.references if receiver_bt.references
           end
           pbt
@@ -113,6 +121,19 @@ module Exwiw
             "MongodbCollectionConfig '#{name}' is embedded_in '#{embedded_in.collection_name}'; " \
             "belongs_tos must be empty (cross-collection refs from inside embedded arrays " \
             "are not supported)."
+    end
+
+    # `table_name` is optional only so an *ignored* relation (a stale belongs_to
+    # whose target collection no longer exists) can be recorded without one. A
+    # belongs_to that still participates in extraction must name its target.
+    private def validate_belongs_tos!
+      offender = belongs_tos.find { |bt| bt.table_name.nil? && !bt.ignore }
+      return unless offender
+
+      raise ArgumentError,
+            "MongodbCollectionConfig '#{name}' has a belongs_to (foreign_key " \
+            "'#{offender.foreign_key}') with no table_name; only an `ignore: true` belongs_to " \
+            "may omit it."
     end
   end
 end

@@ -96,6 +96,71 @@ module Exwiw
         end
       end
 
+      context 'with an ignored belongs_to carrying ignore_type and no table_name' do
+        let(:json) do
+          {
+            "name" => "orders",
+            "primary_key" => "_id",
+            "belongs_tos" => [
+              { "table_name" => "shops", "foreign_key" => "shop_id" },
+              {
+                "foreign_key" => "coupon_id",
+                "ignore" => true,
+                "ignore_type" => "need_code_fix",
+                "comment" => "FIXME: target class gone",
+              },
+            ],
+            "fields" => [{ "name" => "_id" }],
+          }
+        end
+
+        it 'loads the ignored belongs_to (no table_name) and round-trips ignore_type' do
+          config = described_class.from(json)
+          ignored = config.belongs_tos.find { |b| b.foreign_key == "coupon_id" }
+          expect(ignored.table_name).to be_nil
+          expect(ignored.ignore).to eq(true)
+          expect(ignored.ignore_type).to eq("need_code_fix")
+          hash = ignored.to_hash
+          expect(hash).not_to have_key("table_name")
+          expect(hash["ignore_type"]).to eq("need_code_fix")
+        end
+      end
+
+      context 'with a non-ignored belongs_to missing table_name' do
+        let(:json) do
+          {
+            "name" => "orders",
+            "primary_key" => "_id",
+            "belongs_tos" => [{ "foreign_key" => "shop_id" }],
+            "fields" => [{ "name" => "_id" }],
+          }
+        end
+
+        it 'raises ArgumentError (only an ignored belongs_to may omit table_name)' do
+          expect { described_class.from(json) }.to raise_error(ArgumentError, /no table_name/)
+        end
+      end
+
+      context 'with a collection-level ignore_type' do
+        let(:json) do
+          {
+            "name" => "legacy_widgets",
+            "primary_key" => "_id",
+            "ignore" => true,
+            "ignore_type" => "unsupported",
+            "comment" => "FIXME: polymorphic embedded_in :owner",
+            "belongs_tos" => [],
+            "fields" => [{ "name" => "_id" }],
+          }
+        end
+
+        it 'loads and round-trips ignore_type through to_hash' do
+          config = described_class.from(json)
+          expect(config.ignore_type).to eq("unsupported")
+          expect(config.to_hash["ignore_type"]).to eq("unsupported")
+        end
+      end
+
       context 'when fields contain raw_sql key' do
         let(:json) do
           {

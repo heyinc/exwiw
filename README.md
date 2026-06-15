@@ -194,20 +194,53 @@ It is a distinct task and class (`Exwiw::MongoidSchemaGenerator`) from the Activ
 - the collection name and the `_id` primary key,
 - `fields` from the declared Mongoid fields (referenced `belongs_to` foreign keys such as `shop_id`, and the `created_at` / `updated_at` columns added by `Mongoid::Timestamps`, are ordinary fields — their BSON `ObjectId` / `Date` values serialize as MongoDB Extended JSON at dump time). For an aliased field (`field :ctry, as: :country`), the generator emits the **stored** document key (`ctry`), never the Ruby accessor (`country`), so masking and projection target the key that actually appears in the document, and additionally records the accessor as `mongoid_field_name` on that field so the short key stays understandable (association aliases such as `shop => shop_id` and the built-in `id => _id` are not field renames and are not annotated),
 - `belongs_tos` from referenced `belongs_to` associations (`{ table_name, foreign_key }`). A referenced `belongs_to` declared on an *embedded* document is dropped (cross-collection refs from inside embedded subdocuments are unsupported — see [MongoDB notes](#mongodb-notes)), but its foreign-key column is still kept as an ordinary field. A `has_and_belongs_to_many` association is also dropped (its foreign keys are stored as an array field, e.g. `tag_ids`, which exwiw cannot follow as a single-valued foreign key), while that `*_ids` array column is kept as an ordinary field,
-- `embedded_in` from `embedded_in` / `embeds_many` / `embeds_one` associations. Each embedded config names its *immediate* parent collection and the document key it lives under (`store_as`, defaulting to the relation name); nested embedding is represented as a chain (`comments` → `embedded_in` `posts`, `posts` → `embedded_in` `users`) rather than a flattened dot-path, matching how the adapter recurses through array and Hash subdocuments. A *polymorphic* `embedded_in` (`embedded_in :addressable, polymorphic: true`) has no single embedding parent collection and so cannot be expressed as an `embedded_in` config; the generator raises a clear error pointing you to define that collection's config by hand. A *self-referential / cyclic* embedding (Mongoid's `recursively_embeds_many` / `recursively_embeds_one`) makes a collection both a top-level document and embedded inside documents of its own type; exwiw represents a collection as either top-level or embedded, not both, so the generator likewise raises a clear error rather than emit a config that would silently make the collection undumpable.
+- `embedded_in` from `embedded_in` / `embeds_many` / `embeds_one` associations. Each embedded config names its *immediate* parent collection and the document key it lives under (`store_as`, defaulting to the relation name); nested embedding is represented as a chain (`comments` → `embedded_in` `posts`, `posts` → `embedded_in` `users`) rather than a flattened dot-path, matching how the adapter recurses through array and Hash subdocuments. The document key is resolved by locating the parent's `embeds_one` / `embeds_many` that stores this collection. (Mongoid's computed inverse is frequently `nil` when no explicit `inverse_of:` is set, so exwiw matches by the collection the parent's embedding relations store rather than trusting that inverse — this also resolves an STI subclass embedded through a relation declared against its base class.) When the same collection is embedded under several keys in the parent, the path is ambiguous and treated as unrepresentable (see below). A *polymorphic* `embedded_in` (`embedded_in :addressable, polymorphic: true`) has no single embedding parent collection and so cannot be expressed as an `embedded_in` config. A *self-referential / cyclic* embedding (Mongoid's `recursively_embeds_many` / `recursively_embeds_one`) makes a collection both a top-level document and embedded inside documents of its own type; exwiw represents a collection as either top-level or embedded, not both, so it cannot emit an `embedded_in` config that would silently make the collection undumpable. These unrepresentable shapes are handled best-effort by default and abort only in strict mode (see below).
 
 Models in an inheritance hierarchy whose subclasses share the base's collection (Mongoid STI, distinguished by the auto-added `_type` discriminator) collapse into a single config: the generator discovers the subclasses via `descendants` (Mongoid registers only the base class in `Mongoid.models`) and unions every class's `fields` and `belongs_tos` into the collection config, so subclass-only fields and associations are not lost.
 
 Regeneration preserves hand-edited `replace_with`, `filter`, `ignore`, and `bulk_insert_chunk_size` values, like the ActiveRecord generator. Indexes are not written to the config — they are introspected from the live database at dump time (see [MongoDB notes](#mongodb-notes)). Polymorphic `belongs_to` is not yet expanded by this task.
 
-By default the task **aborts** when a model uses a construct exwiw cannot represent: a `belongs_to` whose target class can no longer be resolved (a stale relation left behind after its model was removed), or a polymorphic / self-referential-cyclic / unresolvable-parent `embedded_in` (see the cases above). Set `EXWIW_SKIP_UNSUPPORTED=1` to keep going instead:
+By default the task **aborts** when a model uses a construct exwiw cannot represent: a `belongs_to` whose target class can no longer be resolved (a stale relation left behind after its model was removed), or a polymorphic / self-referential-cyclic / ambiguous / unresolvable-parent `embedded_in` (see the cases above).
+
+#### Honoring an explicit `ignore` (the recommended way to keep these out)
+
+When you have reviewed such a construct and decided exwiw should leave it alone, mark it `ignore: true` in its config on disk. The generator **honors an explicit `ignore` and skips re-introspecting it**, so it never aborts the run on something you have already triaged — and your annotation survives regeneration. Two granularities:
+
+- A whole **collection** exwiw cannot represent (e.g. a polymorphic / ambiguous `embedded_in`) — mark the collection config `"ignore": true`. To actually dump/mask it later, define its `embedded_in` config by hand (see [Embedded documents](#embedded-documents)).
+- A single **`belongs_to`** that no longer resolves while the rest of its collection is fine (e.g. a stale relation pointing at a removed model) — mark that entry `"ignore": true`, with no `table_name`. The relation is dropped from extraction (`#reject_ignored_members!`) while its foreign-key column stays an ordinary field, and the collection keeps dumping.
+
+Record *why* with the optional **`ignore_type`** (a free-form tag exwiw never interprets — e.g. `"need_code_fix"` for an application-side bug, `"unsupported"` for a shape exwiw cannot express) and a **`comment`**. Both are user-owned and preserved across regeneration; the generator never emits `ignore_type` itself.
+
+```json
+// orders.json — a stale belongs_to flagged for a code fix; the collection still dumps
+{
+  "name": "orders",
+  "primary_key": "_id",
+  "belongs_to": [
+    { "table_name": "shops", "foreign_key": "shop_id" },
+    {
+      "foreign_key": "coupon_id",
+      "ignore": true,
+      "ignore_type": "need_code_fix",
+      "comment": "FIXME: belongs_to :coupon -> Coupon does not exist (dead relation)."
+    }
+  ],
+  "fields": [ /* ... coupon_id is kept as an ordinary field ... */ ]
+}
+```
+
+#### First bootstrap pass: `EXWIW_SKIP_UNSUPPORTED=1`
+
+For the very first pass against a large app — before any `ignore` annotations exist — set `EXWIW_SKIP_UNSUPPORTED=1` to keep going past *un-annotated* unrepresentable constructs instead of aborting one at a time:
 
 ```bash
 EXWIW_SKIP_UNSUPPORTED=1 bundle exec rake exwiw:schema:generate_mongoid
 ```
 
 - An unresolvable `belongs_to` is dropped from the collection's `belongs_tos` (its foreign-key column is still kept as an ordinary field, like the polymorphic / HABTM cases) and a warning naming the relation is printed to stderr.
-- An unrepresentable `embedded_in` collection is emitted as a **top-level** config marked `"ignore": true` with a `comment` recording why, and a warning is printed. `ignore: true` keeps it out of extraction so it is not wrongly dumped as its own collection; to actually dump/mask such an embedded collection, define its `embedded_in` config by hand (see [Embedded documents](#embedded-documents)). This is useful for bootstrapping a config against a large app where a handful of legacy/polymorphic collections would otherwise block the whole run.
+- An unrepresentable `embedded_in` collection is emitted as a **top-level** config marked `"ignore": true` with a `comment` recording why, and a warning is printed.
+
+Review the stderr warnings, annotate the affected configs (`ignore` / `ignore_type` / `comment`), and subsequent runs complete without the flag because the generator honors those explicit ignores.
 
 ### Configuration
 
