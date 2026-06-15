@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.11] - 2026-06-15
+
 ### Fixed
 
 - MongoDB: `schema:generate_mongoid` now resolves an embedded collection's `embedded_in` document key by locating the parent's `embeds_one` / `embeds_many` that stores the collection, instead of trusting Mongoid's computed `assoc.inverse`. Mongoid returns a `nil` inverse for many valid embeddings (when no explicit `inverse_of:` is declared and it declines to infer one), and previously such a model was wrongly reported as having an "unresolvable inverse" and skipped (or aborted the run). Matching by the embedded collection also resolves an STI subclass embedded through a relation declared against its base class. Genuinely ambiguous embeddings (the same collection stored under several keys in the parent) are still reported as unrepresentable.
