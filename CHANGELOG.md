@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-16
+
 ### Added
 
 - A YAML **config file** (`exwiw.yml`) can now hold any option except the database connection settings, so they no longer have to be repeated on every invocation. Pass it with `--config=PATH`; when `--config` is omitted, `exwiw.yml` (or `exwiw.yaml`) is loaded automatically from the current directory if present. **Options passed on the CLI take precedence** over the file (the file only fills in options not given on the CLI). Connection settings — `host`, `port`, `user`, `database`, `uri`, `password` — are **rejected** in the file (they must come from the CLI/environment); `adapter` is the one connection-related key allowed. Relative paths in the file (`schema_dir`, `output_dir`, `after_insert_hook`) are resolved relative to the config file's own directory (so a root-level `exwiw.yml` with `schema_dir: exwiw/schema` reads naturally and an absolute `--config` works from any directory). Unknown keys are rejected to catch typos, and export-only keys (`output_dir`, `output_format`, `insert_only`, `after_insert_hook`) are ignored under `explain` so one file can be shared by both subcommands.
