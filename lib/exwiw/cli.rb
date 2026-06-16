@@ -35,6 +35,7 @@ module Exwiw
       ids
       ids_field
       ids_column
+      scope_column
     ].freeze
 
     # Database connection settings are environment-specific (and sometimes
@@ -77,6 +78,7 @@ module Exwiw
       @ids = []
       @ids_field = nil
       @ids_column = nil
+      @scope_column = nil
       @output_format = nil
       @insert_only = nil
       @after_insert_hook_path = nil
@@ -109,6 +111,7 @@ module Exwiw
         table_name: @target_table_name,
         ids: @ids,
         ids_field: @ids_field,
+        scope_column: @scope_column,
       )
 
       logger = build_logger
@@ -161,6 +164,7 @@ module Exwiw
       end
 
       resolve_target_collection_alias!
+      resolve_scope_column!
       resolve_ids_column_alias!
       resolve_uri_option!
 
@@ -228,8 +232,13 @@ module Exwiw
         exit 1
       end
 
-      if !@target_table_name && @ids.any?
-        $stderr.puts "--target-table is required when --ids is specified"
+      if @scope_column && @ids.empty?
+        $stderr.puts "--ids is required when --scope-column is specified"
+        exit 1
+      end
+
+      if !@target_table_name && !@scope_column && @ids.any?
+        $stderr.puts "--target-table or --scope-column is required when --ids is specified"
         exit 1
       end
 
@@ -309,6 +318,7 @@ module Exwiw
       end
       @ids_field ||= config["ids_field"]
       @ids_column ||= config["ids_column"]
+      @scope_column ||= config["scope_column"]
     end
 
     # Strip a trailing slash (like the CLI's dir options) and expand relative to
@@ -372,6 +382,33 @@ module Exwiw
       if @ids_field && !@target_table_name
         flag = @ids_column ? "--ids-column" : "--ids-field"
         $stderr.puts "--target-table is required when #{flag} is specified"
+        exit 1
+      end
+    end
+
+    # `--scope-column` switches to scope-column mode: every table is filtered by a
+    # shared column (`--ids` are its values) instead of anchoring on one
+    # `--target-table`. It is SQL-only and mutually exclusive with the single-target
+    # flags. Runs after resolve_target_collection_alias! (so --target-collection is
+    # already folded into @target_table_name) and before resolve_ids_column_alias!
+    # so the clearer "cannot combine" message wins over the generic ids-column one.
+    private def resolve_scope_column!
+      return if @scope_column.nil?
+
+      sql_adapters = ["mysql", "postgresql", "sqlite"]
+      unless sql_adapters.include?(@database_adapter)
+        $stderr.puts "--scope-column is only supported by the sql adapters"
+        exit 1
+      end
+
+      if @target_table_name
+        $stderr.puts "--scope-column cannot be combined with --target-table/--target-collection"
+        exit 1
+      end
+
+      if @ids_field || @ids_column
+        flag = @ids_column ? "--ids-column" : "--ids-field"
+        $stderr.puts "--scope-column cannot be combined with #{flag}"
         exit 1
       end
     end
@@ -442,6 +479,7 @@ module Exwiw
         target_table: @target_table_name,
         ids: @ids.dup.freeze,
         ids_field: @ids_field,
+        scope_column: @scope_column,
         output_format: @output_format,
         insert_only: @insert_only,
         log_level: @log_level,
@@ -500,6 +538,7 @@ module Exwiw
         opts.on("--ids=[IDS]", "Comma-separated list of identifiers. Required when --target-table is given.") { |v| @ids = v.split(',') }
         opts.on("--ids-field=[FIELD]", "Field on the target collection that --ids is matched against. Defaults to the primary key. (mongodb adapter only)") { |v| @ids_field = v }
         opts.on("--ids-column=[COLUMN]", "Column on the target table that --ids is matched against. Defaults to the primary key. (sql adapters only)") { |v| @ids_column = v }
+        opts.on("--scope-column=[COLUMN]", "Filter every table by this shared column (--ids are its values) instead of a single --target-table. Tables lacking it are reached via belongs_to. SQL adapters only; mutually exclusive with --target-table.") { |v| @scope_column = v }
         opts.on("--output-format=[FORMAT]", "Output format: insert (default) or copy (PostgreSQL only, export subcommand only)") { |v| @output_format = v }
         opts.on("--insert-only", "Do not generate DELETE SQL files (export subcommand only)") { @insert_only = true }
         opts.on("--after-insert-hook=PATH", "Path to a .rb or .sh post-processing hook executed after all insert/delete files are written (export subcommand only)") do |v|

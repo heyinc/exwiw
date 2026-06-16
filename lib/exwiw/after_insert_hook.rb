@@ -38,6 +38,7 @@ module Exwiw
         'EXWIW_DATABASE_USER'    => cli_options[:database_user].to_s,
         'EXWIW_DATABASE_NAME'    => cli_options[:database_name].to_s,
         'EXWIW_TARGET_TABLE'     => cli_options[:target_table].to_s,
+        'EXWIW_SCOPE_COLUMN'     => cli_options[:scope_column].to_s,
         'EXWIW_IDS'              => Array(cli_options[:ids]).join(','),
         'EXWIW_OUTPUT_FORMAT'    => cli_options[:output_format].to_s,
       }

@@ -569,4 +569,172 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
     end
   end
+
+  describe 'scope-column mode' do
+    let(:logger) { Logger.new(nil) }
+    # Filter every table by a shared `tenant_id`, values = ['t1']. No single
+    # --target-table anchor.
+    let(:dump_target) { Exwiw::DumpTarget.new(ids: ['t1'], scope_column: 'tenant_id') }
+
+    # A top-level table that carries the scope column itself.
+    let(:orders) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'orders', primary_key: 'id', belongs_tos: [],
+        columns: [{ name: 'id' }, { name: 'tenant_id' }, { name: 'total' }]
+      )
+    end
+    # A child that lacks the scope column; reachable via belongs_to to `orders`.
+    let(:order_items) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'order_items', primary_key: 'id',
+        belongs_tos: [{ table_name: 'orders', foreign_key: 'order_id' }],
+        columns: [{ name: 'id' }, { name: 'order_id' }, { name: 'quantity' }]
+      )
+    end
+    # A reference/master table with no scope linkage, intentionally full-dumped.
+    let(:countries) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'countries', primary_key: 'id', scope_exempt: true, belongs_tos: [],
+        columns: [{ name: 'id' }, { name: 'code' }]
+      )
+    end
+    # Same scope value, but stored under a differently named column.
+    let(:legacy_orders) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'legacy_orders', primary_key: 'id', scope_column: 'legacy_tenant', belongs_tos: [],
+        columns: [{ name: 'id' }, { name: 'legacy_tenant' }, { name: 'amount' }]
+      )
+    end
+    # No scope column, no belongs_to path to one: unscopable.
+    let(:widgets) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'widgets', primary_key: 'id', belongs_tos: [],
+        columns: [{ name: 'id' }, { name: 'name' }]
+      )
+    end
+    let(:schema_migrations) do
+      Exwiw::TableConfig.from_symbol_keys(name: 'schema_migrations', type: 'rails_managed_schema_migrations')
+    end
+
+    let(:all_tables) { [orders, order_items, countries, legacy_orders, widgets, schema_migrations] }
+    let(:table_by_name) { all_tables.each_with_object({}) { |t, h| h[t.name] = t } }
+
+    def build(name)
+      described_class.run(name, table_by_name, dump_target, logger)
+    end
+
+    context 'a table that carries the scope column directly' do
+      it 'filters by the scope column' do
+        ast = build('orders')
+        expect(ast.from_table_name).to eq('orders')
+        expect(ast.join_clauses).to eq([])
+        expect(ast.where_clauses.map(&:to_h)).to eq([
+          { column_name: 'tenant_id', operator: :eq, value: ['t1'] },
+        ])
+      end
+
+      it 'compiles to a WHERE on the scope column (sqlite)' do
+        expect(sqlite_adapter.compile_ast(build('orders'))).to eq(
+          "SELECT orders.id, orders.tenant_id, orders.total FROM orders WHERE orders.tenant_id = 't1'"
+        )
+      end
+    end
+
+    context 'a child reached via belongs_to to a scoped table' do
+      it 'joins up to the scoped ancestor and filters there' do
+        ast = build('order_items')
+        expect(ast.from_table_name).to eq('order_items')
+        joins = ast.join_clauses.map(&:to_h)
+        expect(joins.size).to eq(1)
+        expect(joins[0][:base_table_name]).to eq('order_items')
+        expect(joins[0][:foreign_key]).to eq('order_id')
+        expect(joins[0][:join_table_name]).to eq('orders')
+        expect(joins[0][:primary_key]).to eq('id')
+        expect(joins[0][:where_clauses]).to eq([
+          { column_name: 'tenant_id', operator: :eq, value: ['t1'] },
+        ])
+        expect(ast.where_clauses).to eq([])
+      end
+
+      it 'compiles to a JOIN ending in the scope filter (sqlite)' do
+        expect(sqlite_adapter.compile_ast(build('order_items'))).to eq(
+          'SELECT order_items.id, order_items.order_id, order_items.quantity FROM order_items ' \
+          "JOIN orders ON order_items.order_id = orders.id AND orders.tenant_id = 't1'"
+        )
+      end
+    end
+
+    context 'a table with a per-table scope_column override' do
+      it 'filters on the overridden column name' do
+        ast = build('legacy_orders')
+        expect(ast.join_clauses).to eq([])
+        expect(ast.where_clauses.map(&:to_h)).to eq([
+          { column_name: 'legacy_tenant', operator: :eq, value: ['t1'] },
+        ])
+      end
+    end
+
+    context 'a scope_exempt reference table' do
+      it 'is exported in full with no scope filter' do
+        ast = build('countries')
+        expect(ast.select_all).to eq(false)
+        expect(ast.join_clauses).to eq([])
+        expect(ast.where_clauses).to eq([])
+      end
+    end
+
+    context 'a rails-managed table' do
+      it 'is exported in full (treated as exempt)' do
+        ast = build('schema_migrations')
+        expect(ast.select_all).to eq(true)
+        expect(ast.join_clauses).to eq([])
+        expect(ast.where_clauses).to eq([])
+      end
+    end
+
+    context 'an unscopable table built at top level' do
+      it 'raises rather than emitting an unfiltered dump' do
+        expect { build('widgets') }.to raise_error(ArgumentError, /cannot be scoped/)
+      end
+    end
+
+    describe '.validate_scope!' do
+      it 'raises listing the unscopable table(s)' do
+        expect {
+          described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+        }.to raise_error(ArgumentError, /widgets/)
+      end
+
+      it 'passes once the unscopable table is marked ignore:true' do
+        widgets.ignore = true
+        expect {
+          described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+        }.not_to raise_error
+      end
+
+      it 'passes once the unscopable table is marked scope_exempt:true' do
+        widgets.scope_exempt = true
+        expect {
+          described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+        }.not_to raise_error
+      end
+
+      it 'is a no-op outside scope-column mode' do
+        target_mode = Exwiw::DumpTarget.new(table_name: 'orders', ids: ['t1'])
+        expect {
+          described_class.validate_scope!(all_tables, table_by_name, target_mode, logger)
+        }.not_to raise_error
+      end
+    end
+
+    def sqlite_adapter
+      Exwiw::Adapter::SqliteAdapter.new(
+        Exwiw::ConnectionConfig.new(
+          adapter: 'sqlite', database_name: 'tmp/test.sqlite3',
+          host: nil, port: nil, user: nil, password: nil
+        ),
+        logger,
+      )
+    end
+  end
 end

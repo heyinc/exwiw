@@ -129,6 +129,81 @@ exwiw explain \
 
 The `--output-dir`, `--output-format`, `--insert-only`, and `--after-insert-hook` options are dump-specific and rejected when used with `explain`.
 
+### Scope-column mode (`--scope-column`)
+
+The default `--target-table` extraction assumes the schema converges on a single
+root: every table is reached by walking `belongs_to` toward that one table. Some
+schemas are not shaped that way — many independent top-level tables each carry the
+*same* scope/tenant column (e.g. `tenant_id`, `account_uuid`) and there is no
+single root. Choosing one of them as `--target-table` would leave the others
+unrelated to it, and an unrelated table is dumped in full — a problem if it holds
+personal data.
+
+`--scope-column` handles this shape: instead of one anchor table, **every table is
+filtered by a shared column** whose values are `--ids`.
+
+```bash
+exwiw \
+  --adapter=postgresql \
+  --host=localhost --port=5432 --user=reader \
+  --database=app_production \
+  --schema-dir=exwiw/schema \
+  --scope-column=tenant_id \
+  --ids=42,43 \
+  --output-dir=dump
+```
+
+Each table is resolved as follows:
+
+- **Carries the scope column** → `WHERE scope_column IN (ids)`.
+- **Lacks it but `belongs_to` reaches a table that has it** → exwiw joins up to the
+  nearest such table and applies the scope filter there (the same join machinery
+  the single-target mode uses).
+- **Cannot be scoped at all** (no scope column and no path to one) → exwiw
+  **aborts** and lists the offending tables, so an unscoped table is never silently
+  dumped in full. For each, either add a `belongs_to` path, set `ignore: true` to
+  skip it, or mark it `scope_exempt: true` (below) to export it in full.
+
+`--scope-column` is SQL-only (mysql / postgresql / sqlite) and mutually exclusive
+with `--target-table`, `--target-collection`, `--ids-column`, and `--ids-field`.
+It works with `exwiw explain` too, which is the recommended way to preview the
+queries before exporting.
+
+#### `scope_exempt` (intentional full dump)
+
+A genuine reference/master table (no personal data) that has no scope linkage can
+opt out of the strict check and be exported in full:
+
+```json
+{
+  "name": "countries",
+  "primary_key": "id",
+  "scope_exempt": true,
+  "columns": [{ "name": "id" }, { "name": "code" }]
+}
+```
+
+Rails-managed tables (`schema_migrations`, `ar_internal_metadata`) are treated as
+exempt automatically.
+
+#### Per-table `scope_column` override
+
+scope-column mode assumes a single shared **value** space — the same `--ids` apply
+to every scoped table. If a table stores that same value under a differently named
+column, override the column name for that table:
+
+```json
+{
+  "name": "legacy_orders",
+  "primary_key": "id",
+  "scope_column": "legacy_tenant_id",
+  "columns": [{ "name": "id" }, { "name": "legacy_tenant_id" }]
+}
+```
+
+Both `scope_exempt` and `scope_column` are user-maintained and preserved across
+`schema:generate` regeneration (the generators never emit them).
+
 ### Config file (`exwiw.yml`)
 
 Options you would otherwise repeat on every run can be kept in a YAML config file. Pass it with `--config=PATH`; when `--config` is omitted, exwiw automatically loads `exwiw.yml` (or `exwiw.yaml`) from the current directory if present.
@@ -144,7 +219,7 @@ output_format: insert        # insert | copy
 insert_only: false
 after_insert_hook: hooks/seed.rb
 log_level: info              # debug | info
-# target_table / ids / ids_field / ids_column may also be set here
+# target_table / ids / ids_field / ids_column / scope_column may also be set here
 ```
 
 With the file above, only the connection details need to be supplied on the CLI:

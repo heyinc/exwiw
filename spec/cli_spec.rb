@@ -132,6 +132,46 @@ module Exwiw
       end
     end
 
+    describe '--scope-column validation' do
+      def run_cli(argv)
+        CLI.new(argv).run
+      end
+
+      it 'parses --scope-column into the ivar' do
+        cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3',
+                       '--schema-dir=scenario/sqlite-schema', '--scope-column=tenant_id', '--ids=1'])
+        expect(cli.instance_variable_get(:@scope_column)).to eq('tenant_id')
+      end
+
+      it 'rejects combining --scope-column with --target-table' do
+        argv = ['--adapter=sqlite', '--database=tmp/test.sqlite3', '--schema-dir=scenario/sqlite-schema',
+                '--scope-column=tenant_id', '--target-table=users', '--ids=1']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--scope-column cannot be combined with --target-table/).to_stderr
+      end
+
+      it 'rejects combining --scope-column with --ids-column' do
+        argv = ['--adapter=sqlite', '--database=tmp/test.sqlite3', '--schema-dir=scenario/sqlite-schema',
+                '--scope-column=tenant_id', '--ids-column=email', '--ids=1']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--scope-column cannot be combined with --ids-column/).to_stderr
+      end
+
+      it 'rejects --scope-column for the mongodb adapter' do
+        argv = ['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                '--schema-dir=scenario/mongodb-schema', '--scope-column=tenant_id', '--ids=1']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--scope-column is only supported by the sql adapters/).to_stderr
+      end
+
+      it 'rejects --scope-column without --ids' do
+        argv = ['--adapter=sqlite', '--database=tmp/test.sqlite3', '--schema-dir=scenario/sqlite-schema',
+                '--scope-column=tenant_id']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--ids is required when --scope-column is specified/).to_stderr
+      end
+    end
+
     describe '--target-collection alias' do
       def run_cli(argv)
         CLI.new(argv).run

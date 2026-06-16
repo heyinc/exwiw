@@ -1,0 +1,12 @@
+{
+  "name": "accounts",
+  "primary_key": "id",
+  "belongs_tos": [],
+  "columns": [{
+    "name": "id"
+  }, {
+    "name": "tenant_id"
+  }, {
+    "name": "name"
+  }]
+}

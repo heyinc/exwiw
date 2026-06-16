@@ -1,0 +1,11 @@
+{
+  "name": "regions",
+  "primary_key": "id",
+  "scope_exempt": true,
+  "belongs_tos": [],
+  "columns": [{
+    "name": "id"
+  }, {
+    "name": "code"
+  }]
+}
