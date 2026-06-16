@@ -18,12 +18,12 @@ module Exwiw
     end
     let(:io) { StringIO.new }
     let(:logger) { ::Logger.new(nil) }
-    let(:config_dir) { @config_dir }
+    let(:schema_dir) { @schema_dir }
     let(:dump_target) { DumpTarget.new(table_name: nil, ids: []) }
     let(:runner) do
       ExplainRunner.new(
         connection_config: connection_config,
-        config_dir: config_dir,
+        schema_dir: schema_dir,
         dump_target: dump_target,
         logger: logger,
         io: io,
@@ -32,7 +32,7 @@ module Exwiw
 
     around do |example|
       Dir.mktmpdir do |config|
-        @config_dir = config
+        @schema_dir = config
         example.run
       end
     end
@@ -41,7 +41,7 @@ module Exwiw
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1']) }
 
       before do
-        FileUtils.cp('scenario/sqlite-schema/shops.json', File.join(config_dir, 'shops.json'))
+        FileUtils.cp('scenario/sqlite-schema/shops.json', File.join(schema_dir, 'shops.json'))
       end
 
       it 'prints compiled SQL and EXPLAIN output for the target table' do
@@ -68,7 +68,7 @@ module Exwiw
       let(:runner) do
         ExplainRunner.new(
           connection_config: connection_config,
-          config_dir: 'scenario/sqlite-schema',
+          schema_dir: 'scenario/sqlite-schema',
           dump_target: dump_target,
           logger: logger,
           io: io,
@@ -91,7 +91,7 @@ module Exwiw
       before do
         shops = JSON.parse(File.read('scenario/sqlite-schema/shops.json'))
         shops['ignore'] = true
-        File.write(File.join(config_dir, 'shops.json'), JSON.dump(shops))
+        File.write(File.join(schema_dir, 'shops.json'), JSON.dump(shops))
       end
 
       it 'raises ArgumentError' do

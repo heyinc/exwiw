@@ -5,7 +5,7 @@
 # `_id`. It also confirms downstream `references`-based FK propagation works
 # from a uuid-targeted root (sites.business_entity_uuid -> business_entities.uuid).
 #
-# A dedicated config-dir (scenario/mongodb-schema-ids-field) holds only
+# A dedicated schema-dir (scenario/mongodb-schema-ids-field) holds only
 # business_entities + sites so the dump stays scoped: the default scenario
 # config's root collections (shops, system_announcements) have no belongs_to
 # and would otherwise each dump in full and cascade. For the same reason
@@ -23,7 +23,7 @@ mkdir -p tmp/mongodb-ids-field
 rm -f tmp/mongodb-ids-field/*.jsonl
 
 # Setup source db from seed (shares the seed with test_with_mongodb.sh; the
-# config-dir, not the seed, is what scopes this scenario to two collections).
+# schema-dir, not the seed, is what scopes this scenario to two collections).
 bundle exec ruby scenario/setup_with_mongodb.rb "${FROM_DATABASE_NAME}"
 
 # Target business_entities by its `uuid` field via --ids-field (and exercise the
@@ -33,7 +33,7 @@ bundle exec exe/exwiw \
   --host="${MONGO_HOST}" \
   --port="${MONGO_PORT}" \
   --database="${FROM_DATABASE_NAME}" \
-  --config-dir=scenario/mongodb-schema-ids-field \
+  --schema-dir=scenario/mongodb-schema-ids-field \
   --target-collection=business_entities \
   --ids=be-uuid-0001 \
   --ids-field=uuid \

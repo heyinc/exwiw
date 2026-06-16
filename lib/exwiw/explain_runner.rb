@@ -4,13 +4,13 @@ module Exwiw
   class ExplainRunner
     def initialize(
       connection_config:,
-      config_dir:,
+      schema_dir:,
       dump_target:,
       logger:,
       io: $stdout
     )
       @connection_config = connection_config
-      @config_dir = config_dir
+      @schema_dir = schema_dir
       @dump_target = dump_target
       @logger = logger
       @io = io
@@ -53,7 +53,7 @@ module Exwiw
     end
 
     private def load_table_config(klass)
-      Dir[File.join(@config_dir, "*.json")].map do |file|
+      Dir[File.join(@schema_dir, "*.json")].map do |file|
         json = JSON.parse(File.read(file))
         klass.from(json).reject_ignored_members!
       end

@@ -32,7 +32,7 @@ module Exwiw
     SCENARIOS = [
       {
         adapter: "sqlite",
-        config_dir: "scenario/sqlite-schema",
+        schema_dir: "scenario/sqlite-schema",
         connection: {
           adapter: "sqlite",
           database_name: "tmp/test.sqlite3",
@@ -41,7 +41,7 @@ module Exwiw
       },
       {
         adapter: "mysql",
-        config_dir: "scenario/mysql-schema",
+        schema_dir: "scenario/mysql-schema",
         connection: {
           adapter: "mysql",
           database_name: "exwiw_test",
@@ -51,7 +51,7 @@ module Exwiw
       },
       {
         adapter: "postgresql",
-        config_dir: "scenario/postgresql-schema",
+        schema_dir: "scenario/postgresql-schema",
         connection: {
           adapter: "postgresql",
           database_name: "exwiw_test",
@@ -61,7 +61,7 @@ module Exwiw
       },
       {
         adapter: "postgresql",
-        config_dir: "scenario/postgresql-schema",
+        schema_dir: "scenario/postgresql-schema",
         output_format: "copy",
         snapshot_subdir: "postgresql-copy",
         connection: {
@@ -73,7 +73,7 @@ module Exwiw
       },
       {
         adapter: "mongodb",
-        config_dir: "scenario/mongodb-schema",
+        schema_dir: "scenario/mongodb-schema",
         # The mongo seed keys `_id` with a deterministic ObjectId: a 4-hex
         # per-collection tag (shops -> "a001") + the zero-padded integer. The
         # tag's letter keeps the id from being all-decimal, so the adapter
@@ -100,7 +100,7 @@ module Exwiw
           Runner.new(
             connection_config: connection_config,
             output_dir: output_dir,
-            config_dir: scenario[:config_dir],
+            schema_dir: scenario[:schema_dir],
             dump_target: DumpTarget.new(table_name: "shops", ids: scenario.fetch(:ids, ["1"])),
             output_format: scenario.fetch(:output_format, "insert"),
             logger: ::Logger.new(nil),

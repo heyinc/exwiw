@@ -23,7 +23,7 @@ bundle exec ruby scenario/setup_with_mongodb.rb "${FROM_DATABASE_NAME}"
 bundle exec exe/exwiw \
   --adapter=mongodb \
   --uri="mongodb://${MONGO_HOST}:${MONGO_PORT}/${FROM_DATABASE_NAME}" \
-  --config-dir=scenario/mongodb-schema \
+  --schema-dir=scenario/mongodb-schema \
   --target-table=shops \
   --ids=a00100000000000000000001 \
   --output-dir=tmp/mongodb \

@@ -36,7 +36,7 @@ bundle exec exe/exwiw \
   --host="${MONGO_HOST}" \
   --port="${MONGO_PORT}" \
   --database="${FROM_DATABASE_NAME}" \
-  --config-dir=scenario/mongodb-schema \
+  --schema-dir=scenario/mongodb-schema \
   --target-table=shops \
   --ids=a00100000000000000000001 \
   --output-dir=tmp/mongodb-clean \

@@ -33,7 +33,7 @@ bundle exec exe/exwiw explain \
   --port=3306 \
   --user=root \
   --database="${FROM_DATABASE_NAME}" \
-  --config-dir=scenario/mysql-schema \
+  --schema-dir=scenario/mysql-schema \
   --target-table=shops \
   --ids=1 \
   | tee "$EXPLAIN_OUT"
@@ -73,7 +73,7 @@ bundle exec exe/exwiw explain \
     --port=3306 \
     --user=root \
     --database="${FROM_DATABASE_NAME}" \
-    --config-dir=scenario/mysql-schema \
+    --schema-dir=scenario/mysql-schema \
     --insert-only \
     2>&1 | tee tmp/mysql-explain.err
 rejection_exit=${PIPESTATUS[0]}
