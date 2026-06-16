@@ -21,7 +21,7 @@ tmp_before=$(ls -1 tmp 2>/dev/null | sort)
 bundle exec exe/exwiw explain \
   --adapter=sqlite \
   --database="${TARGET_DB_PATH}" \
-  --config-dir=scenario/sqlite-schema \
+  --schema-dir=scenario/sqlite-schema \
   --target-table=shops \
   --ids=1 \
   | tee "$EXPLAIN_OUT"
@@ -58,7 +58,7 @@ set +e
 bundle exec exe/exwiw explain \
     --adapter=sqlite \
     --database="${TARGET_DB_PATH}" \
-    --config-dir=scenario/sqlite-schema \
+    --schema-dir=scenario/sqlite-schema \
     --output-format=copy \
     2>&1 | tee tmp/sqlite-explain.err
 rejection_exit=${PIPESTATUS[0]}

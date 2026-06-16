@@ -24,6 +24,9 @@ jobs:
       - name: Run exwiw
         run: scenario/test_with_sqlite.sh
 
+      - name: Run exwiw (--config file)
+        run: scenario/test_with_sqlite_config.sh
+
       - name: Run exwiw (from clean target DB)
         run: scenario/test_with_sqlite_from_clean.sh
 

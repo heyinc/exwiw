@@ -57,7 +57,7 @@ bundle exec exe/exwiw \
   --port=5432 \
   --user=postgres \
   --database="${FROM_DATABASE_NAME}" \
-  --config-dir=scenario/postgresql-schema-from-clean \
+  --schema-dir=scenario/postgresql-schema-from-clean \
   --target-table=shops \
   --ids=1 \
   --output-dir=tmp/postgresql-clean

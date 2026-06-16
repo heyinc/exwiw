@@ -31,7 +31,7 @@ module Exwiw
     def self.run_shell(path:, cli_options:, output_dir:, logger:)
       env = {
         'EXWIW_OUTPUT_DIR'       => output_dir,
-        'EXWIW_CONFIG_DIR'       => cli_options[:config_dir].to_s,
+        'EXWIW_SCHEMA_DIR'       => cli_options[:schema_dir].to_s,
         'EXWIW_DATABASE_ADAPTER' => cli_options[:database_adapter].to_s,
         'EXWIW_DATABASE_HOST'    => cli_options[:database_host].to_s,
         'EXWIW_DATABASE_PORT'    => cli_options[:database_port].to_s,

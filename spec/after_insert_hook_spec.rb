@@ -84,7 +84,7 @@ module Exwiw
       let(:hook_path) { File.join(output_dir, 'hook.sh') }
       let(:cli_options) do
         {
-          ids: ['1', '2'], target_table: 'shops', config_dir: '/cfg',
+          ids: ['1', '2'], target_table: 'shops', schema_dir: '/cfg',
           database_adapter: 'sqlite', database_host: nil, database_port: nil,
           database_user: nil, database_name: 'db', output_format: 'insert',
         }

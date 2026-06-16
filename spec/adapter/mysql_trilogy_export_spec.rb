@@ -53,7 +53,7 @@ module Exwiw
       runner = Runner.new(
         connection_config: connection_config,
         output_dir: @output_dir,
-        config_dir: "scenario/mysql-schema",
+        schema_dir: "scenario/mysql-schema",
         dump_target: DumpTarget.new(table_name: "shops", ids: ["1"]),
         output_format: "insert",
         logger: ::Logger.new(nil),

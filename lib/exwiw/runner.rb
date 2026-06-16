@@ -7,7 +7,7 @@ module Exwiw
     def initialize(
       connection_config:,
       output_dir:,
-      config_dir:,
+      schema_dir:,
       dump_target:,
       logger:,
       output_format: 'insert',
@@ -17,7 +17,7 @@ module Exwiw
     )
       @connection_config = connection_config
       @output_dir = output_dir
-      @config_dir = config_dir
+      @schema_dir = schema_dir
       @dump_target = dump_target
       @output_format = output_format
       @insert_only = insert_only
@@ -159,7 +159,7 @@ module Exwiw
     end
 
     private def load_table_config(klass)
-      Dir[File.join(@config_dir, "*.json")].map do |file|
+      Dir[File.join(@schema_dir, "*.json")].map do |file|
         json = JSON.parse(File.read(file))
         # Drop belongs_tos/columns(fields) flagged ignore:true so they are not
         # considered during extraction. Done here (after loading from file)

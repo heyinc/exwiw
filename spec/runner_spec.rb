@@ -17,13 +17,13 @@ module Exwiw
       )
     end
     let(:output_dir) { @output_dir }
-    let(:config_dir) { @config_dir }
+    let(:schema_dir) { @schema_dir }
     let(:dump_target) { DumpTarget.new(table_name: nil, ids: []) }
     let(:runner) do
       Runner.new(
         connection_config: connection_config,
         output_dir: output_dir,
-        config_dir: config_dir,
+        schema_dir: schema_dir,
         dump_target: dump_target,
         logger: ::Logger.new(nil),
       )
@@ -32,7 +32,7 @@ module Exwiw
     around do |example|
       Dir.mktmpdir do |config|
         Dir.mktmpdir do |output|
-          @config_dir = config
+          @schema_dir = config
           @output_dir = output
           example.run
         end
@@ -65,7 +65,7 @@ module Exwiw
         runner_for_missing = Runner.new(
           connection_config: connection_config,
           output_dir: missing,
-          config_dir: config_dir,
+          schema_dir: schema_dir,
           dump_target: dump_target,
           logger: ::Logger.new(nil),
         )
@@ -84,7 +84,7 @@ module Exwiw
       before do
         shops_config = JSON.parse(File.read('scenario/sqlite-schema/shops.json'))
         shops_config['bulk_insert_chunk_size'] = 2
-        File.write(File.join(config_dir, 'shops.json'), JSON.dump(shops_config))
+        File.write(File.join(schema_dir, 'shops.json'), JSON.dump(shops_config))
       end
 
       it 'splits INSERT statements into chunks within a single file' do
@@ -110,7 +110,7 @@ module Exwiw
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1', '2', '3', '4', '5']) }
 
       before do
-        FileUtils.cp('scenario/sqlite-schema/shops.json', File.join(config_dir, 'shops.json'))
+        FileUtils.cp('scenario/sqlite-schema/shops.json', File.join(schema_dir, 'shops.json'))
       end
 
       it 'emits a single INSERT statement per table' do
@@ -130,7 +130,7 @@ module Exwiw
         Runner.new(
           connection_config: connection_config,
           output_dir: output_dir,
-          config_dir: 'scenario/sqlite-schema',
+          schema_dir: 'scenario/sqlite-schema',
           dump_target: dump_target,
           logger: ::Logger.new(log_io),
         )
@@ -156,7 +156,7 @@ module Exwiw
         Runner.new(
           connection_config: connection_config,
           output_dir: output_dir,
-          config_dir: 'scenario/sqlite-schema',
+          schema_dir: 'scenario/sqlite-schema',
           dump_target: dump_target,
           logger: ::Logger.new(nil),
         )
@@ -176,7 +176,7 @@ module Exwiw
         Runner.new(
           connection_config: connection_config,
           output_dir: output_dir,
-          config_dir: config_dir,
+          schema_dir: schema_dir,
           dump_target: dump_target,
           insert_only: true,
           logger: ::Logger.new(nil),
@@ -184,7 +184,7 @@ module Exwiw
       end
 
       before do
-        FileUtils.cp('scenario/sqlite-schema/shops.json', File.join(config_dir, 'shops.json'))
+        FileUtils.cp('scenario/sqlite-schema/shops.json', File.join(schema_dir, 'shops.json'))
       end
 
       it 'does not generate delete files' do
@@ -205,14 +205,14 @@ module Exwiw
         Runner.new(
           connection_config: connection_config,
           output_dir: output_dir,
-          config_dir: config_dir,
+          schema_dir: schema_dir,
           dump_target: dump_target,
           logger: ::Logger.new(log_io),
         )
       end
 
       before do
-        FileUtils.cp('scenario/sqlite-schema/shops.json', File.join(config_dir, 'shops.json'))
+        FileUtils.cp('scenario/sqlite-schema/shops.json', File.join(schema_dir, 'shops.json'))
       end
 
       # Regression guard for runner.rb's `record_num.zero?` short-circuit: a
@@ -234,7 +234,7 @@ module Exwiw
         Runner.new(
           connection_config: connection_config,
           output_dir: output_dir,
-          config_dir: config_dir,
+          schema_dir: schema_dir,
           dump_target: dump_target,
           after_insert_hook_path: hook_path,
           cli_options: { ids: ['1', '2'], target_table: 'shops' },
@@ -243,7 +243,7 @@ module Exwiw
       end
 
       before do
-        FileUtils.cp('scenario/sqlite-schema/shops.json', File.join(config_dir, 'shops.json'))
+        FileUtils.cp('scenario/sqlite-schema/shops.json', File.join(schema_dir, 'shops.json'))
 
         File.write(hook_path, <<~RUBY)
           insert_sql <<~SQL
@@ -270,11 +270,11 @@ module Exwiw
       let(:dump_target) { DumpTarget.new(table_name: nil, ids: []) }
 
       before do
-        FileUtils.cp('scenario/sqlite-schema/shops.json', File.join(config_dir, 'shops.json'))
+        FileUtils.cp('scenario/sqlite-schema/shops.json', File.join(schema_dir, 'shops.json'))
 
         announcements = JSON.parse(File.read('scenario/sqlite-schema/system_announcements.json'))
         announcements['ignore'] = true
-        File.write(File.join(config_dir, 'system_announcements.json'), JSON.dump(announcements))
+        File.write(File.join(schema_dir, 'system_announcements.json'), JSON.dump(announcements))
       end
 
       it 'emits schema for the ignored table but no insert/delete files' do
@@ -301,8 +301,8 @@ module Exwiw
       before do
         shops = JSON.parse(File.read('scenario/sqlite-schema/shops.json'))
         shops['ignore'] = true
-        File.write(File.join(config_dir, 'shops.json'), JSON.dump(shops))
-        FileUtils.cp('scenario/sqlite-schema/users.json', File.join(config_dir, 'users.json'))
+        File.write(File.join(schema_dir, 'shops.json'), JSON.dump(shops))
+        FileUtils.cp('scenario/sqlite-schema/users.json', File.join(schema_dir, 'users.json'))
       end
 
       it 'raises ArgumentError with a clear message' do
@@ -316,7 +316,7 @@ module Exwiw
       before do
         shops = JSON.parse(File.read('scenario/sqlite-schema/shops.json'))
         shops['ignore'] = true
-        File.write(File.join(config_dir, 'shops.json'), JSON.dump(shops))
+        File.write(File.join(schema_dir, 'shops.json'), JSON.dump(shops))
       end
 
       it 'raises ArgumentError' do
@@ -340,7 +340,7 @@ module Exwiw
         Runner.new(
           connection_config: connection_config,
           output_dir: output_dir,
-          config_dir: 'scenario/postgresql-schema',
+          schema_dir: 'scenario/postgresql-schema',
           dump_target: dump_target,
           output_format: 'copy',
           logger: ::Logger.new(nil),

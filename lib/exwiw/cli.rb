@@ -5,12 +5,46 @@ require 'optparse'
 require 'pathname'
 
 require 'json'
+require 'yaml'
 
 require 'exwiw'
 
 module Exwiw
   class CLI
     KNOWN_SUBCOMMANDS = %w[export explain].freeze
+
+    # Config file loaded automatically when --config is omitted, if one exists in
+    # the current directory. Kept at the project root (rather than under exwiw/)
+    # so that config-relative paths like `schema_dir: exwiw/schema` read naturally.
+    # Both extensions are accepted; .yml wins when both are present.
+    DEFAULT_CONFIG_PATHS = %w[exwiw.yml exwiw.yaml].freeze
+
+    # Keys accepted in the config file. Anything outside this set is rejected so
+    # a typo surfaces immediately instead of being silently ignored. These mirror
+    # the non-connection CLI options (plus `adapter`).
+    ALLOWED_CONFIG_KEYS = %w[
+      adapter
+      schema_dir
+      output_dir
+      output_format
+      insert_only
+      after_insert_hook
+      log_level
+      target_table
+      target_collection
+      ids
+      ids_field
+      ids_column
+    ].freeze
+
+    # Database connection settings are environment-specific (and sometimes
+    # secret-adjacent), so they must be passed via CLI/env, never the committed
+    # config file. `adapter` is the one connection-ish key allowed in config.
+    REJECTED_CONNECTION_KEYS = %w[host port user database uri password].freeze
+
+    # Keys that only make sense for `export`. They are skipped when merging config
+    # for `explain` so a shared config file does not trip validate_explain_only!.
+    EXPORT_ONLY_CONFIG_KEYS = %w[output_dir output_format insert_only after_insert_hook].freeze
 
     def self.start(argv)
       new(argv).run
@@ -34,7 +68,8 @@ module Exwiw
       @database_password = ENV["DATABASE_PASSWORD"]
       @connection_uri = nil
       @output_dir = nil
-      @config_dir = nil
+      @schema_dir = nil
+      @config_file_path = nil
       @database_adapter = nil
       @database_name = nil
       @target_table_name = nil
@@ -45,7 +80,9 @@ module Exwiw
       @output_format = nil
       @insert_only = nil
       @after_insert_hook_path = nil
-      @log_level = :info
+      # nil (not :info) so we can tell "user passed --log-level" from the default,
+      # letting a config-file value fill in; the :info default is applied later.
+      @log_level = nil
 
       parser.parse!(@argv)
     end
@@ -82,7 +119,7 @@ module Exwiw
         Runner.new(
           connection_config: connection_config,
           output_dir: @output_dir,
-          config_dir: @config_dir,
+          schema_dir: @schema_dir,
           dump_target: dump_target,
           output_format: @output_format,
           insert_only: @insert_only,
@@ -93,7 +130,7 @@ module Exwiw
       when "explain"
         ExplainRunner.new(
           connection_config: connection_config,
-          config_dir: @config_dir,
+          schema_dir: @schema_dir,
           dump_target: dump_target,
           logger: logger,
           io: $stdout,
@@ -102,6 +139,14 @@ module Exwiw
     end
 
     private def validate_options!
+      # Fill in any options not given on the CLI from the config file. Done first
+      # so a config-provided `adapter` is in place before normalization below.
+      # CLI values always win (the merge only fills nil/empty ivars).
+      apply_config_file!
+
+      # Default log level once CLI and config have both had their say.
+      @log_level ||= :info
+
       # Fold driver/Rails adapter spellings (mysql2, sqlite3) into exwiw's
       # canonical names up front, so every check below — and the
       # EXWIW_DATABASE_ADAPTER passed to hooks — sees the canonical name.
@@ -163,18 +208,18 @@ module Exwiw
         end
       end
 
-      if @config_dir.nil?
-        $stderr.puts "Config dir is required"
+      if @schema_dir.nil?
+        $stderr.puts "Schema dir is required (pass --schema-dir or set schema_dir in the config file)"
         exit 1
       end
 
-      unless Dir.exist?(@config_dir)
-        $stderr.puts "Config dir does not exist: #{@config_dir}"
+      unless Dir.exist?(@schema_dir)
+        $stderr.puts "Schema dir does not exist: #{@schema_dir}"
         exit 1
       end
 
-      if Dir.glob(File.join(@config_dir, "*.json")).empty?
-        $stderr.puts "Config dir contains no .json files: #{@config_dir}"
+      if Dir.glob(File.join(@schema_dir, "*.json")).empty?
+        $stderr.puts "Schema dir contains no .json files: #{@schema_dir}"
         exit 1
       end
 
@@ -200,6 +245,78 @@ module Exwiw
           exit 1
         end
       end
+    end
+
+    # Merge settings from the config file (YAML) into any options the user did
+    # not pass on the CLI. The CLI always wins: every assignment below only fills
+    # an ivar that is still nil/empty after parsing ARGV. Connection settings
+    # (except `adapter`) are rejected here — they belong on the CLI/env.
+    private def apply_config_file!
+      path =
+        if @config_file_path
+          unless File.file?(@config_file_path)
+            $stderr.puts "Config file not found: #{@config_file_path}"
+            exit 1
+          end
+          @config_file_path
+        else
+          DEFAULT_CONFIG_PATHS.map { |p| File.expand_path(p) }.find { |p| File.file?(p) }
+        end
+      return if path.nil?
+
+      # Paths inside the config file are resolved relative to the file's own
+      # directory (not cwd), so `schema_dir: exwiw/schema` reads naturally with the
+      # config kept at the project root, and an absolute --config works from any
+      # cwd. (CLI path flags stay cwd-relative — each source resolves relative to
+      # where it is written.) `path` is always absolute here.
+      base = File.dirname(path)
+
+      config = YAML.safe_load(File.read(path)) || {}
+      unless config.is_a?(Hash)
+        $stderr.puts "Config file must be a YAML mapping (key: value): #{path}"
+        exit 1
+      end
+
+      config.each_key do |key|
+        if REJECTED_CONNECTION_KEYS.include?(key)
+          $stderr.puts "'#{key}' is a database connection setting and must be passed via the CLI/environment, not the config file (#{path})"
+          exit 1
+        end
+        unless ALLOWED_CONFIG_KEYS.include?(key)
+          $stderr.puts "Unknown config key '#{key}' in #{path}. Allowed keys: #{ALLOWED_CONFIG_KEYS.join(', ')}"
+          exit 1
+        end
+      end
+
+      # For `explain`, drop export-only keys so a config shared with `export`
+      # does not make validate_explain_only! reject the run.
+      config = config.reject { |k, _| EXPORT_ONLY_CONFIG_KEYS.include?(k) } if @subcommand == "explain"
+
+      @database_adapter ||= config["adapter"]
+      @schema_dir ||= expand_dir(config["schema_dir"], base)
+      @output_dir ||= expand_dir(config["output_dir"], base)
+      @after_insert_hook_path ||= (File.expand_path(config["after_insert_hook"], base) if config["after_insert_hook"])
+      @output_format ||= config["output_format"]
+      @insert_only = config["insert_only"] if @insert_only.nil? && config.key?("insert_only")
+      @log_level ||= config["log_level"]&.to_sym
+      @target_table_name ||= config["target_table"]
+      @target_collection_name ||= config["target_collection"]
+      if @ids.empty? && config.key?("ids")
+        raw = config["ids"]
+        # Accept either a YAML list or a "1,2" string; coerce to strings to match
+        # the CLI's `--ids=1,2` -> ["1", "2"] shape.
+        @ids = (raw.is_a?(String) ? raw.split(",") : Array(raw)).map(&:to_s)
+      end
+      @ids_field ||= config["ids_field"]
+      @ids_column ||= config["ids_column"]
+    end
+
+    # Strip a trailing slash (like the CLI's dir options) and expand relative to
+    # `base` (the config file's directory). Returns nil for a nil value.
+    private def expand_dir(value, base)
+      return nil if value.nil?
+      value = value.end_with?("/") ? value[0..-2] : value
+      File.expand_path(value, base)
     end
 
     # `--target-collection` is a mongodb-only alias of `--target-table`. Fold it
@@ -319,7 +436,7 @@ module Exwiw
         database_user: @database_user,
         database_password: @database_password,
         output_dir: @output_dir,
-        config_dir: @config_dir,
+        schema_dir: @schema_dir,
         database_adapter: @database_adapter,
         database_name: @database_name,
         target_table: @target_table_name,
@@ -368,9 +485,12 @@ module Exwiw
           v = v.end_with?("/") ? v[0..-2] : v
           @output_dir = File.expand_path(v)
         end
-        opts.on("-c", "--config-dir=CONFIG_DIR_PATH", "Config dir path.") do |v|
+        opts.on("--schema-dir=SCHEMA_DIR_PATH", "Directory of schema JSON files. (or set schema_dir in the config file)") do |v|
           v = v.end_with?("/") ? v[0..-2] : v
-          @config_dir = File.expand_path(v)
+          @schema_dir = File.expand_path(v)
+        end
+        opts.on("-c", "--config=CONFIG_FILE_PATH", "Path to the exwiw config YAML. Defaults to ./#{DEFAULT_CONFIG_PATHS.first} (or .#{File.extname(DEFAULT_CONFIG_PATHS.last)}) when present. CLI options take precedence; paths inside the file are resolved relative to the file.") do |v|
+          @config_file_path = File.expand_path(v)
         end
         opts.on("-a", "--adapter=ADAPTER", "Database adapter: mysql, sqlite, postgresql, mongodb (aliases: mysql2, sqlite3)") { |v| @database_adapter = v }
         opts.on("--uri=URI", "Full MongoDB connection URI (mongodb:// or mongodb+srv://). mongodb adapter only; takes precedence over --host/--port/--user. TLS, replicaSet, authSource and credentials are read from the URI.") { |v| @connection_uri = v }

@@ -72,7 +72,7 @@ exwiw \
   --port=3306 \
   --user=reader \
   --database=app_production \
-  --config-dir=exwiw/schema \
+  --schema-dir=exwiw/schema \
   --target-table=shops \
   --ids=1 \ # comma separated ids
   --output-dir=dump \
@@ -81,7 +81,7 @@ exwiw \
 
 By default `--ids` are matched against the target table's primary key. `--ids-column=COLUMN` matches them against a different column instead (e.g. `--target-table=users --ids=alice@example.com --ids-column=email`). Related tables are still extracted correctly: their foreign keys are resolved through the target via a subquery (`WHERE fk IN (SELECT pk FROM target WHERE COLUMN IN (...))`), so only the target table's filter column changes. This is the SQL-adapter counterpart of the mongodb `--ids-field`; the two are mutually exclusive and each is rejected by the other adapter family. Note: if `COLUMN` is itself masked, re-running `delete-*` against an already-imported (masked) dump won't match, so prefer a stable natural key.
 
-When `--target-table` and `--ids` are omitted, exwiw dumps all tables defined in `--config-dir`:
+When `--target-table` and `--ids` are omitted, exwiw dumps all tables defined in `--schema-dir`:
 
 ```bash
 # dump all tables
@@ -91,7 +91,7 @@ exwiw \
   --port=5432 \
   --user=reader \
   --database=app_production \
-  --config-dir=exwiw/schema \
+  --schema-dir=exwiw/schema \
   --output-dir=dump
 ```
 
@@ -123,11 +123,44 @@ exwiw explain \
   --adapter=postgresql \
   --host=localhost --port=5432 --user=reader \
   --database=app_production \
-  --config-dir=exwiw/schema \
+  --schema-dir=exwiw/schema \
   --target-table=shops --ids=1
 ```
 
 The `--output-dir`, `--output-format`, `--insert-only`, and `--after-insert-hook` options are dump-specific and rejected when used with `explain`.
+
+### Config file (`exwiw.yml`)
+
+Options you would otherwise repeat on every run can be kept in a YAML config file. Pass it with `--config=PATH`; when `--config` is omitted, exwiw automatically loads `exwiw.yml` (or `exwiw.yaml`) from the current directory if present.
+
+**Options passed on the CLI always take precedence over the config file** — the config only fills in options you did not pass. This lets you commit the stable settings (which schema to read, output format, ...) while still varying the environment-specific connection details per invocation.
+
+```yaml
+# exwiw.yml — keep at the project root, alongside exwiw/schema/
+adapter: postgresql
+schema_dir: exwiw/schema
+output_dir: dump
+output_format: insert        # insert | copy
+insert_only: false
+after_insert_hook: hooks/seed.rb
+log_level: info              # debug | info
+# target_table / ids / ids_field / ids_column may also be set here
+```
+
+With the file above, only the connection details need to be supplied on the CLI:
+
+```bash
+DATABASE_PASSWORD=... exwiw \
+  --host=localhost --port=5432 --user=reader --database=app_production \
+  --target-table=shops --ids=1
+```
+
+Notes:
+
+- **Database connection settings stay on the CLI/environment.** `host`, `port`, `user`, `database`, `uri`, and `password` are **rejected** in the config file (exwiw exits with an error). `adapter` is the one connection-related key that *is* allowed in the file.
+- **Relative paths in the config (`schema_dir`, `output_dir`, `after_insert_hook`) are resolved relative to the config file's own directory**, not the current working directory. So with the config at the project root, `schema_dir: exwiw/schema` reads naturally, and an absolute `--config=/path/to/exwiw.yml` works no matter where you run from. (CLI path flags remain relative to the current directory — each source resolves relative to where it is written.) Absolute paths are used as-is.
+- Unknown keys are rejected so a typo surfaces immediately.
+- Export-only keys (`output_dir`, `output_format`, `insert_only`, `after_insert_hook`) are ignored when running `explain`, so a single config file can be shared by both subcommands.
 
 ### Generator
 
@@ -267,7 +300,7 @@ This is an example of the one table schema:
 }
 ```
 
-`--config-dir` will use all json files in the specified directory.
+`--schema-dir` will use all json files in the specified directory.
 
 ### Output format
 
@@ -307,7 +340,7 @@ SQL
 
 **Shell hook**: anything other than `.rb` is exec'd as a child process. It is a pure side-effect hook — exwiw does not capture its stdout. The hook receives these env vars and inherits `DATABASE_PASSWORD` from the parent:
 
-- `EXWIW_OUTPUT_DIR`, `EXWIW_CONFIG_DIR`
+- `EXWIW_OUTPUT_DIR`, `EXWIW_SCHEMA_DIR`
 - `EXWIW_DATABASE_ADAPTER`, `EXWIW_DATABASE_HOST`, `EXWIW_DATABASE_PORT`, `EXWIW_DATABASE_USER`, `EXWIW_DATABASE_NAME`
 - `EXWIW_TARGET_TABLE`, `EXWIW_IDS` (comma-separated), `EXWIW_OUTPUT_FORMAT`
 
