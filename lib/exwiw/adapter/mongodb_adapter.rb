@@ -164,10 +164,34 @@ module Exwiw
       # tests — call build_query first.
       def to_bulk_insert(rows, config)
         plan = mask_plan(config)
-        rows.map do |doc|
-          apply_mask_plan!(doc, plan)
-          JSON.generate(extended_json(doc))
-        end.join("\n")
+        rows.map { |doc| serialize_document(doc, plan) }.join("\n")
+      end
+
+      # Write the chunk's JSONL straight to `io`, optionally serializing the
+      # documents across forked worker processes.
+      #
+      # The dump's dominant cost is per-document `as_extended_json` +
+      # `JSON.generate` (pure Ruby, so it holds the GVL — threads give no
+      # speedup; only separate processes use more cores). When parallelism is
+      # opted in (see #parallel_workers), ParallelSerializer forks workers that
+      # COW-inherit `rows`, each serializing its contiguous slice to a part file,
+      # and the parent concatenates them in slice order — byte-for-byte identical
+      # to the serial `to_bulk_insert` join (the Runner inserts the same "\n"
+      # between chunks either way). The mask plan is built in the parent before
+      # the fork so every worker inherits it instead of recompiling it.
+      #
+      # Default (parallelism off): the serial Base path, unchanged. Parallelism
+      # trades memory (a larger resident chunk, see #default_bulk_insert_chunk_size)
+      # for wall-clock, so streaming stays the memory-safe default.
+      def write_bulk_insert(io, rows, config)
+        workers = parallel_workers
+        return super if workers <= 1
+
+        plan = mask_plan(config)
+        ParallelSerializer.write(
+          io, rows, workers: workers, separator: "\n", min_batch: parallel_min_batch
+        ) { |doc| serialize_document(doc, plan) }
+        nil
       end
 
       def to_bulk_delete(_query, _config)
@@ -198,8 +222,20 @@ module Exwiw
       # trees) before building the next.
       DEFAULT_BULK_INSERT_CHUNK_SIZE = 1_000
 
+      # Documents handed to each forked worker per parallel chunk. Fork + part-file
+      # + concat overhead only amortizes on batches in the thousands (measured by
+      # script/bench_mongodb_parallel_probe.rb), so when parallelism is on the
+      # chunk is sized to give every worker a multi-thousand-doc slice rather than
+      # the serial 1_000-doc chunk (which would fall back to serial inside
+      # ParallelSerializer). The trade-off is a larger resident chunk — the memory
+      # cost paid for the ~2x speedup.
+      PARALLEL_DOCS_PER_WORKER = 4_000
+
       def default_bulk_insert_chunk_size
-        DEFAULT_BULK_INSERT_CHUNK_SIZE
+        workers = parallel_workers
+        return DEFAULT_BULK_INSERT_CHUNK_SIZE if workers <= 1
+
+        [DEFAULT_BULK_INSERT_CHUNK_SIZE, workers * PARALLEL_DOCS_PER_WORKER].max
       end
 
       def schema_output_extension
@@ -487,6 +523,31 @@ module Exwiw
 
       private def embedded_children_of(parent_config)
         @embedded_children_by_parent.fetch(parent_config.name, [])
+      end
+
+      # Mask a single document in place and encode it to one JSONL line. The unit
+      # of work shared by the serial #to_bulk_insert and the parallel
+      # #write_bulk_insert so both produce identical bytes per document.
+      private def serialize_document(doc, plan)
+        apply_mask_plan!(doc, plan)
+        JSON.generate(extended_json(doc))
+      end
+
+      # Number of worker processes to fork for serialization. Opt-in via the
+      # EXWIW_MONGODB_PARALLEL_WORKERS env var; unset/<=1 means the serial,
+      # memory-safe default. Read once and memoized so the chunk size and the
+      # write path agree within a run.
+      private def parallel_workers
+        @parallel_workers ||= begin
+          n = ENV["EXWIW_MONGODB_PARALLEL_WORKERS"].to_i
+          n > 1 ? n : 1
+        end
+      end
+
+      # Minimum chunk size before forking is worthwhile; below it
+      # ParallelSerializer falls back to a serial (still byte-identical) write.
+      private def parallel_min_batch
+        ParallelSerializer::DEFAULT_MIN_BATCH
       end
 
       private def extended_json(doc)

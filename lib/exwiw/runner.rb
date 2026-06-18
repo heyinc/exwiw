@@ -118,7 +118,7 @@ module Exwiw
               file.puts(pre) if pre
               chunks.each do |chunk_rows|
                 file.print("\n") if statement_count.positive?
-                file.print(adapter.to_bulk_insert(chunk_rows, table))
+                adapter.write_bulk_insert(file, chunk_rows, table)
                 statement_count += 1
               end
               file.print("\n")

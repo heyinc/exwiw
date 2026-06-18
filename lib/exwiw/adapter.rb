@@ -113,6 +113,24 @@ module Exwiw
         raise NotImplementedError, "COPY format is not supported by #{self.class.name}"
       end
 
+      # Write this table's bulk-insert output for `rows` straight to `io`.
+      #
+      # Default: serialize `rows` to a single String via #to_bulk_insert and
+      # write it in one go — byte-for-byte what the Runner used to do with
+      # `file.print(adapter.to_bulk_insert(...))`, so SQL adapters are
+      # unaffected. The seam exists so an adapter whose per-row serialization is
+      # the dump's bottleneck (MongoDB's extended-JSON encoding) can override it
+      # to write directly to the output IO — e.g. concatenating the parts of a
+      # fork-parallel serialization — without the Runner first materializing the
+      # whole chunk as one String.
+      #
+      # `io` must be a real file-backed IO when an override streams external
+      # parts into it (e.g. via IO.copy_stream); the default path works with any
+      # IO including StringIO.
+      def write_bulk_insert(io, rows, table)
+        io.write(to_bulk_insert(rows, table))
+      end
+
       # Default bulk-insert chunk size when a table config does not set one.
       # The Runner streams each chunk straight to the output file, so a non-nil
       # value here bounds how much serialized output (and how many transient

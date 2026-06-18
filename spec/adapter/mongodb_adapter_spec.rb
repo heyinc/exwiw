@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'tempfile'
+require 'stringio'
 
 module Exwiw
   module Adapter
@@ -404,6 +405,77 @@ module Exwiw
             "masked-comment-9002",
           ])
           expect(parsed["posts"].first["title"]).to eq("masked-title-101")
+        end
+      end
+
+      describe "#write_bulk_insert" do
+        let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: [1]) }
+        let(:users_t) { config_by_name.fetch("users") }
+
+        before do
+          # Prime the embedded-children index for both shops (the dump target)
+          # and users (the collection being serialized), as the Runner does by
+          # calling build_query before each table's write. No DB access.
+          adapter.build_query(config_by_name.fetch("shops"), dump_target, config_by_name)
+          adapter.build_query(users_t, dump_target, config_by_name)
+        end
+
+        # Fresh, independent rows on every call: masking mutates documents in
+        # place, so the serial and parallel runs must each start from their own
+        # copies (and from identical, fixed ObjectIds) to be comparable. Includes
+        # BSON::ObjectId values at the top level and inside embedded posts so the
+        # extended-JSON encoding (`{"$oid": ...}`) is exercised through the fork.
+        def build_rows(count)
+          Array.new(count) do |i|
+            n = i + 1
+            {
+              "_id" => BSON::ObjectId.from_string(format("a001%020d", n)),
+              "name" => "User #{n}",
+              "email" => "user#{n}@example.com",
+              "shop_id" => BSON::ObjectId.from_string("a00100000000000000000001"),
+              "posts" => [
+                { "_id" => BSON::ObjectId.from_string(format("b001%020d", n)), "title" => "Post #{n}" },
+              ],
+            }
+          end
+        end
+
+        it "writes byte-identical output to #to_bulk_insert on the serial (default) path" do
+          io = StringIO.new
+          adapter.write_bulk_insert(io, build_rows(3), users_t)
+          expect(io.string).to eq(adapter.to_bulk_insert(build_rows(3), users_t))
+        end
+
+        it "writes byte-identical output to the serial join when forking workers" do
+          skip "fork unavailable on this platform" unless ParallelSerializer.fork_capable?
+
+          # Force the fork path on a tiny dataset: workers > 1 and min_batch 1.
+          # Per the run notes, keeping the fork-path dataset small (a handful of
+          # items) keeps the concurrent-write window microscopic and the example
+          # reliably green under RSpec, while still exercising real forked workers.
+          allow(adapter).to receive(:parallel_workers).and_return(2)
+          allow(adapter).to receive(:parallel_min_batch).and_return(1)
+
+          expected = adapter.to_bulk_insert(build_rows(5), users_t)
+
+          Tempfile.create("write_bulk_insert") do |f|
+            adapter.write_bulk_insert(f, build_rows(5), users_t)
+            f.flush
+            f.rewind
+            expect(f.read).to eq(expected)
+          end
+        end
+      end
+
+      describe "#default_bulk_insert_chunk_size" do
+        it "is the serial default when parallelism is off" do
+          expect(adapter.default_bulk_insert_chunk_size).to eq(described_class::DEFAULT_BULK_INSERT_CHUNK_SIZE)
+        end
+
+        it "scales the chunk so each forked worker gets a multi-thousand-doc slice" do
+          allow(adapter).to receive(:parallel_workers).and_return(4)
+          expect(adapter.default_bulk_insert_chunk_size)
+            .to eq(4 * described_class::PARALLEL_DOCS_PER_WORKER)
         end
       end
 
