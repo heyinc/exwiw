@@ -30,7 +30,7 @@ module Exwiw
       QueryAstBuilder.validate_scope!(dumpable_configs, table_by_name, @dump_target, @logger)
 
       @logger.debug("Determining table processing order...")
-      ordered_table_names = DetermineTableProcessingOrder.run(dumpable_configs)
+      ordered_table_names = DetermineTableProcessingOrder.run(dumpable_configs, logger: @logger)
 
       total_size = ordered_table_names.size
       ordered_table_names.each_with_index do |table_name, idx|

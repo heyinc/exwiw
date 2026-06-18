@@ -164,8 +164,86 @@ RSpec.describe Exwiw::DetermineTableProcessingOrder do
         ]
       end
 
-      it 'raises with the offending tables instead of hanging' do
-        expect { sorted_table_names }.to raise_error(ArgumentError, /Circular belongs_to dependency.*binders, responses/m)
+      it 'breaks the cycle deterministically instead of raising' do
+        expect { sorted_table_names }.not_to raise_error
+        # Both tables are emitted; ties are broken by name, so the
+        # lexicographically smaller one is chosen as the break point and ordered
+        # first.
+        expect(sorted_table_names).to eq(%w[binders responses])
+      end
+
+      it 'warns about the broken cycle when a logger is given' do
+        logger = spy('logger')
+        described_class.run(tables, logger: logger)
+        expect(logger).to have_received(:warn).with(/Circular belongs_to dependency/).at_least(:once)
+      end
+    end
+
+    context 'when a belongs_to targets a table outside the set' do
+      # e.g. an embedded MongoDB collection (masked through its parent, never
+      # dumped on its own). The dependency must neither block ordering nor be
+      # mistaken for a circular dependency.
+      let(:tables) do
+        [
+          Exwiw::TableConfig.from_symbol_keys(
+            name: 'orders',
+            primary_key: 'id',
+            belongs_tos: [
+              { table_name: 'shops', foreign_key: 'shop_id' },
+              { table_name: 'coupon_coupons', foreign_key: 'coupon_id' }, # not in the set
+            ],
+            columns: [{ name: 'id' }, { name: 'shop_id' }, { name: 'coupon_id' }],
+          ),
+          shops_table(:sqlite),
+        ]
+      end
+
+      it 'ignores the out-of-set dependency and orders the remaining tables' do
+        expect(sorted_table_names).to eq(%w[shops orders])
+      end
+    end
+
+    context 'when a cycle is surrounded by acyclic tables' do
+      # Mirrors the rt-rails shape: chargebacks <-> remittances_items <->
+      # deduction_requests form a 3-node cycle; each also belongs_to out-of-cycle
+      # parents (stores, orders) that resolve normally, and refund_to_purchasers
+      # is acyclic but depends on the cycle.
+      def node(name, deps)
+        Exwiw::TableConfig.from_symbol_keys(
+          name: name,
+          primary_key: 'id',
+          belongs_tos: deps.map { |d| { table_name: d, foreign_key: "#{d}_id" } },
+          columns: [{ name: 'id' }] + deps.map { |d| { name: "#{d}_id" } },
+        )
+      end
+
+      let(:tables) do
+        [
+          node('stores', []),
+          node('orders', %w[stores]),
+          node('chargebacks', %w[orders stores remittances_items]),
+          node('deduction_requests', %w[stores orders remittances_items]),
+          node('remittances_items', %w[stores chargebacks deduction_requests]),
+          node('refund_to_purchasers', %w[orders deduction_requests remittances_items]),
+        ]
+      end
+
+      it 'breaks only the cycle and keeps acyclic tables after their parents' do
+        order = sorted_table_names
+
+        expect(order).to contain_exactly(
+          'stores', 'orders', 'chargebacks', 'deduction_requests', 'remittances_items', 'refund_to_purchasers'
+        )
+        # The acyclic dependent is never reordered ahead of its (cycle-member) parents.
+        expect(order.index('refund_to_purchasers')).to be > order.index('deduction_requests')
+        expect(order.index('refund_to_purchasers')).to be > order.index('remittances_items')
+        # The cycle hub is emitted after its in-cycle parents.
+        expect(order.index('remittances_items')).to be > order.index('chargebacks')
+        expect(order.index('remittances_items')).to be > order.index('deduction_requests')
+      end
+
+      it 'produces the same order regardless of input order' do
+        expect(described_class.run(tables)).to eq(described_class.run(tables.reverse))
       end
     end
 

@@ -119,13 +119,19 @@ module Exwiw
           end
         end
 
-        context "for a related collection with no upstream state" do
+        context "for a related collection whose parents have produced no state" do
           let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: [1]) }
 
-          it "uses an empty filter (extracts everything)" do
+          it "matches nothing rather than dumping the whole collection" do
+            # users belongs_to shops, but shops has not been executed yet, so there
+            # is no captured parent state to scope by. Falling back to an empty
+            # `{}` filter would dump every users row across all scopes, so the
+            # adapter constrains the collection to match nothing instead. (In a
+            # real run the dump target, shops, is executed first — see the next
+            # context, where users is properly scoped by shop_id.)
             users = config_by_name.fetch("users")
             query = adapter.build_query(users, dump_target, config_by_name)
-            expect(query.filter).to eq({})
+            expect(query.filter).to eq("_id" => { "$in" => [] })
             expect(query.collection).to eq("users")
             expect(query.primary_key).to eq("_id")
           end
@@ -135,6 +141,19 @@ module Exwiw
             query = adapter.build_query(users, dump_target, config_by_name)
             expect(query.projection).to include("posts" => 1)
             expect(query.projection).to include("_id" => 1, "name" => 1, "email" => 1, "shop_id" => 1)
+          end
+        end
+
+        context "for a reference collection with no belongs_to" do
+          let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: [1]) }
+
+          it "uses an empty filter (full dump), since it has no foreign keys to scope by" do
+            # system_announcements has no belongs_to at all, so it is genuine
+            # reference/master data: the empty `{}` filter (full dump) is intended
+            # and must not be turned into a match-nothing filter.
+            system_announcements = config_by_name.fetch("system_announcements")
+            query = adapter.build_query(system_announcements, dump_target, config_by_name)
+            expect(query.filter).to eq({})
           end
         end
 
@@ -416,6 +435,7 @@ module Exwiw
           users_view = double('users_view', indexes: users_indexes)
           shops_view = double('shops_view', indexes: shops_indexes)
           db_stub = double('db')
+          allow(db_stub).to receive(:database).and_return(double('database', collection_names: ['shops', 'users']))
           allow(db_stub).to receive(:[]).with('users').and_return(users_view)
           allow(db_stub).to receive(:[]).with('shops').and_return(shops_view)
           allow(adapter).to receive(:db).and_return(db_stub)
@@ -432,6 +452,34 @@ module Exwiw
           expect(js).to include('"unique":true')
           expect(js).not_to include('"ns":') # driver-internal field dropped
           expect(js).not_to include('"_id_"') # auto _id_ index dropped
+        end
+
+        it "creates the collection but emits no indexes for a collection absent from the source DB" do
+          users = config_by_name.fetch("users")
+          shops = config_by_name.fetch("shops")
+
+          shops_indexes = double('shops_indexes', to_a: [
+            { 'v' => 2, 'key' => { '_id' => 1 }, 'name' => '_id_' },
+            { 'v' => 2, 'key' => { 'name' => 1 }, 'name' => 'index_shops_on_name' },
+          ])
+          shops_view = double('shops_view', indexes: shops_indexes)
+          db_stub = double('db')
+          # 'users' is declared in the schema but does not exist in the source DB.
+          allow(db_stub).to receive(:database).and_return(double('database', collection_names: ['shops']))
+          allow(db_stub).to receive(:[]).with('shops').and_return(shops_view)
+          allow(adapter).to receive(:db).and_return(db_stub)
+
+          expect { adapter.dump_schema([shops, users], schema_path) }.not_to raise_error
+
+          js = File.read(schema_path)
+          # Both collections are still created on the target...
+          expect(js).to include('db.createCollection("shops")')
+          expect(js).to include('db.createCollection("users")')
+          # ...but indexes are only emitted for the one that exists in the source.
+          expect(js).to include('db.getCollection("shops").createIndex({"name":1}')
+          expect(js).not_to include('db.getCollection("users").createIndex')
+          # The missing collection is never queried for its indexes.
+          expect(db_stub).not_to have_received(:[]).with('users')
         end
       end
 

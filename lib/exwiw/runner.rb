@@ -44,7 +44,7 @@ module Exwiw
       QueryAstBuilder.validate_scope!(dumpable_configs, table_by_name, @dump_target, @logger)
 
       @logger.info("Determining table processing order...")
-      ordered_table_names = DetermineTableProcessingOrder.run(dumpable_configs)
+      ordered_table_names = DetermineTableProcessingOrder.run(dumpable_configs, logger: @logger)
 
       clean_output_dir!
 
