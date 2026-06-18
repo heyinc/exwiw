@@ -23,10 +23,14 @@
 #   BENCH_POSTS_PER_USER  embedded posts per user                              (default 30)
 #   BENCH_DB              database name                                        (default exwiw_bench)
 #   BENCH_KEEP            "1" to keep the seeded DB after the run              (default drop)
+#   BENCH_PARALLEL_WORKERS  comma-separated worker counts to compare against the
+#                           serial write_bulk_insert baseline                 (default "4,8")
 
 require 'json'
 require 'logger'
 require 'tmpdir'
+require 'digest'
+require 'etc'
 
 def monotonic
   Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -49,6 +53,13 @@ USERS          = Integer(ENV.fetch('BENCH_USERS', 20_000))
 POSTS_PER_USER = Integer(ENV.fetch('BENCH_POSTS_PER_USER', 30))
 DB_NAME        = ENV.fetch('BENCH_DB', 'exwiw_bench')
 KEEP           = ENV.fetch('BENCH_KEEP', '') == '1'
+WORKER_COUNTS  = ENV.fetch('BENCH_PARALLEL_WORKERS', '4,8').split(',').map { |s| Integer(s.strip) }
+# Skip the NEW/OLD streaming-vs-.to_a comparison so the serial-vs-parallel
+# section runs from a fresh, low-RSS process. The NEW/OLD passes leave the
+# process at ~1GB resident (Ruby reclaims to the OS lazily), which puts the
+# serial baseline under more GC/memory pressure than the later parallel runs and
+# inflates the apparent speedup. Set BENCH_SKIP_BASELINE=1 for a clean number.
+SKIP_BASELINE  = ENV.fetch('BENCH_SKIP_BASELINE', '') == '1'
 
 cfg = database_config('mongodb')
 HOST = cfg.fetch(:host)
@@ -99,10 +110,12 @@ def measure(label)
   peak = sampler.stop
   after_alloc = GC.stat(:total_allocated_objects)
   printf(
-    "%-22s  time=%7.3fs  rss_before=%7.1fMB  rss_peak=%7.1fMB  alloc=%12d objs\n",
+    "%-42s  time=%7.3fs  rss_before=%7.1fMB  rss_peak=%7.1fMB  alloc=%12d objs\n",
     label, wall, before_rss, peak, after_alloc - before_alloc
   )
-  result
+  # Return the wall time (not the block result) so callers can derive a speedup;
+  # no caller depends on the block's return value.
+  wall
 end
 
 # ---------------------------------------------------------------------------
@@ -180,24 +193,25 @@ logger = Logger.new($stdout)
 logger.level = Logger::WARN
 adapter = Exwiw::Adapter::MongodbAdapter.new(connection_config, logger)
 
-# Build a Find that pulls every user in the seeded shop, mirroring a scoped dump
-# that hits a large embed-heavy collection. Reuses the adapter's real projection
-# / embedded-children / propagation-key setup so execute + to_bulk_insert behave
-# exactly as in a Runner-driven dump.
-def adapter.build_query_all(config, config_by_name, shop_id)
-  @embedded_children_by_parent = index_embedded_children(config_by_name)
-  @propagation_keys = propagation_keys_for(config, config_by_name)
+# Configure `adapter` exactly as a Runner-driven build_query call would — set the
+# embedded-children index and propagation keys it stashes on the instance — and
+# return the Find that pulls every user in the seeded shop, mirroring a scoped
+# dump against a large embed-heavy collection. Standalone (not a singleton method)
+# so the serial and parallel adapter instances below can each be set up the same
+# way, making execute + to_bulk_insert/write_bulk_insert behave as in a real dump.
+def setup_query(adapter, config, config_by_name, shop_id)
+  adapter.instance_variable_set(:@embedded_children_by_parent, adapter.send(:index_embedded_children, config_by_name))
+  keys = adapter.send(:propagation_keys_for, config, config_by_name)
+  adapter.instance_variable_set(:@propagation_keys, keys)
   Exwiw::MongoQuery::Find.new(
     collection: config.name,
     primary_key: config.primary_key,
     filter: { 'shop_id' => shop_id },
-    projection: build_projection(config, @propagation_keys),
+    projection: adapter.send(:build_projection, config, keys),
   )
 end
 
-puts "=== Full dump: execute + chunked write (users: #{USERS} docs, #{POSTS_PER_USER} embedded posts each) ==="
-
-query = adapter.build_query_all(users_config, config_by_name, shop_id)
+query = setup_query(adapter, users_config, config_by_name, shop_id)
 chunk_size = adapter.default_bulk_insert_chunk_size
 
 # Compare the two execute strategies as a *full* execute+write — the unit the
@@ -226,6 +240,9 @@ def write_chunked(adapter, results, config, chunk_size, path)
   end
 end
 
+unless SKIP_BASELINE
+puts "=== Full dump: execute + chunked write (users: #{USERS} docs, #{POSTS_PER_USER} embedded posts each) ==="
+
 tmp_new = File.join(Dir.tmpdir, "exwiw_bench_new.jsonl")
 measure("NEW streaming execute+write (n=#{chunk_size})") do
   results = adapter.execute(query) # StreamingResult — no query until consumed
@@ -246,6 +263,90 @@ old_mb = File.size(tmp_old) / 1024.0 / 1024.0
 File.delete(tmp_old)
 printf("  -> output %.1fMB (new) / %.1fMB (old); byte-identical: %s\n",
        new_mb, old_mb, (new_mb == old_mb).to_s)
+end
+
+# ---------------------------------------------------------------------------
+# Production write_bulk_insert: serial vs fork-parallel
+# ---------------------------------------------------------------------------
+#
+# This drives the EXACT production seam the Runner uses for a MongoDB dump
+# (runner.rb: results.each_slice(chunk_size) { adapter.write_bulk_insert(file,
+# chunk, table) }, with one "\n" between chunks and a trailing "\n"). Unlike the
+# NEW/OLD comparison above (which calls to_bulk_insert directly), this exercises
+# the fork-parallel path that --parallel-workers / EXWIW_MONGODB_PARALLEL_WORKERS
+# turns on, through the real StreamingResult cursor — the path that had only been
+# measured by the DB-free probe and a light e2e smoke, never on this embed-heavy
+# dataset end to end.
+#
+# Each worker count gets its own adapter instance because both the resolved
+# worker count and default_bulk_insert_chunk_size are memoized per adapter (the
+# parallel chunk is workers*4000 to amortize fork). Output is SHA256'd and
+# compared to the serial baseline to prove byte-identity. Note: the RSS sampler
+# only sees the PARENT process — the parent holds the resident chunk (the memory
+# trade-off), while the forked children serialize in separate address spaces, so
+# the parent's alloc count drops sharply on the parallel runs.
+def write_via_runner_loop(adapter, results, config, chunk_size, path)
+  statement_count = 0
+  File.open(path, 'w') do |file|
+    results.each_slice(chunk_size) do |chunk|
+      file.print("\n") if statement_count.positive?
+      adapter.write_bulk_insert(file, chunk, config)
+      statement_count += 1
+    end
+    file.print("\n")
+  end
+  statement_count
+end
+
+puts "\n=== Production write_bulk_insert: serial vs fork-parallel (the Runner's chunk loop) ==="
+puts "  host cores: #{Etc.nprocessors}"
+
+serial_adapter = Exwiw::Adapter::MongodbAdapter.new(connection_config, logger, parallel_workers: 1)
+serial_query = setup_query(serial_adapter, users_config, config_by_name, shop_id)
+serial_chunk = serial_adapter.default_bulk_insert_chunk_size
+serial_path = File.join(Dir.tmpdir, "exwiw_bench_serial.jsonl")
+serial_secs = measure("serial write_bulk_insert (n=#{serial_chunk})") do
+  write_via_runner_loop(serial_adapter, serial_adapter.execute(serial_query), users_config, serial_chunk, serial_path)
+end
+serial_sha = Digest::SHA256.file(serial_path).hexdigest
+serial_adapter.send(:db).close rescue nil
+
+# Serial floor: how much of the serial dump is the Mongo cursor's BSON->Ruby
+# decode — which runs in the parent regardless of worker count — versus the
+# per-doc masking + extended_json + JSON.generate that forking parallelizes.
+# each_slice drains the cursor exactly as the dump does, but each chunk is only
+# counted, not serialized. The non-decode remainder is the parallelizable
+# fraction, which (via Amdahl) caps the achievable fork-parallel speedup — this
+# is why the embed-heavy production speedup falls well short of the DB-free
+# probe's serialization-only number.
+drain_adapter = Exwiw::Adapter::MongodbAdapter.new(connection_config, logger, parallel_workers: 1)
+drain_query = setup_query(drain_adapter, users_config, config_by_name, shop_id)
+drained = 0
+drain_secs = measure("cursor drain only (decode, no serialize)") do
+  drain_adapter.execute(drain_query).each_slice(serial_chunk) { |chunk| drained += chunk.size }
+end
+drain_adapter.send(:db).close rescue nil
+serialize_frac = (serial_secs - drain_secs) / serial_secs
+printf("    -> drained %d docs; decode ≈ %.3fs, serialize ≈ %.3fs of the %.3fs serial dump " \
+       "(%.0f%% parallelizable -> Amdahl cap %.2fx)\n",
+       drained, drain_secs, serial_secs - drain_secs, serial_secs,
+       serialize_frac * 100, 1.0 / (1.0 - serialize_frac))
+
+WORKER_COUNTS.each do |w|
+  pa = Exwiw::Adapter::MongodbAdapter.new(connection_config, logger, parallel_workers: w)
+  pq = setup_query(pa, users_config, config_by_name, shop_id)
+  chunk = pa.default_bulk_insert_chunk_size
+  path = File.join(Dir.tmpdir, "exwiw_bench_parallel_#{w}.jsonl")
+  secs = measure("parallel write_bulk_insert (workers=#{w}, n=#{chunk})") do
+    write_via_runner_loop(pa, pa.execute(pq), users_config, chunk, path)
+  end
+  sha = Digest::SHA256.file(path).hexdigest
+  printf("    -> workers=%d  speedup=%5.2fx vs serial  byte-identical: %s\n",
+         w, serial_secs / secs, (sha == serial_sha).to_s)
+  File.delete(path)
+  pa.send(:db).close rescue nil
+end
+File.delete(serial_path)
 
 # Microbench: isolate the serialization sub-steps on a single representative doc
 # to attribute the embed-heavy cost (masking vs as_extended_json vs JSON.generate).
