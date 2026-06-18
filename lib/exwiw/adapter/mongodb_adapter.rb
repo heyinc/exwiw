@@ -135,6 +135,20 @@ module Exwiw
         'jsonl'
       end
 
+      # Bound how many documents are serialized at once when a collection config
+      # carries no explicit bulk_insert_chunk_size. A MongoDB dump is one JSONL
+      # line per document and, without chunking, the Runner would materialize the
+      # entire collection's output as a single giant string while the full
+      # in-memory result set is still alive — doubling peak memory on large or
+      # embed-heavy collections. Chunking lets the Runner stream each slice to the
+      # file and release its serialized string (and the transient extended-JSON
+      # trees) before building the next.
+      DEFAULT_BULK_INSERT_CHUNK_SIZE = 1_000
+
+      def default_bulk_insert_chunk_size
+        DEFAULT_BULK_INSERT_CHUNK_SIZE
+      end
+
       def schema_output_extension
         'js'
       end

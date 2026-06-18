@@ -26,6 +26,7 @@
 
 require 'json'
 require 'logger'
+require 'tmpdir'
 
 def monotonic
   Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -201,8 +202,40 @@ query = adapter.build_query_all(users_config, config_by_name, shop_id)
 results = measure('execute (find+to_a)') { adapter.execute(query) }
 puts "  -> #{results.size} documents loaded"
 
-jsonl = measure('to_bulk_insert (1 chunk)') { adapter.to_bulk_insert(results, users_config) }
-puts "  -> #{(jsonl.bytesize / 1024.0 / 1024.0).round(1)}MB JSONL"
+# Compare the two write strategies the Runner can drive, measured as the peak
+# RSS *growth* over the phase's starting RSS (rss_peak - rss_before) — the
+# already-resident result set is shared, so that delta is the transient memory
+# each strategy adds on top.
+#
+# NEW (chunked stream) is measured first so its peak is not polluted by the
+# OLD path's leftover giant string (RSS is sticky — the OS reclaims lazily).
+# Masking via apply_replace_with! is idempotent for these templates, so running
+# both passes over the same docs does not change the serialized bytes.
+chunk_size = adapter.default_bulk_insert_chunk_size
+tmp_new = File.join(Dir.tmpdir, "exwiw_bench_new.jsonl")
+measure("NEW chunked stream (n=#{chunk_size})") do
+  File.open(tmp_new, 'w') do |file|
+    first = true
+    results.each_slice(chunk_size) do |chunk|
+      file.print("\n") unless first
+      file.print(adapter.to_bulk_insert(chunk, users_config))
+      first = false
+    end
+    file.print("\n")
+  end
+end
+new_mb = File.size(tmp_new) / 1024.0 / 1024.0
+File.delete(tmp_new)
+
+tmp_old = File.join(Dir.tmpdir, "exwiw_bench_old.jsonl")
+measure('OLD giant string (1 chunk)') do
+  jsonl = adapter.to_bulk_insert(results, users_config)
+  File.open(tmp_old, 'w') { |file| file.puts(jsonl) }
+end
+old_mb = File.size(tmp_old) / 1024.0 / 1024.0
+File.delete(tmp_old)
+printf("  -> output %.1fMB (new) / %.1fMB (old); byte-identical: %s\n",
+       new_mb, old_mb, (new_mb == old_mb).to_s)
 
 # Microbench: isolate the serialization sub-steps on a single representative doc
 # to attribute the embed-heavy cost (masking vs as_extended_json vs JSON.generate).

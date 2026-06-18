@@ -113,6 +113,16 @@ module Exwiw
         raise NotImplementedError, "COPY format is not supported by #{self.class.name}"
       end
 
+      # Default bulk-insert chunk size when a table config does not set one.
+      # The Runner streams each chunk straight to the output file, so a non-nil
+      # value here bounds how much serialized output (and how many transient
+      # intermediate objects) live in memory at once. SQL adapters keep nil
+      # (one statement per table, as before); adapters whose output is large
+      # and built per-row (e.g. MongoDB JSONL) override with a positive value.
+      def default_bulk_insert_chunk_size
+        nil
+      end
+
       # Run the database-specific EXPLAIN for the given query and return the
       # output as a single string for `explain` subcommand to print.
       # SQL adapters override; MongodbAdapter currently raises.
