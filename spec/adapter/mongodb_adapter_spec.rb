@@ -498,6 +498,41 @@ module Exwiw
           expect { adapter.write_inserts(io, rows(2), users_t) }.not_to raise_error
           expect(io.string).to eq(adapter.to_bulk_insert(rows(2), users_t))
         end
+
+        it "republishes empty @state on the cursor-parallel path when the scan matches nothing" do
+          # Parity with the serial StreamingResult#each, which always publishes
+          # @state[collection] (empty per-key arrays for a no-document collection)
+          # so a downstream child scopes by an empty — not a missing — parent set.
+          allow(adapter).to receive(:cursor_parallel_enabled?).and_return(true)
+          allow(adapter).to receive(:parallel_workers).and_return(2)
+
+          # An _id index scan that matches nothing -> MongoIdPartitioner yields no
+          # ranges, exercising the empty-ranges branch without a database.
+          empty_scan = double("scan_view")
+          allow(empty_scan).to receive(:projection).and_return(empty_scan)
+          allow(empty_scan).to receive(:sort).and_return([])
+          db_stub = double("db")
+          allow(db_stub).to receive(:[]).with("users").and_return(double("collection", find: empty_scan))
+          allow(adapter).to receive(:db).and_return(db_stub)
+
+          query = Exwiw::MongoQuery::Find.new(
+            collection: "users",
+            primary_key: "_id",
+            filter: { "shop_id" => { "$in" => [1] } },
+            projection: { "_id" => 1, "shop_id" => 1 },
+          )
+          state = adapter.instance_variable_get(:@state)
+          result = MongodbAdapter::StreamingResult.new(
+            view: nil, collection: "users", keys: ["_id", "shop_id"], state: state, query: query
+          )
+
+          io = StringIO.new
+          count = adapter.write_inserts(io, result, users_t)
+
+          expect(count).to eq(0)
+          expect(io.string).to eq("")
+          expect(state["users"]).to eq("_id" => [], "shop_id" => [])
+        end
       end
 
       describe "#cursor_parallel_enabled?" do

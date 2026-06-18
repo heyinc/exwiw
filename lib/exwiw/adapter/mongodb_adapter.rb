@@ -643,7 +643,18 @@ module Exwiw
         # `_id` ranges; far cheaper than decoding documents (notes, iter 11).
         scan_view = db[collection].find(filter)
         ranges = MongoIdPartitioner.ranges_for(scan_view, primary_key, parallel_workers)
-        return 0 if ranges.empty?
+        if ranges.empty?
+          # Match StreamingResult#each's contract unconditionally: the serial
+          # path ALWAYS publishes @state[collection] once consumed — leaving the
+          # empty per-key arrays a no-document capture produces — and the
+          # cursor-parallel path must leave the same @state so a downstream
+          # child reads an empty (not a missing) parent scope. The Runner skips
+          # zero-record tables before calling write_inserts, so empty ranges are
+          # not reached today; publishing here keeps the two paths equivalent
+          # for any future direct caller rather than relying on that gating.
+          @state[collection] = PropagationCapture.merge(keys, [])
+          return 0
+        end
 
         sidecars = ForkedPartWriter.write(io, ranges.size, separator: "\n") do |index, part_io|
           first_id, last_id = ranges[index]
