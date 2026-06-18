@@ -226,6 +226,54 @@ module Exwiw
       end
     end
 
+    describe '--parallel-workers option' do
+      def run_cli(argv)
+        CLI.new(argv).run
+      end
+
+      it 'parses --parallel-workers into the ivar as an integer' do
+        cli = CLI.new(['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                       '--schema-dir=scenario/mongodb-schema', '--parallel-workers=4'])
+        expect(cli.instance_variable_get(:@parallel_workers)).to eq(4)
+      end
+
+      it 'accepts a valid mongodb + --parallel-workers configuration' do
+        cli = CLI.new(['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                       '--schema-dir=scenario/mongodb-schema', '--parallel-workers=4'])
+        expect { cli.send(:validate_options!) }.not_to raise_error
+      end
+
+      it 'rejects --parallel-workers for non-mongodb adapters' do
+        argv = ['--adapter=postgresql', '--host=localhost', '--port=5432', '--user=postgres',
+                '--database=app', '--schema-dir=scenario/postgresql-schema', '--parallel-workers=4']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--parallel-workers is only supported by the mongodb adapter/).to_stderr
+      end
+
+      it 'rejects a non-positive worker count' do
+        argv = ['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                '--schema-dir=scenario/mongodb-schema', '--parallel-workers=0']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--parallel-workers must be a positive integer/).to_stderr
+      end
+
+      it 'rejects a non-integer worker count at parse time' do
+        argv = ['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                '--schema-dir=scenario/mongodb-schema', '--parallel-workers=abc']
+        expect { CLI.new(argv) }.to raise_error(OptionParser::InvalidArgument)
+      end
+
+      # mongodb explain is unsupported, and the mongodb-only check runs before
+      # the explain-only check, so explain + --parallel-workers is rejected by the
+      # adapter-family guard (the most informative message) on either adapter.
+      it 'is rejected by the explain subcommand on a non-mongodb adapter' do
+        argv = ['explain', '--adapter=postgresql', '--host=localhost', '--port=5432', '--user=postgres',
+                '--database=app', '--schema-dir=scenario/postgresql-schema', '--parallel-workers=4']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--parallel-workers is only supported by the mongodb adapter/).to_stderr
+      end
+    end
+
     describe 'output dir clear confirmation' do
       around do |example|
         Dir.mktmpdir do |dir|

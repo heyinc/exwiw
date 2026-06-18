@@ -467,6 +467,40 @@ module Exwiw
         end
       end
 
+      describe "#parallel_workers" do
+        around do |example|
+          saved = ENV["EXWIW_MONGODB_PARALLEL_WORKERS"]
+          ENV.delete("EXWIW_MONGODB_PARALLEL_WORKERS")
+          example.run
+        ensure
+          if saved.nil?
+            ENV.delete("EXWIW_MONGODB_PARALLEL_WORKERS")
+          else
+            ENV["EXWIW_MONGODB_PARALLEL_WORKERS"] = saved
+          end
+        end
+
+        it "defaults to 1 (serial) with neither the constructor option nor the env var" do
+          expect(described_class.new(connection_config, logger).send(:parallel_workers)).to eq(1)
+        end
+
+        it "uses the constructor option threaded in from the CLI flag" do
+          a = described_class.new(connection_config, logger, parallel_workers: 4)
+          expect(a.send(:parallel_workers)).to eq(4)
+        end
+
+        it "falls back to the env var when no constructor option is given" do
+          ENV["EXWIW_MONGODB_PARALLEL_WORKERS"] = "3"
+          expect(described_class.new(connection_config, logger).send(:parallel_workers)).to eq(3)
+        end
+
+        it "lets the constructor option (CLI flag) override the env var" do
+          ENV["EXWIW_MONGODB_PARALLEL_WORKERS"] = "8"
+          a = described_class.new(connection_config, logger, parallel_workers: 2)
+          expect(a.send(:parallel_workers)).to eq(2)
+        end
+      end
+
       describe "#default_bulk_insert_chunk_size" do
         it "is the serial default when parallelism is off" do
           expect(adapter.default_bulk_insert_chunk_size).to eq(described_class::DEFAULT_BULK_INSERT_CHUNK_SIZE)

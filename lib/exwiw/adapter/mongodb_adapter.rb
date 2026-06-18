@@ -65,7 +65,7 @@ module Exwiw
         end
       end
 
-      def initialize(connection_config, logger)
+      def initialize(connection_config, logger, parallel_workers: nil)
         super
         @state = {}
       end
@@ -533,13 +533,15 @@ module Exwiw
         JSON.generate(extended_json(doc))
       end
 
-      # Number of worker processes to fork for serialization. Opt-in via the
-      # EXWIW_MONGODB_PARALLEL_WORKERS env var; unset/<=1 means the serial,
-      # memory-safe default. Read once and memoized so the chunk size and the
-      # write path agree within a run.
+      # Number of worker processes to fork for serialization. Opt-in: the CLI
+      # `--parallel-workers=N` flag (threaded in as @parallel_workers_option)
+      # takes precedence, falling back to the EXWIW_MONGODB_PARALLEL_WORKERS env
+      # var for programmatic/Railtie callers that never touch the CLI. Unset or
+      # <=1 means the serial, memory-safe default. Read once and memoized so the
+      # chunk size and the write path agree within a run.
       private def parallel_workers
         @parallel_workers ||= begin
-          n = ENV["EXWIW_MONGODB_PARALLEL_WORKERS"].to_i
+          n = @parallel_workers_option || ENV["EXWIW_MONGODB_PARALLEL_WORKERS"].to_i
           n > 1 ? n : 1
         end
       end

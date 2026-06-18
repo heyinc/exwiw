@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **MongoDB: parallel document serialization** (`--parallel-workers=N`, mongodb adapter, `export` only). Large or embedded-document-heavy MongoDB dumps are bottlenecked on encoding each document to MongoDB Extended JSON, which is pure Ruby and holds the GVL (so threads give no speedup). Passing `--parallel-workers=N` forks `N` worker processes that serialize contiguous slices of each collection in parallel and the parent concatenates them in order, producing **byte-identical** output to the serial dump. Expect a sublinear ~2–2.5× speedup at 4–8 workers (it becomes memory-bandwidth/GC bound, not core bound), proportional to how embed-heavy the documents are. The trade-off is memory — each worker holds a multi-thousand-document slice, so peak memory grows with `N` — which is why the default (`1`) remains the serial, memory-safe path. Mutually exclusive with the SQL adapters. Programmatic/Railtie callers can set the `EXWIW_MONGODB_PARALLEL_WORKERS` environment variable instead; the CLI flag takes precedence when both are given.
+
 ## [0.5.2] - 2026-06-18
 
 ### Fixed

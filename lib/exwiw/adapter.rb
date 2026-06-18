@@ -35,9 +35,17 @@ module Exwiw
     class Base
       attr_reader :connection_config
 
-      def initialize(connection_config, logger)
+      # `parallel_workers` is an export-time serialization tuning knob, not a
+      # connection setting: the MongodbAdapter uses it to fork worker processes
+      # for the dump's dominant per-document encoding cost. It is nil for the SQL
+      # adapters (they ignore it) and when unset (the adapter then falls back to
+      # the EXWIW_MONGODB_PARALLEL_WORKERS env var). Threaded as explicit data
+      # from the CLI rather than read from ENV here so the CLI flag is the single
+      # user-facing control and SQL construction is unaffected.
+      def initialize(connection_config, logger, parallel_workers: nil)
         @connection_config = connection_config
         @logger = logger
+        @parallel_workers_option = parallel_workers
       end
 
       # The config class that this adapter consumes. Runner uses this to
@@ -211,16 +219,16 @@ module Exwiw
       raise NotImplementedError
     end
 
-    def self.build(connection_config, logger)
+    def self.build(connection_config, logger, parallel_workers: nil)
       case normalize_name(connection_config.adapter)
       when 'sqlite'
-        Adapter::SqliteAdapter.new(connection_config, logger)
+        Adapter::SqliteAdapter.new(connection_config, logger, parallel_workers: parallel_workers)
       when 'mysql'
-        Adapter::MysqlAdapter.new(connection_config, logger)
+        Adapter::MysqlAdapter.new(connection_config, logger, parallel_workers: parallel_workers)
       when 'postgresql'
-        Adapter::PostgresqlAdapter.new(connection_config, logger)
+        Adapter::PostgresqlAdapter.new(connection_config, logger, parallel_workers: parallel_workers)
       when 'mongodb'
-        Adapter::MongodbAdapter.new(connection_config, logger)
+        Adapter::MongodbAdapter.new(connection_config, logger, parallel_workers: parallel_workers)
       else
         raise "Unsupported adapter: #{connection_config.adapter.inspect}"
       end

@@ -13,6 +13,7 @@ module Exwiw
       output_format: 'insert',
       insert_only: false,
       after_insert_hook_path: nil,
+      parallel_workers: nil,
       cli_options: {}
     )
       @connection_config = connection_config
@@ -22,12 +23,13 @@ module Exwiw
       @output_format = output_format
       @insert_only = insert_only
       @after_insert_hook_path = after_insert_hook_path
+      @parallel_workers = parallel_workers
       @cli_options = cli_options
       @logger = logger
     end
 
     def run
-      adapter = Adapter.build(@connection_config, @logger)
+      adapter = Adapter.build(@connection_config, @logger, parallel_workers: @parallel_workers)
       configs = load_table_config(adapter.class.table_config_class)
 
       validate_ignored(configs)

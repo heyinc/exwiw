@@ -82,6 +82,7 @@ module Exwiw
       @output_format = nil
       @insert_only = nil
       @after_insert_hook_path = nil
+      @parallel_workers = nil
       # nil (not :info) so we can tell "user passed --log-level" from the default,
       # letting a config-file value fill in; the :info default is applied later.
       @log_level = nil
@@ -127,6 +128,7 @@ module Exwiw
           output_format: @output_format,
           insert_only: @insert_only,
           after_insert_hook_path: @after_insert_hook_path,
+          parallel_workers: @parallel_workers,
           cli_options: build_cli_options_hash,
           logger: logger,
         ).run
@@ -167,6 +169,7 @@ module Exwiw
       resolve_scope_column!
       resolve_ids_column_alias!
       resolve_uri_option!
+      validate_parallel_workers!
 
       if @subcommand == "explain"
         validate_explain_only!
@@ -426,6 +429,25 @@ module Exwiw
       end
     end
 
+    # `--parallel-workers` forks worker processes to serialize documents in
+    # parallel — a mongodb-only, export-only knob (the dump's per-document
+    # extended-JSON encoding is the bottleneck it parallelizes). Runs after the
+    # adapter name is normalized so the family check is reliable. >1 enables
+    # parallelism; 1 is the serial default.
+    private def validate_parallel_workers!
+      return if @parallel_workers.nil?
+
+      if @database_adapter != "mongodb"
+        $stderr.puts "--parallel-workers is only supported by the mongodb adapter"
+        exit 1
+      end
+
+      if @parallel_workers < 1
+        $stderr.puts "--parallel-workers must be a positive integer (got #{@parallel_workers})"
+        exit 1
+      end
+    end
+
     private def validate_explain_only!
       if @database_adapter == "mongodb"
         $stderr.puts "mongodb adapter is not yet supported by 'explain' subcommand"
@@ -541,6 +563,7 @@ module Exwiw
         opts.on("--scope-column=[COLUMN]", "Filter every table by this shared column (--ids are its values) instead of a single --target-table. Tables lacking it are reached via belongs_to. SQL adapters only; mutually exclusive with --target-table.") { |v| @scope_column = v }
         opts.on("--output-format=[FORMAT]", "Output format: insert (default) or copy (PostgreSQL only, export subcommand only)") { |v| @output_format = v }
         opts.on("--insert-only", "Do not generate DELETE SQL files (export subcommand only)") { @insert_only = true }
+        opts.on("--parallel-workers=N", Integer, "Serialize documents across N forked worker processes (mongodb adapter, export only). >1 speeds up large/embed-heavy dumps at the cost of more memory; 1 (default) is serial. Overrides EXWIW_MONGODB_PARALLEL_WORKERS.") { |v| @parallel_workers = v }
         opts.on("--after-insert-hook=PATH", "Path to a .rb or .sh post-processing hook executed after all insert/delete files are written (export subcommand only)") do |v|
           @after_insert_hook_path = File.expand_path(v)
         end
