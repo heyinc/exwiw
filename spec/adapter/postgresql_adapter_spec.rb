@@ -41,7 +41,13 @@ module Exwiw
             expect(sql).to include('DO $exwiw$')
             expect(sql).to include('EXCEPTION WHEN duplicate_object')
           end
-          expect(sql).to include('DO $$ BEGIN CREATE EXTENSION IF NOT EXISTS "btree_gist"; EXCEPTION WHEN feature_not_supported THEN NULL; END $$;')
+          # Extension prepend is best-effort: feature_not_supported (binaries absent)
+          # and invalid_schema_name (required schema absent) are skipped with a WARNING
+          # so a restore target that cannot create the extension is not fatal; but a
+          # privilege error must still abort, so insufficient_privilege is NOT caught.
+          expect(sql).to include('DO $$ BEGIN CREATE EXTENSION IF NOT EXISTS "btree_gist";')
+          expect(sql).to match(/EXCEPTION WHEN feature_not_supported OR invalid_schema_name THEN RAISE WARNING '[^']*btree_gist[^']*', SQLSTATE, SQLERRM; END \$\$;/)
+          expect(sql).not_to include('insufficient_privilege')
           ext_pos = sql.index("DO $$ BEGIN CREATE EXTENSION")
           table_pos = sql.index("CREATE TABLE")
           expect(ext_pos).to be < table_pos
