@@ -238,23 +238,14 @@ puts "  -> cursor-parallel fetch aims to split that decode floor too."
 # ---------------------------------------------------------------------------
 
 # Compute W contiguous, disjoint, exhaustive [first_id, last_id] ranges over the
-# sorted _ids. Fetching the _ids (index-only, projection {_id:1}) is the
-# coordination cost a production impl would pay (or optimize via $bucketAuto /
-# splitVector); it is INCLUDED in the parallel timing so the speedup is honest.
+# sorted _ids via the shipping Exwiw::MongoIdPartitioner (so this probe exercises
+# the production splitting logic, not a throwaway copy — the same role
+# script/bench_mongodb_parallel_probe.rb plays for ParallelSerializer). Fetching
+# the _ids (index-only, projection {_id:1}) is the coordination cost a production
+# impl would pay (or optimize via $bucketAuto / splitVector); it is INCLUDED in
+# the parallel timing so the speedup is honest.
 def id_ranges(client, workers)
-  ids = client[COLL].find(BASE_FILTER).projection('_id' => 1).sort('_id' => 1).map { |d| d['_id'] }
-  n = ids.size
-  return [] if n.zero?
-
-  size = (n / workers.to_f).ceil
-  ranges = []
-  i = 0
-  while i < n
-    hi = [i + size, n].min
-    ranges << [ids[i], ids[hi - 1]]
-    i = hi
-  end
-  ranges
+  Exwiw::MongoIdPartitioner.ranges_for(client[COLL].find(BASE_FILTER), '_id', workers)
 end
 
 # Fork one worker per range. Each opens its OWN Mongo::Client (the driver is not
@@ -265,7 +256,7 @@ def fork_range_worker(adapter, range, part, err)
   fork do
     begin
       c = mongo_client
-      filter = BASE_FILTER.merge('_id' => { '$gte' => first_id, '$lte' => last_id })
+      filter = Exwiw::MongoIdPartitioner.range_filter(BASE_FILTER, '_id', first_id, last_id)
       view = c[COLL].find(filter).projection(PROJECTION).sort('_id' => 1)
       File.open(part, 'w') do |f|
         firstdoc = true
