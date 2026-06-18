@@ -24,6 +24,13 @@
 # decode. The dev sandbox blocks 127.0.0.1:27017, so run with the sandbox
 # disabled.
 #
+# Distributed @state: each worker also captures its range's FK-propagation keys
+# (via the shipping Exwiw::PropagationCapture), Marshal-ships them back, and the
+# parent merges them in range order. The probe asserts the merged @state equals
+# the serial sorted-cursor capture (`state-identical`) — validating the
+# cursor-parallel path's "main productionization blocker" (notes, iter 11) on
+# live data, not just the output bytes.
+#
 # Byte-identity: both paths sort by `_id`, so the serial output (one sorted
 # cursor) and the parallel output (disjoint sorted `_id` ranges concatenated in
 # range order) are byte-for-byte identical. NOTE this is a DIFFERENT byte stream
@@ -185,11 +192,25 @@ SEPARATOR   = "\n"
 # Warm the mask plan in the parent so forked workers COW-inherit it instead of
 # recompiling it (matches how write_bulk_insert warms it before fork).
 PLAN = adapter.send(:mask_plan, users_config)
+# The FK-propagation keys a real build_query would capture for this collection
+# (children $in-match against these). Each forked range worker captures its own
+# slice and the parent merges them — the distributed-@state path this probe now
+# also validates (see cursor_parallel below).
+KEYS = keys.freeze
 
 COLL = 'users'
 
 def serial_view(client)
   client[COLL].find(BASE_FILTER).projection(PROJECTION).sort('_id' => 1)
+end
+
+# The propagation @state a serial dump would publish: capture KEYS over the whole
+# sorted cursor. The cursor-parallel path must reproduce this exactly by merging
+# per-worker captures in range order.
+def serial_captured(client)
+  capture = Exwiw::PropagationCapture.new(KEYS)
+  serial_view(client).each { |doc| capture.observe(doc) }
+  capture.to_h
 end
 
 def write_view(adapter, view, path)
@@ -217,8 +238,9 @@ serial_wall = [realtime { write_view(adapter, serial_view(client), serial_path) 
                realtime { write_view(adapter, serial_view(client), serial_path) }].min
 serial_sha   = Digest::SHA256.file(serial_path).hexdigest
 serial_bytes = File.size(serial_path)
-printf("serial (sorted cursor)            time=%7.3fs  output=%.1fMB  (baseline)\n",
-       serial_wall, serial_bytes / 1024.0 / 1024.0)
+serial_state = serial_captured(client)
+printf("serial (sorted cursor)            time=%7.3fs  output=%.1fMB  state-keys=%s  (baseline)\n",
+       serial_wall, serial_bytes / 1024.0 / 1024.0, KEYS.inspect)
 
 # Decode floor: drain the same sorted cursor WITHOUT serializing. This is the
 # part fork-parallel SERIALIZATION cannot touch (it runs serially in the parent)
@@ -249,23 +271,29 @@ def id_ranges(client, workers)
 end
 
 # Fork one worker per range. Each opens its OWN Mongo::Client (the driver is not
-# fork-safe — a forked child must not reuse the parent's client/sockets) and
-# serializes its range to a part file, exit! to skip finalizers in the child.
-def fork_range_worker(adapter, range, part, err)
+# fork-safe — a forked child must not reuse the parent's client/sockets),
+# serializes its range to a part file, AND captures its slice of the propagation
+# keys — Marshal'd to a state file for the parent to merge (the distributed
+# @state a cursor-parallel dump must reconstruct). exit! to skip finalizers in
+# the child.
+def fork_range_worker(adapter, range, part, state, err)
   first_id, last_id = range
   fork do
     begin
       c = mongo_client
       filter = Exwiw::MongoIdPartitioner.range_filter(BASE_FILTER, '_id', first_id, last_id)
       view = c[COLL].find(filter).projection(PROJECTION).sort('_id' => 1)
+      capture = Exwiw::PropagationCapture.new(KEYS)
       File.open(part, 'w') do |f|
         firstdoc = true
         view.each do |doc|
+          capture.observe(doc)
           f.write(SEPARATOR) unless firstdoc
           f.write(adapter.send(:serialize_document, doc, PLAN))
           firstdoc = false
         end
       end
+      File.binwrite(state, Marshal.dump(capture.to_h))
       c.close
       exit!(0)
     rescue Exception => e
@@ -275,17 +303,22 @@ def fork_range_worker(adapter, range, part, err)
   end
 end
 
+# Returns the merged propagation @state so the caller can assert it matches the
+# serial capture — proving the distributed-state path is correct, not just the
+# output bytes.
 def cursor_parallel(adapter, client, workers, path)
+  merged = nil
   Dir.mktmpdir('exwiw_cursor_parallel') do |tmpdir|
     ranges = id_ranges(client, workers)
     jobs = ranges.each_with_index.map do |range, idx|
-      part = File.join(tmpdir, "part_#{idx}")
-      err  = File.join(tmpdir, "err_#{idx}")
-      [fork_range_worker(adapter, range, part, err), part, err]
+      part  = File.join(tmpdir, "part_#{idx}")
+      state = File.join(tmpdir, "state_#{idx}")
+      err   = File.join(tmpdir, "err_#{idx}")
+      [fork_range_worker(adapter, range, part, state, err), part, state, err]
     end
 
     failures = []
-    jobs.each do |(pid, _part, err)|
+    jobs.each do |(pid, _part, _state, err)|
       Process.waitpid(pid)
       next if $?.success?
 
@@ -295,22 +328,32 @@ def cursor_parallel(adapter, client, workers, path)
     raise "cursor-parallel failed: #{failures.join('; ')}" unless failures.empty?
 
     File.open(path, 'w') do |io|
-      jobs.each_with_index do |(_pid, part, _err), i|
+      jobs.each_with_index do |(_pid, part, _state, _err), i|
         io.write(SEPARATOR) unless i.zero?
         File.open(part, 'r') { |f| IO.copy_stream(f, io) }
       end
     end
+
+    # Merge the per-worker captures IN RANGE ORDER (jobs preserves it) via the
+    # shipping component — the same merge a production cursor-parallel dump uses
+    # to publish @state for downstream child collections.
+    per_worker = jobs.map { |(_pid, _part, state, _err)| Marshal.load(File.binread(state)) }
+    merged = Exwiw::PropagationCapture.merge(KEYS, per_worker)
   end
+  merged
 end
 
 WORKER_COUNTS.each do |w|
   par_path = File.join(Dir.tmpdir, "exwiw_cursor_parallel_#{w}.jsonl")
-  par_wall = [realtime { cursor_parallel(adapter, client, w, par_path) },
-              realtime { cursor_parallel(adapter, client, w, par_path) }].min
+  merged_state = nil
+  par_wall = [realtime { merged_state = cursor_parallel(adapter, client, w, par_path) },
+              realtime { merged_state = cursor_parallel(adapter, client, w, par_path) }].min
   sha = Digest::SHA256.file(par_path).hexdigest
-  printf("cursor-parallel fork x %-2d         time=%7.3fs  speedup=%5.2fx vs serial  byte-identical=%s\n",
-         w, par_wall, serial_wall / par_wall, (sha == serial_sha).to_s)
+  state_ok = merged_state == serial_state
+  printf("cursor-parallel fork x %-2d         time=%7.3fs  speedup=%5.2fx vs serial  byte-identical=%s  state-identical=%s\n",
+         w, par_wall, serial_wall / par_wall, (sha == serial_sha).to_s, state_ok.to_s)
   warn "  !! output DIVERGED for fork x #{w}" unless sha == serial_sha
+  warn "  !! merged @state DIVERGED for fork x #{w}" unless state_ok
   File.delete(par_path)
 end
 

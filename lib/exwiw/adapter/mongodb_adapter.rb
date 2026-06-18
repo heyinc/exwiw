@@ -55,12 +55,15 @@ module Exwiw
         def each
           return enum_for(:each) { size } unless block_given?
 
-          captured = @keys.each_with_object({}) { |key, acc| acc[key] = [] }
+          # Shared with the cursor-parallel dump's per-worker capture: the same
+          # PropagationCapture guarantees serial and parallel paths leave
+          # byte-identical @state (see PropagationCapture).
+          capture = PropagationCapture.new(@keys)
           @view.each do |doc|
-            @keys.each { |key| captured[key] << doc[key] }
+            capture.observe(doc)
             yield doc
           end
-          @state[@collection] = captured
+          @state[@collection] = capture.to_h
           self
         end
       end
