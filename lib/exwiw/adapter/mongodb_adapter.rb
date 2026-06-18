@@ -163,9 +163,9 @@ module Exwiw
       # to_bulk_insert (SQL adapters don't need it). Safe in Runner, fragile in
       # tests — call build_query first.
       def to_bulk_insert(rows, config)
+        plan = mask_plan(config)
         rows.map do |doc|
-          apply_replace_with!(doc, config)
-          apply_embedded_masking!(doc, config)
+          apply_mask_plan!(doc, plan)
           JSON.generate(extended_json(doc))
         end.join("\n")
       end
@@ -392,29 +392,74 @@ module Exwiw
         parent_fields[reference_field]
       end
 
-      private def apply_replace_with!(doc, config)
-        config.fields.each do |field|
+      # A masking plan compiled once per collection config and reused for every
+      # document of that collection. `masked_fields` is `[field_name,
+      # template_segments]` for each field carrying a `replace_with`;
+      # `embedded` is one EmbeddedMask per embedded child.
+      MaskPlan = Struct.new(:masked_fields, :embedded)
+
+      # A pre-resolved embedded-child mask: the parent path split once into
+      # `prefix` (the containers to descend into) and `last` (the field holding
+      # the subdocument(s)), plus the child's own MaskPlan.
+      EmbeddedMask = Struct.new(:prefix, :last, :plan)
+
+      # Build (or fetch) the cached MaskPlan for `config`. Masking runs over every
+      # document AND every embedded subdocument, so for an embed-heavy collection
+      # the same per-config decisions — which fields carry a `replace_with`, how
+      # each template splits into segments, where the embedded children live —
+      # were previously recomputed tens of times per document. Compiling them once
+      # per config lets #apply_mask_plan! do nothing but the work that actually
+      # varies per document (rendering templates, descending into subdocuments),
+      # so the saved per-subdocument overhead scales down with embedding count.
+      #
+      # Cached by config name: names are unique within a run and the configs do
+      # not mutate mid-dump. Relies on @embedded_children_by_parent, set by the
+      # build_query call that always precedes to_bulk_insert (see #to_bulk_insert).
+      private def mask_plan(config)
+        (@mask_plans ||= {})[config.name] ||= build_mask_plan(config)
+      end
+
+      private def build_mask_plan(config)
+        masked_fields = config.fields.each_with_object([]) do |field, acc|
           next unless field.replace_with
 
-          doc[field.name] = render_template(compiled_template(field.replace_with), doc)
+          acc << [field.name, compile_template(field.replace_with)]
+        end
+        embedded = embedded_children_of(config).map do |child|
+          *prefix, last = child.embedded_in.path.split(".")
+          EmbeddedMask.new(prefix, last, build_mask_plan(child))
+        end
+        MaskPlan.new(masked_fields, embedded)
+      end
+
+      # Apply a precompiled MaskPlan to a document in place: render each masked
+      # field, then descend into each embedded child (recursing into its own
+      # plan). Equivalent to the old apply_replace_with! + apply_embedded_masking!
+      # pair, with all per-config lookups hoisted into the plan.
+      private def apply_mask_plan!(doc, plan)
+        plan.masked_fields.each do |name, segments|
+          doc[name] = render_template(segments, doc)
+        end
+        plan.embedded.each do |child|
+          container = child.prefix.reduce(doc) { |acc, seg| acc.is_a?(Hash) ? acc[seg] : nil }
+          next unless container.is_a?(Hash)
+
+          case (value = container[child.last])
+          when Array then value.each { |sub| apply_mask_plan!(sub, child.plan) if sub.is_a?(Hash) }
+          when Hash  then apply_mask_plan!(value, child.plan)
+          end
         end
       end
 
       PLACEHOLDER_PATTERN = /\{([^{}]+)\}/
 
-      # Precompile a `replace_with` template into a flat list of segments, cached
-      # per template string. A segment is either a literal String or a 1-element
-      # Array `[ref]` marking a `{ref}` placeholder. Masking runs once per masked
-      # field of every document AND of every embedded subdocument, so for an
-      # embed-heavy collection the same handful of templates are rendered tens of
-      # times per document; precompiling lets #render_template skip the regex scan
-      # / block / `Regexp.last_match` that a per-document `gsub` repeated, ~2.5x
-      # faster per field. The segment walk reproduces the old gsub byte-for-byte
+      # Split a `replace_with` template into a flat list of segments (called once
+      # per masked field at plan-build time, see #build_mask_plan). A segment is
+      # either a literal String or a 1-element Array `[ref]` marking a `{ref}`
+      # placeholder. #render_template then concatenates them, skipping the regex
+      # scan / block / `Regexp.last_match` a per-document `gsub` would repeat (~2.5x
+      # faster per field). The segment walk reproduces the old gsub byte-for-byte
       # (missing keys render as "", literals pass through unchanged).
-      private def compiled_template(template)
-        (@compiled_templates ||= {})[template] ||= compile_template(template)
-      end
-
       private def compile_template(template)
         segments = []
         pos = 0
@@ -440,30 +485,8 @@ module Exwiw
         out
       end
 
-      private def apply_embedded_masking!(doc, parent_config)
-        embedded_children_of(parent_config).each do |child|
-          walk(doc, child.embedded_in.path) do |subdoc|
-            apply_replace_with!(subdoc, child)
-            apply_embedded_masking!(subdoc, child)
-          end
-        end
-      end
-
       private def embedded_children_of(parent_config)
         @embedded_children_by_parent.fetch(parent_config.name, [])
-      end
-
-      private def walk(doc, dotted_path)
-        segments = dotted_path.split(".")
-        *prefix, last = segments
-        container = prefix.reduce(doc) { |acc, seg| acc.is_a?(Hash) ? acc[seg] : nil }
-        return unless container.is_a?(Hash)
-
-        value = container[last]
-        case value
-        when Array then value.each { |sub| yield sub if sub.is_a?(Hash) }
-        when Hash  then yield value
-        end
       end
 
       private def extended_json(doc)
