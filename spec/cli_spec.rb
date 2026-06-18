@@ -274,6 +274,51 @@ module Exwiw
       end
     end
 
+    describe '--cursor-parallel option' do
+      def run_cli(argv)
+        CLI.new(argv).run
+      end
+
+      it 'parses --cursor-parallel into the ivar as true' do
+        cli = CLI.new(['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                       '--schema-dir=scenario/mongodb-schema', '--parallel-workers=4', '--cursor-parallel'])
+        expect(cli.instance_variable_get(:@cursor_parallel)).to eq(true)
+      end
+
+      it 'defaults the ivar to nil when the flag is absent' do
+        cli = CLI.new(['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                       '--schema-dir=scenario/mongodb-schema', '--parallel-workers=4'])
+        expect(cli.instance_variable_get(:@cursor_parallel)).to be_nil
+      end
+
+      it 'accepts --cursor-parallel together with --parallel-workers > 1 on mongodb' do
+        cli = CLI.new(['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                       '--schema-dir=scenario/mongodb-schema', '--parallel-workers=4', '--cursor-parallel'])
+        expect { cli.send(:validate_options!) }.not_to raise_error
+      end
+
+      it 'rejects --cursor-parallel for non-mongodb adapters' do
+        argv = ['--adapter=postgresql', '--host=localhost', '--port=5432', '--user=postgres',
+                '--database=app', '--schema-dir=scenario/postgresql-schema', '--cursor-parallel']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--cursor-parallel is only supported by the mongodb adapter/).to_stderr
+      end
+
+      it 'rejects --cursor-parallel without --parallel-workers' do
+        argv = ['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                '--schema-dir=scenario/mongodb-schema', '--cursor-parallel']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--cursor-parallel requires --parallel-workers > 1/).to_stderr
+      end
+
+      it 'rejects --cursor-parallel with --parallel-workers=1 (no cursor to split)' do
+        argv = ['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                '--schema-dir=scenario/mongodb-schema', '--parallel-workers=1', '--cursor-parallel']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--cursor-parallel requires --parallel-workers > 1/).to_stderr
+      end
+    end
+
     describe 'output dir clear confirmation' do
       around do |example|
         Dir.mktmpdir do |dir|

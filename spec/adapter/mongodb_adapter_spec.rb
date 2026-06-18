@@ -537,6 +537,23 @@ module Exwiw
           ENV["EXWIW_MONGODB_CURSOR_PARALLEL"] = "0"
           expect(adapter.send(:cursor_parallel_enabled?)).to eq(false)
         end
+
+        it "uses the constructor option (CLI --cursor-parallel) ahead of the env var" do
+          a = described_class.new(connection_config, logger, parallel_workers: 4, cursor_parallel: true)
+          ENV["EXWIW_MONGODB_CURSOR_PARALLEL"] = "0" # env says off, the flag wins
+          expect(a.send(:cursor_parallel_enabled?)).to eq(true)
+        end
+
+        it "lets an explicit constructor false override a truthy env var" do
+          a = described_class.new(connection_config, logger, parallel_workers: 4, cursor_parallel: false)
+          ENV["EXWIW_MONGODB_CURSOR_PARALLEL"] = "1"
+          expect(a.send(:cursor_parallel_enabled?)).to eq(false)
+        end
+
+        it "still requires more than one worker even with the constructor option set" do
+          a = described_class.new(connection_config, logger, parallel_workers: 1, cursor_parallel: true)
+          expect(a.send(:cursor_parallel_enabled?)).to eq(false)
+        end
       end
 
       describe "#build_client" do

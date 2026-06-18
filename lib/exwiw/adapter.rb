@@ -42,10 +42,16 @@ module Exwiw
       # the EXWIW_MONGODB_PARALLEL_WORKERS env var). Threaded as explicit data
       # from the CLI rather than read from ENV here so the CLI flag is the single
       # user-facing control and SQL construction is unaffected.
-      def initialize(connection_config, logger, parallel_workers: nil)
+      #
+      # `cursor_parallel` (mongodb-only) upgrades those workers from serializing
+      # only to also fetching disjoint `_id` ranges with their own cursors; nil
+      # falls back to the EXWIW_MONGODB_CURSOR_PARALLEL env var (same CLI-first
+      # contract as parallel_workers).
+      def initialize(connection_config, logger, parallel_workers: nil, cursor_parallel: nil)
         @connection_config = connection_config
         @logger = logger
         @parallel_workers_option = parallel_workers
+        @cursor_parallel_option = cursor_parallel
       end
 
       # The config class that this adapter consumes. Runner uses this to
@@ -256,16 +262,16 @@ module Exwiw
       raise NotImplementedError
     end
 
-    def self.build(connection_config, logger, parallel_workers: nil)
+    def self.build(connection_config, logger, parallel_workers: nil, cursor_parallel: nil)
       case normalize_name(connection_config.adapter)
       when 'sqlite'
-        Adapter::SqliteAdapter.new(connection_config, logger, parallel_workers: parallel_workers)
+        Adapter::SqliteAdapter.new(connection_config, logger, parallel_workers: parallel_workers, cursor_parallel: cursor_parallel)
       when 'mysql'
-        Adapter::MysqlAdapter.new(connection_config, logger, parallel_workers: parallel_workers)
+        Adapter::MysqlAdapter.new(connection_config, logger, parallel_workers: parallel_workers, cursor_parallel: cursor_parallel)
       when 'postgresql'
-        Adapter::PostgresqlAdapter.new(connection_config, logger, parallel_workers: parallel_workers)
+        Adapter::PostgresqlAdapter.new(connection_config, logger, parallel_workers: parallel_workers, cursor_parallel: cursor_parallel)
       when 'mongodb'
-        Adapter::MongodbAdapter.new(connection_config, logger, parallel_workers: parallel_workers)
+        Adapter::MongodbAdapter.new(connection_config, logger, parallel_workers: parallel_workers, cursor_parallel: cursor_parallel)
       else
         raise "Unsupported adapter: #{connection_config.adapter.inspect}"
       end

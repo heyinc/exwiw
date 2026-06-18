@@ -14,6 +14,7 @@ module Exwiw
       insert_only: false,
       after_insert_hook_path: nil,
       parallel_workers: nil,
+      cursor_parallel: nil,
       cli_options: {}
     )
       @connection_config = connection_config
@@ -24,12 +25,13 @@ module Exwiw
       @insert_only = insert_only
       @after_insert_hook_path = after_insert_hook_path
       @parallel_workers = parallel_workers
+      @cursor_parallel = cursor_parallel
       @cli_options = cli_options
       @logger = logger
     end
 
     def run
-      adapter = Adapter.build(@connection_config, @logger, parallel_workers: @parallel_workers)
+      adapter = Adapter.build(@connection_config, @logger, parallel_workers: @parallel_workers, cursor_parallel: @cursor_parallel)
       configs = load_table_config(adapter.class.table_config_class)
 
       validate_ignored(configs)

@@ -79,7 +79,7 @@ module Exwiw
         end
       end
 
-      def initialize(connection_config, logger, parallel_workers: nil)
+      def initialize(connection_config, logger, parallel_workers: nil, cursor_parallel: nil)
         super
         @state = {}
       end
@@ -608,12 +608,19 @@ module Exwiw
 
       # Cursor-parallel fetch is opt-in (it sorts by `_id`, so its bytes differ
       # from the natural-order default — see #write_inserts) and needs more than
-      # one worker to split the cursor. Gated by EXWIW_MONGODB_CURSOR_PARALLEL so
-      # it is independent of --parallel-workers' serialize-only fork path: setting
-      # workers alone keeps today's byte-identical behavior; adding this env var
-      # upgrades it to the cursor-parallel path.
+      # one worker to split the cursor. It is independent of --parallel-workers'
+      # serialize-only fork path: setting workers alone keeps today's
+      # byte-identical behavior; opting in here upgrades it to the cursor-parallel
+      # path. The `--cursor-parallel` CLI flag (threaded in as @cursor_parallel_option)
+      # takes precedence, falling back to the EXWIW_MONGODB_CURSOR_PARALLEL env var
+      # for programmatic/Railtie callers that never touch the CLI — the same
+      # CLI-first contract as #parallel_workers.
       private def cursor_parallel_enabled?
         return false unless parallel_workers > 1
+
+        unless @cursor_parallel_option.nil?
+          return @cursor_parallel_option
+        end
 
         TRUTHY_ENV.include?(ENV["EXWIW_MONGODB_CURSOR_PARALLEL"].to_s.strip.downcase)
       end
