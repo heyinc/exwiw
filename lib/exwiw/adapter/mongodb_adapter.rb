@@ -14,6 +14,57 @@ module Exwiw
         Exwiw::MongodbCollectionConfig
       end
 
+      # A lazy, streaming stand-in for the materialized result array #execute
+      # used to return. Wrapping the Mongo cursor (instead of `.to_a`) keeps the
+      # dump's dominant memory cost — the full result set — off the heap: the
+      # Runner pulls documents through `each_slice`, so at most one chunk of
+      # documents (plus the small propagation-key arrays) is resident at a time,
+      # even for large or embed-heavy collections.
+      #
+      # It satisfies the two things the Runner asks of an execute result:
+      #   - #size: the record count, used to skip empty collections and to log.
+      #     Answered with a `count_documents` query (which only walks index
+      #     entries, far cheaper than fetching every document) rather than by
+      #     draining the cursor.
+      #   - #each (via Enumerable / each_slice): a single streaming pass over the
+      #     cursor. While streaming it captures — per propagation key, BEFORE
+      #     handing the document to the caller's masking — the values downstream
+      #     children will `$in`-match against, publishing them into @state once
+      #     the pass completes.
+      #
+      # Contract note: unlike the old `.to_a` execute, which populated @state
+      # eagerly, this defers state capture until the result is consumed. The
+      # Runner always fully consumes a non-empty result before any child
+      # collection is processed, so propagation is unaffected; a caller that only
+      # needs @state must iterate the result (e.g. `.to_a`).
+      class StreamingResult
+        include Enumerable
+
+        def initialize(view:, collection:, keys:, state:)
+          @view = view
+          @collection = collection
+          @keys = keys
+          @state = state
+        end
+
+        def size
+          @size ||= @view.count_documents
+        end
+        alias length size
+
+        def each
+          return enum_for(:each) { size } unless block_given?
+
+          captured = @keys.each_with_object({}) { |key, acc| acc[key] = [] }
+          @view.each do |doc|
+            @keys.each { |key| captured[key] << doc[key] }
+            yield doc
+          end
+          @state[@collection] = captured
+          self
+        end
+      end
+
       def initialize(connection_config, logger)
         super
         @state = {}
@@ -86,22 +137,24 @@ module Exwiw
       def execute(query)
         @logger.debug("  Executing Mongo find on '#{query.collection}': filter=#{query.filter.inspect} projection=#{query.projection.inspect}")
 
-        docs = db[query.collection]
+        view = db[query.collection]
           .find(query.filter)
           .projection(query.projection)
           .comment(query_comment_text("collection=#{query.collection}"))
-          .to_a
 
-        # Stash, per referenced field, the values children will `$in`-match
-        # against. @propagation_keys is set by the build_query call for this same
+        # Per referenced field, the values children will `$in`-match against.
+        # @propagation_keys is set by the build_query call for this same
         # collection; fall back to the primary key if execute is driven without a
         # preceding build_query (e.g. in isolation from a test).
         keys = @propagation_keys || [query.primary_key]
-        @state[query.collection] = keys.each_with_object({}) do |key, acc|
-          acc[key] = docs.map { |doc| doc[key] }
-        end
 
-        docs
+        # Return a streaming view of the result set rather than `.to_a`-ing the
+        # whole collection into memory. The Runner pulls documents through
+        # `each_slice`, so only one chunk's worth is resident at a time even for
+        # large / embed-heavy collections — the dump's dominant memory cost. The
+        # propagation-key values are captured as the cursor streams and published
+        # into @state once the pass completes (see StreamingResult).
+        StreamingResult.new(view: view, collection: query.collection, keys: keys, state: @state)
       end
 
       # NOTE: relies on @embedded_children_by_parent set by a prior build_query

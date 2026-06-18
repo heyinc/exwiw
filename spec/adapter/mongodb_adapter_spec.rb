@@ -167,7 +167,10 @@ module Exwiw
             users = config_by_name.fetch("users")
 
             shops_query = adapter.build_query(shops, dump_target, config_by_name)
-            adapter.execute(shops_query)
+            # #execute streams lazily and publishes the propagation-key state only
+            # once the result is consumed (as the Runner does via the chunked
+            # write); drain it here so the child query can read that state back.
+            adapter.execute(shops_query).to_a
 
             users_query = adapter.build_query(users, dump_target, config_by_name)
             expect(users_query.filter).to eq("shop_id" => { "$in" => [shop1_oid] })
@@ -218,12 +221,16 @@ module Exwiw
             allow(parent_view).to receive(:find).and_return(parent_view)
             allow(parent_view).to receive(:projection).and_return(parent_view)
             allow(parent_view).to receive(:comment).and_return(parent_view)
-            allow(parent_view).to receive(:to_a).and_return([{ "_id" => be_oid, "uuid" => "be-uuid-1" }])
+            # #execute now streams the cursor instead of `.to_a`; the wrapper
+            # captures propagation-key state as it iterates `each`.
+            allow(parent_view).to receive(:each) { |&blk| blk.call({ "_id" => be_oid, "uuid" => "be-uuid-1" }) }
             db_stub = double("db")
             allow(db_stub).to receive(:[]).with("maja_business_entities").and_return(parent_view)
             allow(adapter).to receive(:db).and_return(db_stub)
 
-            adapter.execute(adapter.build_query(business_entities, dump_target, local_config_by_name))
+            # State is published once the result is consumed (Runner drains it via
+            # the chunked write); drain it here so the child query reads it back.
+            adapter.execute(adapter.build_query(business_entities, dump_target, local_config_by_name)).to_a
 
             child_query = adapter.build_query(stores, dump_target, local_config_by_name)
             expect(child_query.filter).to eq("maja_business_entity_id" => { "$in" => ["be-uuid-1"] })
@@ -266,7 +273,9 @@ module Exwiw
             shops = config_by_name.fetch("shops")
             users_t = config_by_name.fetch("users")
 
-            adapter.execute(adapter.build_query(shops, dump_target, config_by_name))
+            # Drain the parent result so its propagation-key state is published
+            # (the Runner does this via the chunked write) before scoping users.
+            adapter.execute(adapter.build_query(shops, dump_target, config_by_name)).to_a
             users = adapter.execute(adapter.build_query(users_t, dump_target, config_by_name))
 
             expect(users.size).to eq(2)

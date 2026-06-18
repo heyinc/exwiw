@@ -195,42 +195,52 @@ def adapter.build_query_all(config, config_by_name, shop_id)
   )
 end
 
-puts "=== Dump phases (users: #{USERS} docs, #{POSTS_PER_USER} embedded posts each) ==="
+puts "=== Full dump: execute + chunked write (users: #{USERS} docs, #{POSTS_PER_USER} embedded posts each) ==="
 
 query = adapter.build_query_all(users_config, config_by_name, shop_id)
-
-results = measure('execute (find+to_a)') { adapter.execute(query) }
-puts "  -> #{results.size} documents loaded"
-
-# Compare the two write strategies the Runner can drive, measured as the peak
-# RSS *growth* over the phase's starting RSS (rss_peak - rss_before) — the
-# already-resident result set is shared, so that delta is the transient memory
-# each strategy adds on top.
-#
-# NEW (chunked stream) is measured first so its peak is not polluted by the
-# OLD path's leftover giant string (RSS is sticky — the OS reclaims lazily).
-# Masking via apply_replace_with! is idempotent for these templates, so running
-# both passes over the same docs does not change the serialized bytes.
 chunk_size = adapter.default_bulk_insert_chunk_size
-tmp_new = File.join(Dir.tmpdir, "exwiw_bench_new.jsonl")
-measure("NEW chunked stream (n=#{chunk_size})") do
-  File.open(tmp_new, 'w') do |file|
+
+# Compare the two execute strategies as a *full* execute+write — the unit the
+# Runner actually drives — since #execute is now lazy (StreamingResult) and does
+# no work until the result is consumed. Each is measured as wall time, peak RSS,
+# and allocations over the whole phase.
+#
+# NEW is the production path: adapter.execute returns a StreamingResult that
+# streams the cursor; the Runner pulls chunks via each_slice so at most one chunk
+# of documents is resident at a time. OLD is the pre-iteration-3 behavior: `.to_a`
+# the entire result set into memory before writing.
+#
+# NEW (streaming) is measured FIRST so its peak RSS is not polluted by the OLD
+# path's leftover full-result-set array (RSS is sticky — the OS reclaims lazily).
+# Masking is idempotent for these templates and each strategy reads its own fresh
+# docs, so both produce byte-identical output.
+def write_chunked(adapter, results, config, chunk_size, path)
+  File.open(path, 'w') do |file|
     first = true
     results.each_slice(chunk_size) do |chunk|
       file.print("\n") unless first
-      file.print(adapter.to_bulk_insert(chunk, users_config))
+      file.print(adapter.to_bulk_insert(chunk, config))
       first = false
     end
     file.print("\n")
   end
 end
+
+tmp_new = File.join(Dir.tmpdir, "exwiw_bench_new.jsonl")
+measure("NEW streaming execute+write (n=#{chunk_size})") do
+  results = adapter.execute(query) # StreamingResult — no query until consumed
+  write_chunked(adapter, results, users_config, chunk_size, tmp_new)
+end
 new_mb = File.size(tmp_new) / 1024.0 / 1024.0
 File.delete(tmp_new)
 
 tmp_old = File.join(Dir.tmpdir, "exwiw_bench_old.jsonl")
-measure('OLD giant string (1 chunk)') do
-  jsonl = adapter.to_bulk_insert(results, users_config)
-  File.open(tmp_old, 'w') { |file| file.puts(jsonl) }
+measure('OLD to_a execute+write') do
+  view = adapter.send(:db)[query.collection].find(query.filter).projection(query.projection)
+  docs = view.to_a
+  keys = adapter.instance_variable_get(:@propagation_keys)
+  keys.each_with_object({}) { |k, acc| acc[k] = docs.map { |d| d[k] } } # mirror @state cost
+  write_chunked(adapter, docs, users_config, chunk_size, tmp_old)
 end
 old_mb = File.size(tmp_old) / 1024.0 / 1024.0
 File.delete(tmp_old)
@@ -239,7 +249,7 @@ printf("  -> output %.1fMB (new) / %.1fMB (old); byte-identical: %s\n",
 
 # Microbench: isolate the serialization sub-steps on a single representative doc
 # to attribute the embed-heavy cost (masking vs as_extended_json vs JSON.generate).
-sample = results.first
+sample = adapter.send(:db)[query.collection].find(query.filter).projection(query.projection).first
 N = 5_000
 puts "\n=== Per-doc serialization microbench (#{N} iterations on one #{POSTS_PER_USER}-post doc) ==="
 def microbench(label, n)
