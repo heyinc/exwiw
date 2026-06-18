@@ -99,30 +99,25 @@ module Exwiw
           else
             phase = "generating INSERT statement"
             @logger.debug("  Generate INSERT statement...")
-            # Stream each chunk straight to the file instead of building the whole
-            # table's INSERT/JSONL output as one string first. This keeps only a
-            # single chunk's serialized text (and its transient intermediate
-            # objects) in memory at a time — important for large MongoDB
-            # collections, whose one-giant-chunk JSONL would otherwise be held in
-            # full alongside the already-large in-memory result set.
+            # Delegate the table's INSERT body to the adapter via #write_inserts:
+            # it streams each statement straight to the file (rather than building
+            # the whole table's INSERT/JSONL output as one string first), keeping
+            # only a single chunk's serialized text in memory at a time — important
+            # for large MongoDB collections whose one-giant-chunk JSONL would
+            # otherwise be held in full alongside the already-large result set.
             #
-            # The chunk size falls back to the adapter's default when the table
-            # config does not set one (SQL adapters: nil -> one statement, as
-            # before; MongoDB: a positive default so the output is chunked). The
-            # bytes written are identical to joining the chunks with "\n" and
-            # appending a trailing newline, matching the previous `file.puts`.
-            chunk_size = table.bulk_insert_chunk_size || adapter.default_bulk_insert_chunk_size
-            chunks = chunk_size ? results.each_slice(chunk_size) : [results]
-
+            # The default implementation reproduces the previous inline chunk loop
+            # byte-for-byte (chunk by bulk_insert_chunk_size, join with "\n", no
+            # leading/trailing separator); the Runner still owns the surrounding
+            # pre/post SQL and the one trailing "\n". An adapter that needs to own
+            # the whole-collection fetch+serialize+write (MongoDB cursor-parallel)
+            # overrides #write_inserts — the each_slice loop here could not express
+            # that.
             statement_count = 0
             File.open(File.join(@output_dir, "insert-#{insert_idx}-#{table_name}.#{adapter.output_extension}"), 'w') do |file|
               pre = adapter.pre_insert_sql(table)
               file.puts(pre) if pre
-              chunks.each do |chunk_rows|
-                file.print("\n") if statement_count.positive?
-                adapter.write_bulk_insert(file, chunk_rows, table)
-                statement_count += 1
-              end
+              statement_count = adapter.write_inserts(file, results, table)
               file.print("\n")
               post = adapter.post_insert_sql(table)
               file.puts(post) if post
