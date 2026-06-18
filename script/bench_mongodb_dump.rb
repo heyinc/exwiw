@@ -256,6 +256,15 @@ def microbench(label, n)
   t = realtime { n.times { yield } }
   printf("  %-28s %7.3fs total  %8.1f us/op\n", label, t, t / n * 1_000_000)
 end
+# Masking alone (apply_replace_with! + apply_embedded_masking!) on a fresh dup,
+# isolating the cost the precompiled-template path targets — it runs once per
+# masked field of the doc AND of every embedded subdocument, so it scales with
+# embedding count.
+microbench('masking only (dup+replace_with)', N) do
+  d = sample.dup
+  adapter.send(:apply_replace_with!, d, users_config)
+  adapter.send(:apply_embedded_masking!, d, users_config)
+end
 microbench('as_extended_json only', N) { sample.as_extended_json(mode: :relaxed) }
 ext = sample.as_extended_json(mode: :relaxed)
 microbench('JSON.generate(ext) only', N) { JSON.generate(ext) }
