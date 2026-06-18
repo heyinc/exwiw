@@ -270,75 +270,43 @@ def id_ranges(client, workers)
   Exwiw::MongoIdPartitioner.ranges_for(client[COLL].find(BASE_FILTER), '_id', workers)
 end
 
-# Fork one worker per range. Each opens its OWN Mongo::Client (the driver is not
-# fork-safe — a forked child must not reuse the parent's client/sockets),
-# serializes its range to a part file, AND captures its slice of the propagation
-# keys — Marshal'd to a state file for the parent to merge (the distributed
-# @state a cursor-parallel dump must reconstruct). exit! to skip finalizers in
-# the child.
-def fork_range_worker(adapter, range, part, state, err)
-  first_id, last_id = range
-  fork do
-    begin
-      c = mongo_client
-      filter = Exwiw::MongoIdPartitioner.range_filter(BASE_FILTER, '_id', first_id, last_id)
-      view = c[COLL].find(filter).projection(PROJECTION).sort('_id' => 1)
-      capture = Exwiw::PropagationCapture.new(KEYS)
-      File.open(part, 'w') do |f|
-        firstdoc = true
-        view.each do |doc|
-          capture.observe(doc)
-          f.write(SEPARATOR) unless firstdoc
-          f.write(adapter.send(:serialize_document, doc, PLAN))
-          firstdoc = false
-        end
-      end
-      File.binwrite(state, Marshal.dump(capture.to_h))
-      c.close
-      exit!(0)
-    rescue Exception => e
-      File.write(err, "#{e.class}: #{e.message}") rescue nil
-      exit!(1)
-    end
-  end
-end
-
+# Fork one worker per range via the shipping Exwiw::ForkedPartWriter (so this
+# probe exercises the production fork-orchestration logic, not a throwaway copy —
+# the same role MongoIdPartitioner/PropagationCapture play for the split/merge).
+# Each worker opens its OWN Mongo::Client (the driver is not fork-safe — a forked
+# child must not reuse the parent's client/sockets), serializes its range to its
+# part, AND captures its slice of the propagation keys — returned as the job's
+# sidecar, which ForkedPartWriter Marshal-ships back for the parent to merge (the
+# distributed @state a cursor-parallel dump must reconstruct).
+#
 # Returns the merged propagation @state so the caller can assert it matches the
 # serial capture — proving the distributed-state path is correct, not just the
 # output bytes.
 def cursor_parallel(adapter, client, workers, path)
+  ranges = id_ranges(client, workers)
   merged = nil
-  Dir.mktmpdir('exwiw_cursor_parallel') do |tmpdir|
-    ranges = id_ranges(client, workers)
-    jobs = ranges.each_with_index.map do |range, idx|
-      part  = File.join(tmpdir, "part_#{idx}")
-      state = File.join(tmpdir, "state_#{idx}")
-      err   = File.join(tmpdir, "err_#{idx}")
-      [fork_range_worker(adapter, range, part, state, err), part, state, err]
-    end
-
-    failures = []
-    jobs.each do |(pid, _part, _state, err)|
-      Process.waitpid(pid)
-      next if $?.success?
-
-      detail = (File.read(err) if File.exist?(err)) || "exit #{$?.exitstatus.inspect}"
-      failures << "worker #{pid}: #{detail}"
-    end
-    raise "cursor-parallel failed: #{failures.join('; ')}" unless failures.empty?
-
-    File.open(path, 'w') do |io|
-      jobs.each_with_index do |(_pid, part, _state, _err), i|
-        io.write(SEPARATOR) unless i.zero?
-        File.open(part, 'r') { |f| IO.copy_stream(f, io) }
+  File.open(path, 'w') do |io|
+    sidecars = Exwiw::ForkedPartWriter.write(io, ranges.size, separator: SEPARATOR) do |index, part_io|
+      first_id, last_id = ranges[index]
+      c = mongo_client
+      filter = Exwiw::MongoIdPartitioner.range_filter(BASE_FILTER, '_id', first_id, last_id)
+      view = c[COLL].find(filter).projection(PROJECTION).sort('_id' => 1)
+      capture = Exwiw::PropagationCapture.new(KEYS)
+      firstdoc = true
+      view.each do |doc|
+        capture.observe(doc)
+        part_io.write(SEPARATOR) unless firstdoc
+        part_io.write(adapter.send(:serialize_document, doc, PLAN))
+        firstdoc = false
       end
+      c.close
+      capture.to_h
     end
 
-    # Merge the per-worker captures IN RANGE ORDER (jobs preserves it) via the
+    # Merge the per-worker captures IN RANGE ORDER (sidecars preserves it) via the
     # shipping component — the same merge a production cursor-parallel dump uses
     # to publish @state for downstream child collections.
-    per_worker = jobs.map { |(_pid, _part, state, _err)| Marshal.load(File.binread(state)) }
-    merged = Exwiw::PropagationCapture.merge(KEYS, per_worker)
+    merged = Exwiw::PropagationCapture.merge(KEYS, sidecars)
   end
   merged
 end
