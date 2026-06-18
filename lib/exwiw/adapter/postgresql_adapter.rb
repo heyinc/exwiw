@@ -65,7 +65,18 @@ module Exwiw
           ext_ddl = extensions.map do |extname, schema|
             stmt = "CREATE EXTENSION IF NOT EXISTS #{connection.quote_ident(extname)}"
             stmt += " SCHEMA #{connection.quote_ident(schema)}" unless schema == "public"
-            "DO $$ BEGIN #{stmt}; EXCEPTION WHEN feature_not_supported THEN NULL; END $$;"
+            # Best-effort prepend: a restore target that genuinely cannot create the
+            # extension should not abort the whole restore. Two such cases are caught:
+            #   feature_not_supported (0A000) -- the extension's binaries are unavailable
+            #   invalid_schema_name   (3F000) -- the extension's required schema is absent
+            # insufficient_privilege (42501) is deliberately NOT caught: a restore role
+            # lacking CREATE privilege is a misconfiguration to fix, not to skip silently.
+            # The skip is re-raised as a WARNING so it surfaces in the restore logs
+            # instead of vanishing.
+            warning = connection.escape_literal("exwiw: skipped CREATE EXTENSION #{extname} (SQLSTATE %): %")
+            "DO $$ BEGIN #{stmt}; " \
+              "EXCEPTION WHEN feature_not_supported OR invalid_schema_name THEN " \
+              "RAISE WARNING #{warning}, SQLSTATE, SQLERRM; END $$;"
           end.join("\n") + "\n\n"
           @logger.debug("  Found #{extensions.size} extension(s) to prepend.")
           stdout = ext_ddl + stdout
@@ -382,11 +393,17 @@ module Exwiw
       end
 
       private def query_extensions
+        # Skip plpgsql (always present) and managed-platform bookkeeping extensions
+        # (google_*/rds_*/aiven_*). pglogical is also skipped: it is a logical-
+        # replication mechanism of the source, not part of the data being copied,
+        # and its dedicated `pglogical` schema is typically absent on the restore
+        # target — so prepending CREATE EXTENSION for it only breaks the restore.
         sql = <<~SQL
           SELECT e.extname, n.nspname
           FROM pg_extension e
           JOIN pg_namespace n ON n.oid = e.extnamespace
           WHERE e.extname != 'plpgsql'
+            AND e.extname != 'pglogical'
             AND e.extname NOT LIKE 'google\\_%' ESCAPE '\\'
             AND e.extname NOT LIKE 'rds\\_%' ESCAPE '\\'
             AND e.extname NOT LIKE 'aiven\\_%' ESCAPE '\\'
