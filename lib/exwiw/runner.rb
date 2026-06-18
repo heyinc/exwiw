@@ -38,8 +38,13 @@ module Exwiw
       target = table_by_name[@dump_target.table_name]
       adapter.validate_as_dump_target!(target) if target
 
+      dumpable_configs = configs.select { |c| adapter.dumpable?(c) }
+      # Scope-column mode: abort if any extractable table cannot be scoped (no-op
+      # otherwise). Done before extraction so nothing is dumped if it would leak.
+      QueryAstBuilder.validate_scope!(dumpable_configs, table_by_name, @dump_target, @logger)
+
       @logger.info("Determining table processing order...")
-      ordered_table_names = DetermineTableProcessingOrder.run(configs.select { |c| adapter.dumpable?(c) })
+      ordered_table_names = DetermineTableProcessingOrder.run(dumpable_configs)
 
       clean_output_dir!
 

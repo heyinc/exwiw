@@ -1,0 +1,15 @@
+{
+  "name": "order_lines",
+  "primary_key": "id",
+  "belongs_tos": [{
+    "table_name": "orders",
+    "foreign_key": "order_id"
+  }],
+  "columns": [{
+    "name": "id"
+  }, {
+    "name": "order_id"
+  }, {
+    "name": "qty"
+  }]
+}

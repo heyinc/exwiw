@@ -39,7 +39,13 @@ module Exwiw
   # `ids_field` optionally overrides which field `--ids` is matched against on
   # the target table. When nil the table's primary key is used (the historical
   # behavior). Currently only honored by the mongodb adapter.
-  DumpTarget = Struct.new(:table_name, :ids, :ids_field, keyword_init: true)
+  #
+  # `scope_column` switches the extraction to scope-column mode: instead of a
+  # single `table_name` anchor, every table is filtered by a shared column
+  # (`scope_column IN ids`) and tables lacking it are reached by walking
+  # belongs_to up to the nearest table that has it. When set, `table_name` is
+  # nil. SQL adapters only.
+  DumpTarget = Struct.new(:table_name, :ids, :ids_field, :scope_column, keyword_init: true)
   # `uri` is an optional full connection string (currently only honored by the
   # mongodb adapter, e.g. `mongodb+srv://...`). When present it is the source of
   # truth for the connection — host/port/user/password are ignored — so TLS,

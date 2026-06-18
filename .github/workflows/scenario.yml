@@ -30,6 +30,9 @@ jobs:
       - name: Run exwiw (from clean target DB)
         run: scenario/test_with_sqlite_from_clean.sh
 
+      - name: Run exwiw (scope-column mode)
+        run: scenario/test_with_sqlite_scope.sh
+
       - name: Run exwiw (explain)
         run: scenario/test_explain_with_sqlite.sh
 

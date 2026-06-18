@@ -26,6 +26,18 @@ module Exwiw
     attribute :columns, array(TableColumn), default: []
     attribute :bulk_insert_chunk_size, optional(Integer), skip_serializing_if_nil: true
     attribute :ignore, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
+    # Scope-column mode only (see Exwiw::DumpTarget#scope_column). Both are
+    # user-configured and never emitted by the schema generators.
+    #
+    # `scope_exempt: true` exports the whole table without scope filtering — the
+    # explicit, auditable escape hatch for genuine reference/master tables under
+    # the strict "every table must be scopable" rule.
+    #
+    # `scope_column` overrides the physical column this table is filtered on when
+    # it differs from the global `--scope-column` name (same scope value, just a
+    # different column name on this table).
+    attribute :scope_exempt, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
+    attribute :scope_column, optional(String), skip_serializing_if_nil: true
 
     def self.from(hash)
       config = super
@@ -137,6 +149,9 @@ module Exwiw
         merged_table.filter = filter
         merged_table.bulk_insert_chunk_size = passed_table.bulk_insert_chunk_size
         merged_table.ignore = ignore
+        # User-owned, never regenerated: carry over from the existing config.
+        merged_table.scope_exempt = scope_exempt
+        merged_table.scope_column = scope_column
 
         # Structural facts of each belongs_to come from the freshly generated
         # config, but the user-owned `comment`/`ignore`/`references` carry over

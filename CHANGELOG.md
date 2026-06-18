@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Scope-column extraction mode** (`--scope-column`, SQL adapters only). For schemas where many independent top-level tables share the same scope/tenant column instead of converging on a single `belongs_to` root, exwiw can now filter **every** table by that shared column (`--scope-column=COLUMN` with `--ids` as its values) rather than anchoring on one `--target-table`. A table that carries the column is filtered directly; a table that lacks it but `belongs_to` a table that has it is joined up to the nearest such table and filtered there. A table that `belongs_to` a parent which is itself scoped but carries no scope column of its own (e.g. a *hub* table scoped only because an extractable child references it) is constrained to the parent's in-scope ids via a subquery (`fk IN (SELECT parent.pk FROM <parent's scoped query>)`), so the hub's other children ride along to just the in-scope rows — limited to a single forward hop and a single unambiguous scopable parent. A table that cannot be scoped at all (no column and no path to one) makes the run **abort with a list of the offending tables**, so an unscoped table is never silently dumped in full. Two user-owned table-config keys support this and are preserved across `schema:generate` regeneration: **`scope_exempt: true`** exports a genuine reference/master table in full (rails-managed tables are treated as exempt automatically), and **`scope_column`** overrides the filtered column name for a table that stores the same scope value under a different name. `--scope-column` is mutually exclusive with `--target-table`, `--target-collection`, `--ids-column`, and `--ids-field`, can be set in `exwiw.yml`, and works with `exwiw explain`.
+
 ## [0.5.0] - 2026-06-16
 
 ### Added

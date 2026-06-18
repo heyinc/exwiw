@@ -26,8 +26,11 @@ module Exwiw
       target = table_by_name[@dump_target.table_name]
       adapter.validate_as_dump_target!(target) if target
 
+      dumpable_configs = configs.select { |c| adapter.dumpable?(c) }
+      QueryAstBuilder.validate_scope!(dumpable_configs, table_by_name, @dump_target, @logger)
+
       @logger.debug("Determining table processing order...")
-      ordered_table_names = DetermineTableProcessingOrder.run(configs.select { |c| adapter.dumpable?(c) })
+      ordered_table_names = DetermineTableProcessingOrder.run(dumpable_configs)
 
       total_size = ordered_table_names.size
       ordered_table_names.each_with_index do |table_name, idx|
