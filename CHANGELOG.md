@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-06-18
+
 ### Fixed
 
 - **PostgreSQL: an extension the restore target cannot create no longer aborts the restore, and `pglogical` is never emitted.** `dump_schema` prepends `CREATE EXTENSION IF NOT EXISTS` for every extension installed on the source, wrapped in a `DO` block that previously swallowed only `feature_not_supported` (the extension's binaries are unavailable on the target). A source on managed Postgres/AlloyDB carrying `pglogical` (logical replication) emitted `CREATE EXTENSION ... SCHEMA "pglogical"`, which on a target lacking that schema fails with `invalid_schema_name` — an error the handler did not catch, so the whole restore aborted. The handler now also catches `invalid_schema_name`, and instead of silently discarding the skip it re-raises it as a `WARNING` (carrying SQLSTATE and the original message) so the skip is visible in the restore logs rather than vanishing. `insufficient_privilege` is intentionally **not** caught: a restore role lacking `CREATE` privilege is a misconfiguration that must fail loudly. Separately, `pglogical` is now excluded from the prepended extensions entirely (alongside `plpgsql` and the `google_*`/`rds_*`/`aiven_*` managed-platform extensions) — it is a replication mechanism of the source, not part of the copied data.
