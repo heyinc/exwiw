@@ -698,6 +698,87 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
     end
 
+    context 'a child whose belongs_to parent is itself scoped only via referenced_by' do
+      # Mirrors CDP: `accounts` carries no scope column and has no belongs_to, but
+      # `customers` references it AND carries tenant_id, so accounts is scoped via
+      # referenced_by. `account_details` is a sibling under the same hub — it has
+      # no scope column and no path to one, yet should be constrained to the
+      # in-scope accounts rather than dumped in full.
+      let(:accounts) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'accounts', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }, { name: 'uuid' }]
+        )
+      end
+      let(:customers) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'customers', primary_key: 'id',
+          belongs_tos: [{ table_name: 'accounts', foreign_key: 'account_id' }],
+          columns: [{ name: 'id' }, { name: 'account_id' }, { name: 'tenant_id' }]
+        )
+      end
+      let(:account_details) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'account_details', primary_key: 'id',
+          belongs_tos: [{ table_name: 'accounts', foreign_key: 'account_id' }],
+          columns: [{ name: 'id' }, { name: 'account_id' }, { name: 'secret' }]
+        )
+      end
+      let(:all_tables) { [accounts, customers, account_details, schema_migrations] }
+
+      it 'classifies the sibling as :via_scoped_parent' do
+        expect(described_class.scope_category('account_details', table_by_name, dump_target, logger)).to eq(:via_scoped_parent)
+      end
+
+      it 'constrains it to parent ids that are themselves in scope' do
+        ast = build('account_details')
+        expect(ast.from_table_name).to eq('account_details')
+        expect(ast.join_clauses).to eq([])
+        expect(ast.where_clauses.map(&:to_h)).to eq([
+          {
+            column_name: 'account_id',
+            operator: :in_subquery,
+            value: {
+              query: {
+                from: 'accounts',
+                columns: [{ name: 'id', value: 'id' }],
+                joins: [],
+                where: [
+                  {
+                    column_name: 'id',
+                    operator: :in_subquery,
+                    value: {
+                      query: {
+                        from: 'customers',
+                        columns: [{ name: 'account_id', value: 'account_id' }],
+                        joins: [],
+                        where: [{ column_name: 'tenant_id', operator: :eq, value: ['t1'] }],
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        ])
+      end
+
+      it 'compiles to a nested IN-subquery (sqlite)' do
+        expect(sqlite_adapter.compile_ast(build('account_details'))).to eq(
+          'SELECT account_details.id, account_details.account_id, account_details.secret FROM account_details ' \
+          'WHERE account_details.account_id IN (' \
+          'SELECT accounts.id FROM accounts WHERE accounts.id IN (' \
+          "SELECT customers.account_id FROM customers WHERE customers.tenant_id = 't1'))"
+        )
+      end
+
+      it 'passes validate_scope! (the sibling is no longer unscopable)' do
+        expect {
+          described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+        }.not_to raise_error
+      end
+    end
+
     describe '.validate_scope!' do
       it 'raises listing the unscopable table(s)' do
         expect {

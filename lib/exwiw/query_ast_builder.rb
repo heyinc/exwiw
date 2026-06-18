@@ -2,12 +2,12 @@
 
 module Exwiw
   class QueryAstBuilder
-    def self.run(table_name, table_by_name, dump_target, logger, allow_reverse: true)
-      new(table_name, table_by_name, dump_target, logger, allow_reverse: allow_reverse).run
+    def self.run(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_forward: true)
+      new(table_name, table_by_name, dump_target, logger, allow_reverse: allow_reverse, allow_forward: allow_forward).run
     end
 
     # Scope-column mode classification for a single table. One of
-    # :exempt / :direct / :via_path / :referenced_by / :unscopable.
+    # :exempt / :direct / :via_path / :referenced_by / :via_scoped_parent / :unscopable.
     def self.scope_category(table_name, table_by_name, dump_target, logger)
       new(table_name, table_by_name, dump_target, logger).scope_category
     end
@@ -36,12 +36,17 @@ module Exwiw
 
     attr_reader :table_name, :table_by_name, :dump_target
 
-    def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true)
+    def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_forward: true)
       @table_name = table_name
       @table_by_name = table_by_name
       @dump_target = dump_target
       @logger = logger
       @allow_reverse = allow_reverse
+      # @allow_forward gates the "scope via an indirectly-scoped belongs_to
+      # parent" rescue (build_belongs_to_scoped_clause). Disabled while building a
+      # parent/child subquery so a single forward hop never recurses into another
+      # (which could loop on a belongs_to cycle).
+      @allow_forward = allow_forward
     end
 
     def run
@@ -160,8 +165,10 @@ module Exwiw
         next if relation.nil? || relation.polymorphic?
 
         # Build the child's own extraction query. allow_reverse:false stops a
-        # chain of FK-less tables from recursing back into each other.
-        child_query = self.class.run(other.name, table_by_name, dump_target, @logger, allow_reverse: false)
+        # chain of FK-less tables from recursing back into each other;
+        # allow_forward:false stops the child from forward-scoping back through
+        # this very table (which would loop).
+        child_query = self.class.run(other.name, table_by_name, dump_target, @logger, allow_reverse: false, allow_forward: false)
 
         # Only an *already constrained* child narrows anything; an unconstrained
         # child would select every fk value (i.e. dump all) and not help.
@@ -194,6 +201,64 @@ module Exwiw
 
       QueryAst::WhereClause.new(
         column_name: table.primary_key,
+        operator: :in_subquery,
+        value: QueryAst::SelectSubquery.new(query: projected)
+      )
+    end
+
+    # Scope-column mode. Builds a `fk IN (SELECT parent.pk FROM <parent
+    # extraction query>)` clause for a table whose belongs_to parent is itself
+    # scopable but carries no scope column of its own — so find_path_to_scoped
+    # cannot terminate on it (via_path fails) and nothing references this table
+    # (referenced_by fails). The classic shape is a hub scoped only via
+    # referenced_by (e.g. CDP `customer_accounts`, scoped by the `customers` that
+    # reference it) with sibling detail tables (`customer_account_details`, ...)
+    # hanging off it. Constraining those siblings to the hub's in-scope ids keeps
+    # them out of a full dump. Returns nil when there is no single, unambiguous
+    # scopable parent, leaving the caller on the unscopable path.
+    private def build_belongs_to_scoped_clause(table)
+      candidates = table.belongs_tos.filter_map do |relation|
+        # A polymorphic belongs_to points at several parent tables through one
+        # column, so it cannot project to a single parent id set; skip it.
+        next if relation.polymorphic?
+
+        parent = table_by_name[relation.table_name]
+        next if parent.nil?
+
+        # Build the parent's own scoped query. allow_reverse stays true so the
+        # parent may be scoped via referenced_by; allow_forward:false bounds this
+        # to a single forward hop so a belongs_to cycle cannot loop.
+        parent_query = self.class.run(parent.name, table_by_name, dump_target, @logger, allow_reverse: true, allow_forward: false)
+
+        # Only a constrained parent narrows anything; an unconstrained parent
+        # would select every pk (i.e. dump all) and not help.
+        next unless parent_query.where_clauses.any? || parent_query.join_clauses.any?
+
+        [relation, parent, parent_query]
+      end
+
+      # Only the unambiguous single-parent case. Multiple scopable parents would
+      # need their subqueries combined (not supported); fall back to unscopable.
+      if candidates.size != 1
+        if candidates.size > 1
+          @logger.debug("  #{table.name} has multiple scopable parents; skipping forward scope (unscopable).")
+        end
+        return nil
+      end
+
+      relation, parent, parent_query = candidates.first
+
+      # Project the parent's extraction query down to just its primary key — the
+      # column this table's foreign key points at.
+      pk_column = TableColumn.from_symbol_keys(name: parent.primary_key)
+      projected = QueryAst::Select.new
+      projected.from(parent_query.from_table_name)
+      projected.select([pk_column])
+      parent_query.join_clauses.each { |j| projected.join(j) }
+      parent_query.where_clauses.each { |w| projected.where(w) }
+
+      QueryAst::WhereClause.new(
+        column_name: relation.foreign_key,
         operator: :in_subquery,
         value: QueryAst::SelectSubquery.new(query: projected)
       )
@@ -315,6 +380,7 @@ module Exwiw
       return :direct if directly_scoped?(table)
       return :via_path if build_join_clauses_scoped(table).any?
       return :referenced_by if @allow_reverse && build_referenced_by_clause(table)
+      return :via_scoped_parent if @allow_forward && build_belongs_to_scoped_clause(table)
 
       :unscopable
     end
@@ -354,16 +420,31 @@ module Exwiw
           ast.where(reverse_clause)
           return ast
         end
+      end
 
-        # Unscopable. The Runner/ExplainRunner pre-flight (validate_scope!) rejects
-        # these before extraction, so a top-level build never legitimately lands
-        # here; if it does, raise rather than emit an unfiltered (potential full
-        # PII) dump.
+      if @allow_forward
+        # Belongs_to a parent that is itself scoped but carries no scope column of
+        # its own (so via_path cannot terminate on it) — e.g. a hub table scoped
+        # only via referenced_by. Constrain this table to that parent's in-scope
+        # ids so its rows ride along instead of being dumped in full.
+        parent_clause = build_belongs_to_scoped_clause(table)
+        if parent_clause
+          ast.where(parent_clause)
+          return ast
+        end
+      end
+
+      # Only the genuine top-level build (no rescue disabled) is allowed to fail
+      # hard. The Runner/ExplainRunner pre-flight (validate_scope!) rejects
+      # unscopable tables before extraction, so a top-level build never
+      # legitimately lands here; if it does, raise rather than emit an unfiltered
+      # (potential full PII) dump.
+      if @allow_reverse && @allow_forward
         raise ArgumentError, scope_unscopable_message(table)
       end
 
-      # Unscopable during referenced_by recursion (@allow_reverse == false): return
-      # the unconstrained AST so the caller's "constrained child only" check
+      # Unscopable during a reverse/forward subquery build (a rescue is disabled):
+      # return the unconstrained AST so the caller's "constrained only" check
       # filters this candidate out (it never becomes a real dump query).
       ast
     end

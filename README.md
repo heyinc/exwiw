@@ -159,6 +159,13 @@ Each table is resolved as follows:
 - **Lacks it but `belongs_to` reaches a table that has it** → exwiw joins up to the
   nearest such table and applies the scope filter there (the same join machinery
   the single-target mode uses).
+- **`belongs_to` a parent that is itself scoped but carries no scope column of its
+  own** → exwiw constrains this table to the parent's in-scope ids via a subquery
+  (`fk IN (SELECT parent.pk FROM <parent's scoped query>)`). This covers a *hub*
+  table that has no scope column and is scoped only because an extractable child
+  references it (see referenced-by below): the hub's other `belongs_to` children
+  ride along to just the in-scope rows instead of being dumped in full. Limited to
+  a single forward hop and a single unambiguous scopable parent.
 - **Cannot be scoped at all** (no scope column and no path to one) → exwiw
   **aborts** and lists the offending tables, so an unscoped table is never silently
   dumped in full. For each, either add a `belongs_to` path, set `ignore: true` to
