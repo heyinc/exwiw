@@ -467,6 +467,113 @@ module Exwiw
         end
       end
 
+      describe "#write_inserts" do
+        let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: [1]) }
+        let(:users_t) { config_by_name.fetch("users") }
+
+        before do
+          adapter.build_query(config_by_name.fetch("shops"), dump_target, config_by_name)
+          adapter.build_query(users_t, dump_target, config_by_name)
+        end
+
+        def rows(count)
+          Array.new(count) do |i|
+            n = i + 1
+            { "_id" => n, "name" => "User #{n}", "email" => "user#{n}@example.com", "shop_id" => 1 }
+          end
+        end
+
+        it "delegates to the default chunk seam (byte-identical to to_bulk_insert) when cursor-parallel is off" do
+          io = StringIO.new
+          count = adapter.write_inserts(io, rows(3), users_t)
+          expect(io.string).to eq(adapter.to_bulk_insert(rows(3), users_t))
+          expect(count).to eq(1) # 3 rows < default chunk size -> one statement
+        end
+
+        it "does not take the cursor-parallel path for a non-StreamingResult result, even when enabled" do
+          allow(adapter).to receive(:cursor_parallel_enabled?).and_return(true)
+          io = StringIO.new
+          # A plain Array is not a live StreamingResult, so write_inserts must fall
+          # back to the default seam rather than try to re-partition a cursor.
+          expect { adapter.write_inserts(io, rows(2), users_t) }.not_to raise_error
+          expect(io.string).to eq(adapter.to_bulk_insert(rows(2), users_t))
+        end
+      end
+
+      describe "#cursor_parallel_enabled?" do
+        around do |example|
+          saved = ENV["EXWIW_MONGODB_CURSOR_PARALLEL"]
+          example.run
+        ensure
+          if saved.nil?
+            ENV.delete("EXWIW_MONGODB_CURSOR_PARALLEL")
+          else
+            ENV["EXWIW_MONGODB_CURSOR_PARALLEL"] = saved
+          end
+        end
+
+        it "is false when only one worker is configured, even with the env var set" do
+          ENV["EXWIW_MONGODB_CURSOR_PARALLEL"] = "1"
+          allow(adapter).to receive(:parallel_workers).and_return(1)
+          expect(adapter.send(:cursor_parallel_enabled?)).to eq(false)
+        end
+
+        it "is false when workers > 1 but the env var is unset" do
+          ENV.delete("EXWIW_MONGODB_CURSOR_PARALLEL")
+          allow(adapter).to receive(:parallel_workers).and_return(4)
+          expect(adapter.send(:cursor_parallel_enabled?)).to eq(false)
+        end
+
+        it "is true when workers > 1 and the env var is truthy" do
+          allow(adapter).to receive(:parallel_workers).and_return(4)
+          %w[1 true TRUE yes On].each do |val|
+            ENV["EXWIW_MONGODB_CURSOR_PARALLEL"] = val
+            expect(adapter.send(:cursor_parallel_enabled?)).to eq(true), "expected #{val.inspect} to enable"
+          end
+        end
+
+        it "is false for a non-truthy env value" do
+          allow(adapter).to receive(:parallel_workers).and_return(4)
+          ENV["EXWIW_MONGODB_CURSOR_PARALLEL"] = "0"
+          expect(adapter.send(:cursor_parallel_enabled?)).to eq(false)
+        end
+      end
+
+      describe "#build_client" do
+        before { require 'mongo' }
+
+        def adapter_for(config)
+          described_class.new(config, Logger.new(nil))
+        end
+
+        let(:host_config) do
+          ConnectionConfig.new(
+            adapter: 'mongodb', host: 'db.example.com', port: 27017,
+            database_name: 'app', user: nil, password: nil, uri: nil,
+          )
+        end
+
+        it "builds a fresh, un-memoized client on every call (the per-fork-worker connection)" do
+          a = adapter_for(host_config)
+          c1 = double('c1')
+          c2 = double('c2')
+          allow(Mongo::Client).to receive(:new).and_return(c1, c2)
+          expect(a.send(:build_client)).to equal(c1)
+          expect(a.send(:build_client)).to equal(c2)
+        end
+
+        it "is the single construction path #db memoizes" do
+          a = adapter_for(host_config)
+          client = double('client')
+          expect(Mongo::Client).to receive(:new)
+            .with(['db.example.com:27017'], database: 'app')
+            .once
+            .and_return(client)
+          expect(a.send(:db)).to equal(client)
+          expect(a.send(:db)).to equal(client) # memoized, not rebuilt
+        end
+      end
+
       describe "#parallel_workers" do
         around do |example|
           saved = ENV["EXWIW_MONGODB_PARALLEL_WORKERS"]

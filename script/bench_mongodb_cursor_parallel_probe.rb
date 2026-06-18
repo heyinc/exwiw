@@ -255,67 +255,68 @@ printf("  decode-only (no serialize)      time=%7.3fs  (%.0f%% of serial is deco
 puts "  -> cursor-parallel fetch aims to split that decode floor too."
 
 # ---------------------------------------------------------------------------
-# Cursor-parallel fetch: W disjoint _id ranges, one forked worker (+ its own
-# connection + cursor) per range, parent concatenates parts in range order.
+# Cursor-parallel fetch via the SHIPPING MongodbAdapter#write_inserts override.
+#
+# As of iteration 16 the cursor-parallel recipe (split into _id ranges, fork one
+# worker per range with its own connection, concat parts in range order, merge
+# per-range PropagationCaptures into @state) lives in the production adapter,
+# gated by EXWIW_MONGODB_CURSOR_PARALLEL + parallel_workers>1. This probe now
+# drives THAT method instead of an inline copy — the same "re-point at the
+# shipping component" move iterations 11–14 made for the partitioner / capture /
+# fork-writer. It hands the adapter a StreamingResult exactly as the Runner would
+# (the cursor-parallel path ignores that result's single cursor and re-issues the
+# query partitioned by _id range), then reads back the @state the adapter
+# republished to assert it matches the serial sorted-cursor capture.
+#
+# Caveat vs iterations 11–14: those used a `connect: :direct` client to strip the
+# dev single-node-replica-set SDAM rediscovery artifact. The shipping
+# #build_client (production-correct) does NOT force :direct, so each forked
+# worker pays one SDAM/server-selection round on the dev box — overhead a real
+# replica-set dump also pays but that iter 11's :direct probe hid. So the speedup
+# printed here may read LOWER than iter 11's ~3.4x@4 / ~5.5x@8 on the same data;
+# byte- and state-identity (the integration's correctness) are the primary guard,
+# and any speedup well above the serialization-only path's ~1.0–1.2x validates it.
 # ---------------------------------------------------------------------------
 
-# Compute W contiguous, disjoint, exhaustive [first_id, last_id] ranges over the
-# sorted _ids via the shipping Exwiw::MongoIdPartitioner (so this probe exercises
-# the production splitting logic, not a throwaway copy — the same role
-# script/bench_mongodb_parallel_probe.rb plays for ParallelSerializer). Fetching
-# the _ids (index-only, projection {_id:1}) is the coordination cost a production
-# impl would pay (or optimize via $bucketAuto / splitVector); it is INCLUDED in
-# the parallel timing so the speedup is honest.
-def id_ranges(client, workers)
-  Exwiw::MongoIdPartitioner.ranges_for(client[COLL].find(BASE_FILTER), '_id', workers)
+ENV['EXWIW_MONGODB_CURSOR_PARALLEL'] = '1'
+
+# Build a fully-primed adapter for `workers` cursor-parallel processes — the
+# instance state a Runner-driven build_query would have stashed (embedded-children
+# index, propagation keys, warmed mask plan), so #write_inserts behaves as in a
+# real dump. A lambda (not a def) so it closes over the probe's local config.
+build_primed_adapter = lambda do |workers|
+  a = Exwiw::Adapter::MongodbAdapter.new(connection_config, logger, parallel_workers: workers)
+  a.instance_variable_set(:@embedded_children_by_parent, a.send(:index_embedded_children, config_by_name))
+  a.instance_variable_set(:@propagation_keys, KEYS)
+  a.send(:mask_plan, users_config) # warm in the parent so forked workers COW-inherit it
+  a
 end
 
-# Fork one worker per range via the shipping Exwiw::ForkedPartWriter (so this
-# probe exercises the production fork-orchestration logic, not a throwaway copy —
-# the same role MongoIdPartitioner/PropagationCapture play for the split/merge).
-# Each worker opens its OWN Mongo::Client (the driver is not fork-safe — a forked
-# child must not reuse the parent's client/sockets), serializes its range to its
-# part, AND captures its slice of the propagation keys — returned as the job's
-# sidecar, which ForkedPartWriter Marshal-ships back for the parent to merge (the
-# distributed @state a cursor-parallel dump must reconstruct).
-#
-# Returns the merged propagation @state so the caller can assert it matches the
-# serial capture — proving the distributed-state path is correct, not just the
-# output bytes.
-def cursor_parallel(adapter, client, workers, path)
-  ranges = id_ranges(client, workers)
-  merged = nil
-  File.open(path, 'w') do |io|
-    sidecars = Exwiw::ForkedPartWriter.write(io, ranges.size, separator: SEPARATOR) do |index, part_io|
-      first_id, last_id = ranges[index]
-      c = mongo_client
-      filter = Exwiw::MongoIdPartitioner.range_filter(BASE_FILTER, '_id', first_id, last_id)
-      view = c[COLL].find(filter).projection(PROJECTION).sort('_id' => 1)
-      capture = Exwiw::PropagationCapture.new(KEYS)
-      firstdoc = true
-      view.each do |doc|
-        capture.observe(doc)
-        part_io.write(SEPARATOR) unless firstdoc
-        part_io.write(adapter.send(:serialize_document, doc, PLAN))
-        firstdoc = false
-      end
-      c.close
-      capture.to_h
-    end
-
-    # Merge the per-worker captures IN RANGE ORDER (sidecars preserves it) via the
-    # shipping component — the same merge a production cursor-parallel dump uses
-    # to publish @state for downstream child collections.
-    merged = Exwiw::PropagationCapture.merge(KEYS, sidecars)
-  end
-  merged
+# Run the shipping cursor-parallel write for `workers` to `path`, returning the
+# @state the adapter republished from the merged per-range captures.
+run_cursor_parallel = lambda do |workers, path|
+  a = build_primed_adapter.call(workers)
+  parent = a.send(:db)
+  query = Exwiw::MongoQuery::Find.new(
+    collection: COLL, primary_key: '_id', filter: BASE_FILTER, projection: PROJECTION
+  )
+  # The cursor-parallel path never consumes this view's cursor; it only needs the
+  # query metadata off the StreamingResult, so an unsorted find is fine here.
+  view = parent[COLL].find(BASE_FILTER).projection(PROJECTION)
+  state = a.instance_variable_get(:@state)
+  results = Exwiw::Adapter::MongodbAdapter::StreamingResult.new(
+    view: view, collection: COLL, keys: KEYS, state: state, query: query
+  )
+  File.open(path, 'w') { |io| a.write_inserts(io, results, users_config) }
+  parent.close
+  state[COLL]
 end
 
 WORKER_COUNTS.each do |w|
   par_path = File.join(Dir.tmpdir, "exwiw_cursor_parallel_#{w}.jsonl")
   merged_state = nil
-  par_wall = [realtime { merged_state = cursor_parallel(adapter, client, w, par_path) },
-              realtime { merged_state = cursor_parallel(adapter, client, w, par_path) }].min
+  par_wall = [realtime { merged_state = run_cursor_parallel.call(w, par_path) },
+              realtime { merged_state = run_cursor_parallel.call(w, par_path) }].min
   sha = Digest::SHA256.file(par_path).hexdigest
   state_ok = merged_state == serial_state
   printf("cursor-parallel fork x %-2d         time=%7.3fs  speedup=%5.2fx vs serial  byte-identical=%s  state-identical=%s\n",
@@ -330,7 +331,7 @@ client.database.drop unless KEEP
 client.close
 puts
 puts "Note: parallel timings INCLUDE the _id-range coordination scan + fork +"
-puts "part-file IO + concat, so the speedup reflects what a cursor-parallel dump"
-puts "path would actually pay. A win here (well above the serialization-only"
-puts "~1.0-1.2x) is what would justify productionizing per-worker cursors."
+puts "part-file IO + concat + per-worker connect, so the speedup reflects what the"
+puts "shipping cursor-parallel dump path would actually pay. byte-identical=true /"
+puts "state-identical=true is the integration's correctness guard."
 puts KEEP ? "Done (kept #{DB_NAME})." : "Done (dropped #{DB_NAME})."
