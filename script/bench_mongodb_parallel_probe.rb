@@ -42,6 +42,7 @@ require 'fileutils'
 
 $LOAD_PATH.unshift(File.expand_path('../lib', __dir__))
 require 'bson'
+require 'exwiw/parallel_serializer'
 
 DOCS          = Integer(ENV.fetch('PROBE_DOCS', 8_000))
 POSTS_PER_DOC = Integer(ENV.fetch('PROBE_POSTS_PER_DOC', 30))
@@ -90,21 +91,31 @@ def serialize_line(doc)
   JSON.generate(doc.as_extended_json(mode: :relaxed))
 end
 
-# Production-shaped serial path: one line per doc, streamed to the file.
+# Both the serial baseline and the parallel path now go through the real
+# production component, Exwiw::ParallelSerializer — so this probe validates the
+# shipping code, not a throwaway copy of it, and the byte-identical assertion
+# compares like-for-like (the component joins lines with "\n", no trailing
+# newline, on every worker count including 1).
 def serial_to_file(docs, path)
   File.open(path, 'w') do |file|
-    docs.each { |doc| file.print(serialize_line(doc), "\n") }
+    Exwiw::ParallelSerializer.write(file, docs, workers: 1) { |doc| serialize_line(doc) }
   end
 end
 
-# Fork W workers; each COW-inherits `docs` and serializes its contiguous slice
-# to its own part file. Parent waits for all, then (unless concat: false)
-# concatenates parts in slice order into the single final file. Returns the
-# list of part files. With concat:false the parent skips the merge so we can
-# isolate the pure parallel-serialization gain from the concat (double-IO) tax.
+def parallel_to_file(docs, workers, path)
+  File.open(path, 'w') do |file|
+    # min_batch: 1 forces the fork path so we measure it even on small batches.
+    Exwiw::ParallelSerializer.write(file, docs, workers: workers, min_batch: 1) do |doc|
+      serialize_line(doc)
+    end
+  end
+end
+
+# Serialize-only (no concat): fork W workers writing their slice to part files,
+# wait, but skip the parent's merge — isolates the pure parallel-serialization
+# gain from the concat (double-IO) tax the component pays in parallel_to_file.
 def parallel_to_parts(docs, workers, tmpdir)
   slice = (docs.size / workers.to_f).ceil
-  parts = []
   pids = []
   workers.times do |w|
     lo = w * slice
@@ -112,7 +123,6 @@ def parallel_to_parts(docs, workers, tmpdir)
 
     hi = [lo + slice, docs.size].min
     part = File.join(tmpdir, "part_#{w}.jsonl")
-    parts << part
     pid = fork do
       File.open(part, 'w') do |file|
         (lo...hi).each { |i| file.print(serialize_line(docs[i]), "\n") }
@@ -123,22 +133,6 @@ def parallel_to_parts(docs, workers, tmpdir)
     pids << pid
   end
   pids.each { |pid| Process.waitpid(pid) }
-  parts
-end
-
-def concat_parts(parts, path)
-  # Concatenate parts into the final file, in slice order, streaming so the
-  # parent never holds more than one buffer.
-  File.open(path, 'w') do |out|
-    parts.each do |part|
-      File.open(part, 'r') { |inp| IO.copy_stream(inp, out) }
-    end
-  end
-end
-
-def parallel_to_file(docs, workers, path, tmpdir)
-  parts = parallel_to_parts(docs, workers, tmpdir)
-  concat_parts(parts, path)
 end
 
 puts "Parallel-serialization feasibility probe"
@@ -165,8 +159,8 @@ Dir.mktmpdir('exwiw_parallel_probe') do |tmpdir|
   WORKER_COUNTS.each do |w|
     par_path = File.join(tmpdir, "parallel_#{w}.jsonl")
     # Full path (serialize in parallel + concat) — what production would pay.
-    par_wall = [realtime { parallel_to_file(docs, w, par_path, tmpdir) },
-                realtime { parallel_to_file(docs, w, par_path, tmpdir) }].min
+    par_wall = [realtime { parallel_to_file(docs, w, par_path) },
+                realtime { parallel_to_file(docs, w, par_path) }].min
     # Same, minus the concat, to isolate the double-IO merge tax.
     noconcat_wall = [realtime { parallel_to_parts(docs, w, tmpdir) },
                      realtime { parallel_to_parts(docs, w, tmpdir) }].min
