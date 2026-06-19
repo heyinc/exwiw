@@ -12,6 +12,10 @@ serialization step with no DB at all. The correctness anchor for any future fix
 is `spec/insert_output_snapshot_spec.rb` — the **byte-exact** snapshot of dump
 output.
 
+> **Status:** hotspot #2 (the whole-table INSERT string) is **fixed** — see
+> [Resolution](#resolution-hotspot-2-streamed-single-insert) below. Hotspot #1
+> (full result-set materialization in `execute`) is still open.
+
 ## The two hotspots (same shape as MongoDB had pre-optimization)
 
 The Runner drives, per table:
@@ -77,12 +81,50 @@ N-row substring in memory, write it, repeat — managing the `",\n"` separator
 across chunk boundaries — to bound memory *without* the per-row IO penalty,
 while still emitting a single INSERT statement (byte-identical).
 
+## Resolution: hotspot #2 (streamed single INSERT)
+
+Implemented. The Runner no longer builds the per-table INSERT as one giant
+String; it delegates writing to a new adapter seam `Adapter#write_inserts(io,
+results, table, chunk_size)`:
+
+- `Adapter::Base#write_inserts` keeps the old behavior (write `to_bulk_insert`
+  per chunk, joined by `"\n"`), so MongoDB and any future adapter are unchanged.
+- The SQL adapters mix in `Adapter::SqlBulkInsert`, which **streams** the single
+  `INSERT INTO ... VALUES <tuples>;` statement to the file `STREAM_FLUSH_ROWS`
+  (2,000) tuples at a time. Each flush is one fast `map`+`join` (the same path
+  `to_bulk_insert` uses), and the `",\n"` printed between slices reproduces the
+  exact separator between tuples — so the bytes are **identical** to the
+  whole-table build. The three duplicate `to_bulk_insert` methods collapsed into
+  the shared module; each adapter now only supplies `insert_header` (its
+  identifier quoting) and `escape_value`.
+
+Verified byte-for-byte by `spec/insert_output_snapshot_spec.rb` (live DB, all
+three adapters) and a flush-boundary sanity check; full suite green.
+
+Measured (`bench_sql_dump.rb`, 200k rows / ~41.2 MB output):
+
+| adapter | whole-string peak | streamed peak | Δ peak |
+|---------|-------------------|---------------|--------|
+| postgresql | 367 MB | 226 MB | −141 MB |
+| mysql      | 325 MB | 214 MB | −111 MB |
+| sqlite     | 353 MB | 207 MB | −146 MB |
+
+So hotspot #2's contribution (~110–145 MB on a 41 MB dump — the whole INSERT
+string *plus* the transient 200k-tuple `Array` and its join) is gone; the write
+buffer is now bounded to ~2,000 tuples regardless of table size.
+
+**Speed:** streaming is *not* slower than the whole-string build. Measured in
+isolation (post-`GC.start`, no sampler thread) the streamed write at
+`flush_rows=2000` was ~0.67 s vs ~0.83 s for the one giant `map`+`join` — small
+chunks stay in cache and avoid repeatedly growing/copying a 41 MB String. The
+~1.3× "slowdown" the in-process bench shows is an artifact of its background RSS
+sampler thread (`ps` every 10 ms) plus run-ordering (streamed runs first, cold),
+not the algorithm. The earlier worry about a per-row `IO#print` penalty only
+applied to the naive row-at-a-time prototype, which `flush_rows` slicing avoids.
+
 ## Fix direction for the next iteration
 
-1. **Bounded-memory write (high value, byte-identical, lower risk).** Add an
-   adapter seam that streams one INSERT statement to the open file in row-chunks
-   instead of returning one giant String, and have the Runner use it for SQL.
-   Removes hotspot #2. Verified against `insert_output_snapshot_spec`.
+1. ~~**Bounded-memory write.**~~ **Done** — see Resolution above.
 2. **Streaming result fetch (removes hotspot #1, more invasive).** Avoid
    materializing the whole result set: mysql2 supports `stream: true`
    (`cache_rows: false`), pg supports single-row mode (`set_single_row_mode` /

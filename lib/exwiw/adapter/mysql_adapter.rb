@@ -5,6 +5,8 @@ require 'open3'
 module Exwiw
   module Adapter
     class MysqlAdapter < Base
+      include SqlBulkInsert
+
       def build_query(table, dump_target, table_by_name)
         Exwiw::QueryAstBuilder.run(table.name, table_by_name, dump_target, @logger)
       end
@@ -99,22 +101,16 @@ module Exwiw
         "SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS;"
       end
 
-      def to_bulk_insert(results, table)
+      # The INSERT header for this adapter. MySQL backtick-quotes the table and
+      # column identifiers. #to_bulk_insert / #write_inserts (SqlBulkInsert)
+      # append the value tuples and the trailing `;`.
+      private def insert_header(table)
         table_name = table.name
-
-        value_list = results.map do |row|
-          quoted_values = row.map do |value|
-            escape_value(value)
-          end
-          "(" + quoted_values.join(', ') + ")"
-        end
-        values = value_list.join(",\n")
-
         if table.rails_managed?
-          "INSERT INTO `#{table_name}` VALUES\n#{values};"
+          "INSERT INTO `#{table_name}` VALUES\n"
         else
           column_names = table.columns.map { |c| "`#{c.name}`" }.join(', ')
-          "INSERT INTO `#{table_name}` (#{column_names}) VALUES\n#{values};"
+          "INSERT INTO `#{table_name}` (#{column_names}) VALUES\n"
         end
       end
 

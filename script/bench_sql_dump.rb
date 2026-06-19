@@ -184,26 +184,17 @@ def write_whole(adapter, rows, table, path)
   end
 end
 
-# The bounded-memory alternative that stays byte-identical: emit the same single
-# `INSERT INTO ... VALUES <tuples>;` statement, but stream each row's tuple
-# straight to the file so the whole INSERT string (and the per-row String array
-# to_bulk_insert builds) is never resident at once. The header is taken from the
-# adapter itself (a one-row INSERT, split on "VALUES\n") so per-adapter quoting
-# — e.g. MySQL's backtick-quoted identifiers — matches exactly; the tuple bytes
-# reuse the adapter's own #escape_value, so the output is byte-for-byte identical
-# to to_bulk_insert over the whole table. This mirrors what a real in-adapter
-# streaming write would do (it must reuse the adapter's exact header/escaping).
+# The shipped bounded-memory path: the SQL adapters' #write_inserts (mixed in
+# from Adapter::SqlBulkInsert) streams the same single
+# `INSERT INTO ... VALUES <tuples>;` statement to the file in ~1 MiB buffers, so
+# the whole INSERT string (and the per-row String array to_bulk_insert builds) is
+# never resident at once. The bytes are identical to to_bulk_insert over the
+# whole table (asserted below); the buffer keeps writes coarse so this does NOT
+# pay the per-row IO penalty a naive row-at-a-time IO#print would.
 def write_streamed(adapter, rows, table, path)
-  return File.write(path, '') if rows.empty?
-
-  header = adapter.to_bulk_insert([rows.first], table).split("VALUES\n", 2).first + "VALUES\n"
   File.open(path, 'w') do |file|
-    file.print(header)
-    rows.each_with_index do |row, i|
-      file.print(",\n") if i.positive?
-      file.print('(' + row.map { |v| adapter.send(:escape_value, v) }.join(', ') + ')')
-    end
-    file.print(";\n")
+    adapter.write_inserts(file, rows, table, nil)
+    file.print("\n") # match the Runner, which appends a newline after write_inserts
   end
 end
 

@@ -137,8 +137,11 @@ module Exwiw
       end
 
       it 're-raises and logs the table, phase, and extraction query that produced the failing data' do
+        # The Runner delegates INSERT-statement writing to #write_inserts, so
+        # simulate the row-serialization failure there (this is the method on the
+        # "generating INSERT statement" phase).
         allow_any_instance_of(Adapter::SqliteAdapter)
-          .to receive(:to_bulk_insert)
+          .to receive(:write_inserts)
           .and_raise(RuntimeError, 'simulated encoding error in row data')
 
         expect { runner.run }.to raise_error(RuntimeError, 'simulated encoding error in row data')
