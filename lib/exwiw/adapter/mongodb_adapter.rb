@@ -40,22 +40,11 @@ module Exwiw
       class StreamingResult
         include Enumerable
 
-        # The MongoQuery::Find that produced this result and the propagation keys
-        # captured as it streams. The serial path consumes the cursor through
-        # #each and never needs them, but the cursor-parallel #write_inserts path
-        # ignores this result's single cursor and instead RE-issues the query
-        # partitioned into disjoint `_id` ranges — so it reads `query` (for the
-        # collection/filter/projection/primary_key) and `keys` (to capture each
-        # range's slice of the propagation @state) straight off the result the
-        # Runner already handed it.
-        attr_reader :query, :keys
-
-        def initialize(view:, collection:, keys:, state:, query: nil)
+        def initialize(view:, collection:, keys:, state:)
           @view = view
           @collection = collection
           @keys = keys
           @state = state
-          @query = query
         end
 
         def size
@@ -66,20 +55,17 @@ module Exwiw
         def each
           return enum_for(:each) { size } unless block_given?
 
-          # Shared with the cursor-parallel dump's per-worker capture: the same
-          # PropagationCapture guarantees serial and parallel paths leave
-          # byte-identical @state (see PropagationCapture).
-          capture = PropagationCapture.new(@keys)
+          captured = @keys.each_with_object({}) { |key, acc| acc[key] = [] }
           @view.each do |doc|
-            capture.observe(doc)
+            @keys.each { |key| captured[key] << doc[key] }
             yield doc
           end
-          @state[@collection] = capture.to_h
+          @state[@collection] = captured
           self
         end
       end
 
-      def initialize(connection_config, logger, parallel_workers: nil, cursor_parallel: nil)
+      def initialize(connection_config, logger)
         super
         @state = {}
       end
@@ -168,7 +154,7 @@ module Exwiw
         # large / embed-heavy collections — the dump's dominant memory cost. The
         # propagation-key values are captured as the cursor streams and published
         # into @state once the pass completes (see StreamingResult).
-        StreamingResult.new(view: view, collection: query.collection, keys: keys, state: @state, query: query)
+        StreamingResult.new(view: view, collection: query.collection, keys: keys, state: @state)
       end
 
       # NOTE: relies on @embedded_children_by_parent set by a prior build_query
@@ -178,72 +164,10 @@ module Exwiw
       # tests — call build_query first.
       def to_bulk_insert(rows, config)
         plan = mask_plan(config)
-        rows.map { |doc| serialize_document(doc, plan) }.join("\n")
-      end
-
-      # Write the chunk's JSONL straight to `io`, optionally serializing the
-      # documents across forked worker processes.
-      #
-      # The dump's dominant cost is per-document `as_extended_json` +
-      # `JSON.generate` (pure Ruby, so it holds the GVL — threads give no
-      # speedup; only separate processes use more cores). When parallelism is
-      # opted in (see #parallel_workers), ParallelSerializer forks workers that
-      # COW-inherit `rows`, each serializing its contiguous slice to a part file,
-      # and the parent concatenates them in slice order — byte-for-byte identical
-      # to the serial `to_bulk_insert` join (the Runner inserts the same "\n"
-      # between chunks either way). The mask plan is built in the parent before
-      # the fork so every worker inherits it instead of recompiling it.
-      #
-      # Default (parallelism off): the serial Base path, unchanged. Parallelism
-      # trades memory (a larger resident chunk, see #default_bulk_insert_chunk_size)
-      # for wall-clock, so streaming stays the memory-safe default.
-      def write_bulk_insert(io, rows, config)
-        workers = parallel_workers
-        return super if workers <= 1
-
-        plan = mask_plan(config)
-        ParallelSerializer.write(
-          io, rows, workers: workers, separator: "\n", min_batch: parallel_min_batch
-        ) { |doc| serialize_document(doc, plan) }
-        nil
-      end
-
-      # Write a whole collection's INSERT body, optionally fetching it through
-      # CURSOR-PARALLEL forked workers instead of the single streaming cursor the
-      # Runner would otherwise hand chunk by chunk.
-      #
-      # The opt-in serialization-parallel path (#write_bulk_insert) only forks the
-      # per-document Extended-JSON encoding; the Mongo cursor's BSON->Ruby decode
-      # still runs serially in the parent and caps the end-to-end win at ~1.1–1.4x
-      # (notes, iter 10). Cursor-parallel goes further: it splits the collection
-      # into disjoint `_id` ranges (MongoIdPartitioner), forks one worker per range
-      # (ForkedPartWriter) that opens its OWN connection (#build_client) and
-      # decodes+masks+serializes its range, and concatenates the parts in range
-      # order — so the decode is parallel too, measured byte-identical ~3.4x@4 /
-      # ~5.5x@8 by script/bench_mongodb_cursor_parallel_probe.rb.
-      #
-      # Two costs make it strictly opt-in (EXWIW_MONGODB_CURSOR_PARALLEL, requiring
-      # parallel_workers>1), not the default:
-      #   - Ordering: per-range cursors must `sort(_id)`, so the output is sorted
-      #     by `_id` rather than the natural-order stream of the serial/serialize-
-      #     parallel paths. The bytes differ (a still-equivalent re-import), so it
-      #     cannot be the snapshot-tested default.
-      #   - @state: the Runner never consumes this result's single cursor on this
-      #     path, so StreamingResult#each never publishes the FK-propagation @state.
-      #     This method republishes it by merging each worker's per-range
-      #     PropagationCapture in range order — exactly the array a serial sorted
-      #     cursor would have captured — so downstream child collections scope
-      #     identically.
-      #
-      # Falls back to the default seam (serial, or serialize-parallel via
-      # #write_bulk_insert) whenever cursor-parallel is off or the result is not a
-      # live StreamingResult.
-      def write_inserts(io, results, table)
-        if cursor_parallel_enabled? && results.is_a?(StreamingResult) && results.query
-          cursor_parallel_write_inserts(io, results, table)
-        else
-          super
-        end
+        rows.map do |doc|
+          apply_mask_plan!(doc, plan)
+          JSON.generate(extended_json(doc))
+        end.join("\n")
       end
 
       def to_bulk_delete(_query, _config)
@@ -274,20 +198,8 @@ module Exwiw
       # trees) before building the next.
       DEFAULT_BULK_INSERT_CHUNK_SIZE = 1_000
 
-      # Documents handed to each forked worker per parallel chunk. Fork + part-file
-      # + concat overhead only amortizes on batches in the thousands (measured by
-      # script/bench_mongodb_parallel_probe.rb), so when parallelism is on the
-      # chunk is sized to give every worker a multi-thousand-doc slice rather than
-      # the serial 1_000-doc chunk (which would fall back to serial inside
-      # ParallelSerializer). The trade-off is a larger resident chunk — the memory
-      # cost paid for the ~2x speedup.
-      PARALLEL_DOCS_PER_WORKER = 4_000
-
       def default_bulk_insert_chunk_size
-        workers = parallel_workers
-        return DEFAULT_BULK_INSERT_CHUNK_SIZE if workers <= 1
-
-        [DEFAULT_BULK_INSERT_CHUNK_SIZE, workers * PARALLEL_DOCS_PER_WORKER].max
+        DEFAULT_BULK_INSERT_CHUNK_SIZE
       end
 
       def schema_output_extension
@@ -577,115 +489,6 @@ module Exwiw
         @embedded_children_by_parent.fetch(parent_config.name, [])
       end
 
-      # Mask a single document in place and encode it to one JSONL line. The unit
-      # of work shared by the serial #to_bulk_insert and the parallel
-      # #write_bulk_insert so both produce identical bytes per document.
-      private def serialize_document(doc, plan)
-        apply_mask_plan!(doc, plan)
-        JSON.generate(extended_json(doc))
-      end
-
-      # Number of worker processes to fork for serialization. Opt-in: the CLI
-      # `--parallel-workers=N` flag (threaded in as @parallel_workers_option)
-      # takes precedence, falling back to the EXWIW_MONGODB_PARALLEL_WORKERS env
-      # var for programmatic/Railtie callers that never touch the CLI. Unset or
-      # <=1 means the serial, memory-safe default. Read once and memoized so the
-      # chunk size and the write path agree within a run.
-      private def parallel_workers
-        @parallel_workers ||= begin
-          n = @parallel_workers_option || ENV["EXWIW_MONGODB_PARALLEL_WORKERS"].to_i
-          n > 1 ? n : 1
-        end
-      end
-
-      # Minimum chunk size before forking is worthwhile; below it
-      # ParallelSerializer falls back to a serial (still byte-identical) write.
-      private def parallel_min_batch
-        ParallelSerializer::DEFAULT_MIN_BATCH
-      end
-
-      TRUTHY_ENV = %w[1 true yes on].freeze
-
-      # Cursor-parallel fetch is opt-in (it sorts by `_id`, so its bytes differ
-      # from the natural-order default — see #write_inserts) and needs more than
-      # one worker to split the cursor. It is independent of --parallel-workers'
-      # serialize-only fork path: setting workers alone keeps today's
-      # byte-identical behavior; opting in here upgrades it to the cursor-parallel
-      # path. The `--cursor-parallel` CLI flag (threaded in as @cursor_parallel_option)
-      # takes precedence, falling back to the EXWIW_MONGODB_CURSOR_PARALLEL env var
-      # for programmatic/Railtie callers that never touch the CLI — the same
-      # CLI-first contract as #parallel_workers.
-      private def cursor_parallel_enabled?
-        return false unless parallel_workers > 1
-
-        unless @cursor_parallel_option.nil?
-          return @cursor_parallel_option
-        end
-
-        TRUTHY_ENV.include?(ENV["EXWIW_MONGODB_CURSOR_PARALLEL"].to_s.strip.downcase)
-      end
-
-      # Compose the three cursor-parallel building blocks against the live query
-      # the Runner already executed (carried on `results`). Returns the number of
-      # parts written (for the Runner's log line) and, as a side effect,
-      # republishes the collection's FK-propagation @state from the merged
-      # per-range captures. See #write_inserts for the why.
-      private def cursor_parallel_write_inserts(io, results, table)
-        query      = results.query
-        collection = query.collection
-        primary_key = query.primary_key
-        filter     = query.filter
-        projection = query.projection
-        keys       = results.keys
-        plan       = mask_plan(table) # warm in the parent so workers COW-inherit it
-
-        # Index-only scan in the parent to compute contiguous/disjoint/exhaustive
-        # `_id` ranges; far cheaper than decoding documents (notes, iter 11).
-        scan_view = db[collection].find(filter)
-        ranges = MongoIdPartitioner.ranges_for(scan_view, primary_key, parallel_workers)
-        if ranges.empty?
-          # Match StreamingResult#each's contract unconditionally: the serial
-          # path ALWAYS publishes @state[collection] once consumed — leaving the
-          # empty per-key arrays a no-document capture produces — and the
-          # cursor-parallel path must leave the same @state so a downstream
-          # child reads an empty (not a missing) parent scope. The Runner skips
-          # zero-record tables before calling write_inserts, so empty ranges are
-          # not reached today; publishing here keeps the two paths equivalent
-          # for any future direct caller rather than relying on that gating.
-          @state[collection] = PropagationCapture.merge(keys, [])
-          return 0
-        end
-
-        sidecars = ForkedPartWriter.write(io, ranges.size, separator: "\n") do |index, part_io|
-          first_id, last_id = ranges[index]
-          client = build_client
-          begin
-            range_filter = MongoIdPartitioner.range_filter(filter, primary_key, first_id, last_id)
-            view = client[collection]
-              .find(range_filter)
-              .projection(projection)
-              .sort(primary_key => 1)
-              .comment(query_comment_text("collection=#{collection} range=#{index}"))
-            capture = PropagationCapture.new(keys)
-            first = true
-            view.each do |doc|
-              capture.observe(doc)
-              part_io.write("\n") unless first
-              part_io.write(serialize_document(doc, plan))
-              first = false
-            end
-            # The worker's sidecar: its range's slice of the propagation keys,
-            # Marshal-shipped back for the parent to merge in range order.
-            capture.to_h
-          ensure
-            client.close
-          end
-        end
-
-        @state[collection] = PropagationCapture.merge(keys, sidecars)
-        ranges.size
-      end
-
       private def extended_json(doc)
         if doc.respond_to?(:as_extended_json)
           doc.as_extended_json(mode: :relaxed)
@@ -695,41 +498,32 @@ module Exwiw
       end
 
       private def db
-        @db ||= build_client
-      end
-
-      # Construct a FRESH Mongo::Client from the connection config (never
-      # memoized). #db memoizes one for the parent process; the cursor-parallel
-      # dump calls this directly in each forked worker because the Mongo driver
-      # is not fork-safe — a child must open its own client/sockets rather than
-      # reuse the parent's (its background SDAM/monitoring threads do not survive
-      # the fork, and sharing file descriptors across processes corrupts the
-      # connection). Every client therefore goes through the identical
-      # construction so a worker connects exactly as the parent would.
-      private def build_client
-        require 'mongo'
-        Mongo::Logger.logger.level = ::Logger::WARN
-        if uri_connection?
-          # A full connection URI (e.g. `mongodb+srv://...`) is the source of
-          # truth: TLS, replicaSet, authSource and credentials are read from
-          # it, so host/port/user/password are ignored. `--database`, if
-          # given, overrides the database in the URI path; otherwise the
-          # URI's own database is used. The URI is never logged (it may carry
-          # credentials).
-          client_options = {}
-          if @connection_config.database_name && !@connection_config.database_name.to_s.empty?
-            client_options[:database] = @connection_config.database_name
+        @db ||=
+          begin
+            require 'mongo'
+            Mongo::Logger.logger.level = ::Logger::WARN
+            if uri_connection?
+              # A full connection URI (e.g. `mongodb+srv://...`) is the source of
+              # truth: TLS, replicaSet, authSource and credentials are read from
+              # it, so host/port/user/password are ignored. `--database`, if
+              # given, overrides the database in the URI path; otherwise the
+              # URI's own database is used. The URI is never logged (it may carry
+              # credentials).
+              client_options = {}
+              if @connection_config.database_name && !@connection_config.database_name.to_s.empty?
+                client_options[:database] = @connection_config.database_name
+              end
+              Mongo::Client.new(@connection_config.uri, **client_options)
+            else
+              address = "#{@connection_config.host}:#{@connection_config.port}"
+              options = { database: @connection_config.database_name }
+              if @connection_config.user && !@connection_config.user.to_s.empty?
+                options[:user] = @connection_config.user
+                options[:password] = @connection_config.password
+              end
+              Mongo::Client.new([address], **options)
+            end
           end
-          Mongo::Client.new(@connection_config.uri, **client_options)
-        else
-          address = "#{@connection_config.host}:#{@connection_config.port}"
-          options = { database: @connection_config.database_name }
-          if @connection_config.user && !@connection_config.user.to_s.empty?
-            options[:user] = @connection_config.user
-            options[:password] = @connection_config.password
-          end
-          Mongo::Client.new([address], **options)
-        end
       end
 
       private def uri_connection?

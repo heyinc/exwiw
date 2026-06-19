@@ -35,23 +35,9 @@ module Exwiw
     class Base
       attr_reader :connection_config
 
-      # `parallel_workers` is an export-time serialization tuning knob, not a
-      # connection setting: the MongodbAdapter uses it to fork worker processes
-      # for the dump's dominant per-document encoding cost. It is nil for the SQL
-      # adapters (they ignore it) and when unset (the adapter then falls back to
-      # the EXWIW_MONGODB_PARALLEL_WORKERS env var). Threaded as explicit data
-      # from the CLI rather than read from ENV here so the CLI flag is the single
-      # user-facing control and SQL construction is unaffected.
-      #
-      # `cursor_parallel` (mongodb-only) upgrades those workers from serializing
-      # only to also fetching disjoint `_id` ranges with their own cursors; nil
-      # falls back to the EXWIW_MONGODB_CURSOR_PARALLEL env var (same CLI-first
-      # contract as parallel_workers).
-      def initialize(connection_config, logger, parallel_workers: nil, cursor_parallel: nil)
+      def initialize(connection_config, logger)
         @connection_config = connection_config
         @logger = logger
-        @parallel_workers_option = parallel_workers
-        @cursor_parallel_option = cursor_parallel
       end
 
       # The config class that this adapter consumes. Runner uses this to
@@ -125,61 +111,6 @@ module Exwiw
 
       def to_copy_from_stdin(_results, _table)
         raise NotImplementedError, "COPY format is not supported by #{self.class.name}"
-      end
-
-      # Write this table's bulk-insert output for `rows` straight to `io`.
-      #
-      # Default: serialize `rows` to a single String via #to_bulk_insert and
-      # write it in one go — byte-for-byte what the Runner used to do with
-      # `file.print(adapter.to_bulk_insert(...))`, so SQL adapters are
-      # unaffected. The seam exists so an adapter whose per-row serialization is
-      # the dump's bottleneck (MongoDB's extended-JSON encoding) can override it
-      # to write directly to the output IO — e.g. concatenating the parts of a
-      # fork-parallel serialization — without the Runner first materializing the
-      # whole chunk as one String.
-      #
-      # `io` must be a real file-backed IO when an override streams external
-      # parts into it (e.g. via IO.copy_stream); the default path works with any
-      # IO including StringIO.
-      def write_bulk_insert(io, rows, table)
-        io.write(to_bulk_insert(rows, table))
-      end
-
-      # Write this table's entire INSERT body — every bulk-insert statement,
-      # joined by a single "\n", with NO leading or trailing separator — straight
-      # to `io`, and return the number of statements written (for the Runner's
-      # log line). The Runner wraps this with the adapter's pre/post SQL and the
-      # one trailing "\n" that closes the body, so this method owns only what is
-      # between them.
-      #
-      # Default: chunk `results` by the table's `bulk_insert_chunk_size` (falling
-      # back to #default_bulk_insert_chunk_size) and serialize each chunk via
-      # #write_bulk_insert. A nil chunk size means one statement for the whole
-      # table — the SQL adapters' historical behavior. The bytes are identical to
-      # the Runner's previous inline `each_slice` + per-chunk `write_bulk_insert`
-      # loop.
-      #
-      # The seam exists so an adapter can own the WHOLE table body — fetch,
-      # serialize, write, and any post-stream bookkeeping (e.g. publishing
-      # FK-propagation @state) — rather than the Runner driving a fixed
-      # `execute`-then-chunk loop. MongoDB's cursor-parallel dump needs exactly
-      # that: it re-partitions the collection into disjoint `_id` ranges fetched
-      # by forked workers, each with its own cursor, instead of streaming the
-      # single `results` cursor the Runner would otherwise hand it chunk by chunk.
-      #
-      # `io` must be a real file-backed IO when an override streams external parts
-      # into it (e.g. via IO.copy_stream); the default path works with any IO.
-      def write_inserts(io, results, table)
-        chunk_size = table.bulk_insert_chunk_size || default_bulk_insert_chunk_size
-        chunks = chunk_size ? results.each_slice(chunk_size) : [results]
-
-        statement_count = 0
-        chunks.each do |chunk_rows|
-          io.write("\n") if statement_count.positive?
-          write_bulk_insert(io, chunk_rows, table)
-          statement_count += 1
-        end
-        statement_count
       end
 
       # Default bulk-insert chunk size when a table config does not set one.
@@ -262,16 +193,16 @@ module Exwiw
       raise NotImplementedError
     end
 
-    def self.build(connection_config, logger, parallel_workers: nil, cursor_parallel: nil)
+    def self.build(connection_config, logger)
       case normalize_name(connection_config.adapter)
       when 'sqlite'
-        Adapter::SqliteAdapter.new(connection_config, logger, parallel_workers: parallel_workers, cursor_parallel: cursor_parallel)
+        Adapter::SqliteAdapter.new(connection_config, logger)
       when 'mysql'
-        Adapter::MysqlAdapter.new(connection_config, logger, parallel_workers: parallel_workers, cursor_parallel: cursor_parallel)
+        Adapter::MysqlAdapter.new(connection_config, logger)
       when 'postgresql'
-        Adapter::PostgresqlAdapter.new(connection_config, logger, parallel_workers: parallel_workers, cursor_parallel: cursor_parallel)
+        Adapter::PostgresqlAdapter.new(connection_config, logger)
       when 'mongodb'
-        Adapter::MongodbAdapter.new(connection_config, logger, parallel_workers: parallel_workers, cursor_parallel: cursor_parallel)
+        Adapter::MongodbAdapter.new(connection_config, logger)
       else
         raise "Unsupported adapter: #{connection_config.adapter.inspect}"
       end

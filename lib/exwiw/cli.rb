@@ -82,8 +82,6 @@ module Exwiw
       @output_format = nil
       @insert_only = nil
       @after_insert_hook_path = nil
-      @parallel_workers = nil
-      @cursor_parallel = nil
       # nil (not :info) so we can tell "user passed --log-level" from the default,
       # letting a config-file value fill in; the :info default is applied later.
       @log_level = nil
@@ -129,8 +127,6 @@ module Exwiw
           output_format: @output_format,
           insert_only: @insert_only,
           after_insert_hook_path: @after_insert_hook_path,
-          parallel_workers: @parallel_workers,
-          cursor_parallel: @cursor_parallel,
           cli_options: build_cli_options_hash,
           logger: logger,
         ).run
@@ -171,8 +167,6 @@ module Exwiw
       resolve_scope_column!
       resolve_ids_column_alias!
       resolve_uri_option!
-      validate_parallel_workers!
-      validate_cursor_parallel!
 
       if @subcommand == "explain"
         validate_explain_only!
@@ -432,47 +426,6 @@ module Exwiw
       end
     end
 
-    # `--parallel-workers` forks worker processes to serialize documents in
-    # parallel — a mongodb-only, export-only knob (the dump's per-document
-    # extended-JSON encoding is the bottleneck it parallelizes). Runs after the
-    # adapter name is normalized so the family check is reliable. >1 enables
-    # parallelism; 1 is the serial default.
-    private def validate_parallel_workers!
-      return if @parallel_workers.nil?
-
-      if @database_adapter != "mongodb"
-        $stderr.puts "--parallel-workers is only supported by the mongodb adapter"
-        exit 1
-      end
-
-      if @parallel_workers < 1
-        $stderr.puts "--parallel-workers must be a positive integer (got #{@parallel_workers})"
-        exit 1
-      end
-    end
-
-    # `--cursor-parallel` upgrades the worker forks from serializing-only (which
-    # leaves the BSON->Ruby cursor decode serial in the parent, capping the win at
-    # ~1.1-1.4x) to fetching disjoint `_id` ranges with their own cursors — so the
-    # decode is parallel too (measured ~3.4x@4 / ~5.5x@8). It is mongodb-only and
-    # needs more than one worker to split the cursor across, so it requires
-    # --parallel-workers > 1. The output is sorted by `_id` rather than natural
-    # order (a still-equivalent re-import), which is why it is opt-in rather than
-    # implied by --parallel-workers. Runs after the adapter name is normalized.
-    private def validate_cursor_parallel!
-      return unless @cursor_parallel
-
-      if @database_adapter != "mongodb"
-        $stderr.puts "--cursor-parallel is only supported by the mongodb adapter"
-        exit 1
-      end
-
-      if @parallel_workers.nil? || @parallel_workers < 2
-        $stderr.puts "--cursor-parallel requires --parallel-workers > 1 (it splits the collection's cursor across workers)"
-        exit 1
-      end
-    end
-
     private def validate_explain_only!
       if @database_adapter == "mongodb"
         $stderr.puts "mongodb adapter is not yet supported by 'explain' subcommand"
@@ -588,8 +541,6 @@ module Exwiw
         opts.on("--scope-column=[COLUMN]", "Filter every table by this shared column (--ids are its values) instead of a single --target-table. Tables lacking it are reached via belongs_to. SQL adapters only; mutually exclusive with --target-table.") { |v| @scope_column = v }
         opts.on("--output-format=[FORMAT]", "Output format: insert (default) or copy (PostgreSQL only, export subcommand only)") { |v| @output_format = v }
         opts.on("--insert-only", "Do not generate DELETE SQL files (export subcommand only)") { @insert_only = true }
-        opts.on("--parallel-workers=N", Integer, "Serialize documents across N forked worker processes (mongodb adapter, export only). >1 speeds up large/embed-heavy dumps at the cost of more memory; 1 (default) is serial. Overrides EXWIW_MONGODB_PARALLEL_WORKERS.") { |v| @parallel_workers = v }
-        opts.on("--cursor-parallel", "Also fetch each collection across forked workers (disjoint _id ranges), not just serialize (mongodb adapter, export only; requires --parallel-workers > 1). Parallelizes the cursor decode for a larger speedup, but emits JSONL sorted by _id rather than natural order. Overrides EXWIW_MONGODB_CURSOR_PARALLEL.") { @cursor_parallel = true }
         opts.on("--after-insert-hook=PATH", "Path to a .rb or .sh post-processing hook executed after all insert/delete files are written (export subcommand only)") do |v|
           @after_insert_hook_path = File.expand_path(v)
         end
