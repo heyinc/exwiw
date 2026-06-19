@@ -12,14 +12,12 @@ serialization step with no DB at all. The correctness anchor for any future fix
 is `spec/insert_output_snapshot_spec.rb` — the **byte-exact** snapshot of dump
 output.
 
-> **Status:** hotspot #2 (the whole-table INSERT string) is **fixed** for all
-> three SQL adapters — see
+> **Status:** **both hotspots are fixed for all three SQL adapters.** Hotspot #2
+> (the whole-table INSERT string) — see
 > [Resolution #2](#resolution-hotspot-2-streamed-single-insert). Hotspot #1
-> (full result-set materialization in `execute`) is **fixed for postgresql and
-> mysql** — see
+> (full result-set materialization in `execute`) — postgresql, mysql, and sqlite
+> all stream the fetch now; see
 > [Resolution #1](#resolution-hotspot-1-streaming-fetch-postgresql--mysql).
-> sqlite still materializes (`Database#execute` buffers); it *is* streamable via
-> a prepared-statement cursor — see Fix direction.
 
 ## The two hotspots (same shape as MongoDB had pre-optimization)
 
@@ -197,8 +195,7 @@ Two MySQL specifics differ from the pg path:
   from where it stopped) if the consumer block raises, so the connection stays
   usable for the next table. `trilogy` has no streaming cursor
   (no `QUERY_FLAGS_STREAMING`), so it buffers and yields — parity, no memory
-  win (the same situation as sqlite); trilogy is a test-only driver, production
-  uses mysql2.
+  win; trilogy is a test-only driver, production uses mysql2.
 
 Measured in **isolated fresh processes** (one per path), 200k rows / ~40.7 MB
 output:
@@ -213,23 +210,59 @@ shape as the pg result. Speed is unchanged-to-faster (the materialize path also
 builds the whole array first). `bench_sql_dump.rb` Part B now shows the delta
 for mysql too (it was equivalent before, when mysql still materialized).
 
-## Fix direction for the next iteration
+Implemented for **sqlite** too, closing hotspot #1 for all three SQL adapters.
+`SqliteAdapter#execute` no longer returns `connection.execute(sql)` (which
+buffers the whole result into a Ruby array); it returns a
+`SqliteAdapter::StreamingResult` (Enumerable, mirroring the pg/mysql ones) whose
+`#each` walks the result one row at a time through SQLite's **statement cursor**
+— `connection.prepare(data_sql)` then `Statement#each` (which maps to
+`sqlite3_step`), closing the statement in an `ensure` so an abandoned mid-stream
+iteration still releases the cursor. The rows are the same `Array` of
+native-typed values `Database#execute` produced, so the generated INSERT is
+byte-identical (verified by `insert_output_snapshot_spec` and a direct cursor
+vs. `#execute` comparison).
 
-1. ~~**Bounded-memory write.**~~ **Done (all adapters)** — see Resolution #2.
-2. **Streaming result fetch.** ~~postgresql~~ ~~mysql~~ **Done (both)** — see
-   Resolution #1. The only SQL adapter left materializing is **sqlite**:
-   `SqliteAdapter#execute` calls `connection.execute(sql)`, which buffers the
-   whole result into a Ruby array. Unlike an earlier assumption recorded here,
-   sqlite3-ruby **does** expose a row-at-a-time cursor — `Database#prepare(sql)`
-   returns a `Statement` whose `#each` / `#step` walks results one row at a time
-   (verified: breaking out of `Statement#each` after N rows steps only N), and
-   `Database#execute(sql) { |row| ... }` (block form) yields row-by-row too. So
-   a sqlite `StreamingResult` is feasible: `#each` via `connection.prepare(sql)`
-   + `Statement#each` (remember to `#close` the statement), `#size` via a
-   separate `SELECT COUNT(*)` (same `count_only` projection trick mysql uses, or
-   a subquery wrap — sqlite tolerates duplicate derived-column names). The
-   memory win should be the same shape (no full Ruby array). This is the next
-   unit; once done, hotspot #1 is closed for all three SQL adapters.
+SQLite specifics vs. the pg/mysql paths:
+
+- **`#size`** runs a separate `SELECT COUNT(*)` of the same query with the
+  projection replaced by `COUNT(*)` (`compile_ast(count_only: true)`, the same
+  trick mysql uses) — exact because exwiw's extraction queries have no
+  DISTINCT/GROUP BY/LIMIT. SQLite would also tolerate a duplicate-column
+  subquery wrap (unlike mysql), but the `count_only` form is shared and avoids
+  the extra subquery.
+- **no connection contention.** SQLite is an embedded, single-connection engine
+  that allows multiple active prepared statements at once, so the `#size` COUNT
+  and the data cursor don't fight over the connection the way the pg/mysql
+  single-row streams tie up the wire. No drain dance is needed; just close the
+  statement.
+
+Measured in **isolated fresh processes** (one per path), 200k rows / ~40.5 MB
+output:
+
+| sqlite fetch path | peak RSS | Δ over baseline |
+|-------------------|----------|-----------------|
+| materialize (`Database#execute`) + streamed write (OLD) | ~298 MB | ~257 MB |
+| **statement-cursor stream + streamed write (NEW)** | **~59 MB** | **~18 MB** |
+
+So peak drops ~**240 MB (~80%)**, the same shape as pg/mysql, and it is
+**faster** (~0.84 s vs ~1.68 s) — the materialize path pays to build the whole
+Ruby array up front, the cursor does not. `bench_sql_dump.rb` Part B now shows a
+real delta for sqlite too (it was equivalent before, when sqlite still
+materialized).
+
+## Status: both hotspots closed for all three SQL adapters
+
+1. **Bounded-memory write** (hotspot #2) — done for mysql / postgresql / sqlite;
+   see [Resolution #2](#resolution-hotspot-2-streamed-single-insert).
+2. **Streaming result fetch** (hotspot #1) — done for postgresql (libpq
+   single-row mode), mysql (mysql2 `stream: true`), and sqlite (statement
+   cursor); see Resolution #1 above.
+
+There is no remaining materialization hotspot in the SQL dump path: peak RSS is
+now bounded (well below the output size) and independent of table size for every
+SQL adapter, the same property the MongoDB streaming work achieved. The
+`trilogy` driver still buffers (it has no streaming cursor flag), but it is a
+test-only driver — production mysql uses mysql2.
 
 ## Methodology notes
 
