@@ -278,10 +278,14 @@ module Exwiw
 
     private def aggregate_belongs_tos(models)
       belongs_to_assocs = models.flat_map { |m| belongs_to_associations_for(m) }
+      owner_db = database_name_for(models.first)
 
       non_polymorphic = belongs_to_assocs
         .reject(&:polymorphic?)
-        .map { |assoc| { table_name: assoc.table_name, foreign_key: assoc.foreign_key } }
+        .map do |assoc|
+          entry = { table_name: assoc.table_name, foreign_key: assoc.foreign_key }
+          annotate_cross_database(entry, owner_db, assoc.klass)
+        end
 
       # A polymorphic belongs_to (`belongs_to :reviewable, polymorphic: true`)
       # has no single target table. The candidate tables are found by looking up
@@ -292,16 +296,48 @@ module Exwiw
         .select(&:polymorphic?)
         .flat_map do |assoc|
           polymorphic_target_models(assoc.name).map do |target_model|
-            {
+            entry = {
               table_name: target_model.table_name,
               foreign_key: assoc.foreign_key,
               foreign_type: assoc.foreign_type,
               type_value: target_model.polymorphic_name,
             }
+            annotate_cross_database(entry, owner_db, target_model)
           end
         end
 
       (non_polymorphic + polymorphic).uniq
+    end
+
+    # A belongs_to whose target model lives in a *different* database than the
+    # owning table cannot be honored by exwiw: each database is exported on its
+    # own connection (and into its own per-database config directory), so the
+    # target table is absent from the directory this config is loaded with, and
+    # there is no single connection on which to join the two. Worse, leaving the
+    # relation live would emit a dangling belongs_to whose target is never
+    # present at extraction time (a nil-target crash in dependency resolution).
+    #
+    # So emit such a relation with `ignore: true` (dropped from extraction at
+    # load time via TableConfig#reject_ignored_members!), tagged with
+    # `ignore_type` and an explanatory `comment` recording *why*. The foreign-key
+    # column itself is still exported as a plain column; only the join/dependency
+    # edge is dropped. This mirrors how the generator already emits `ignore:true`
+    # for other shapes it cannot express (composite primary keys, ActiveStorage
+    # variant records) rather than silently producing a broken config.
+    CROSS_DATABASE_IGNORE_TYPE = "cross_database"
+
+    private def annotate_cross_database(entry, owner_db, target_model)
+      target_db = database_name_for(target_model)
+      return entry if target_db == owner_db
+
+      entry.merge(
+        ignore: true,
+        ignore_type: CROSS_DATABASE_IGNORE_TYPE,
+        comment: "Cross-database belongs_to: target '#{entry[:table_name]}' is in " \
+                 "database '#{target_db}', not '#{owner_db}'. exwiw exports each database " \
+                 "separately and cannot join across them, so this relation is ignored " \
+                 "during extraction (its foreign-key column is still exported).",
+      )
     end
 
     # `belongs_to` reflections for a model, with the synthetic HABTM left-side

@@ -30,16 +30,19 @@ module Exwiw
     # regeneration (see TableConfig#merge / MongodbCollectionConfig#merge), so a
     # hand edit is not clobbered by re-introspection.
     attribute :references, optional(String), skip_serializing_if_nil: true
-    # User-owned fields. The schema generators never emit them, but a user can
-    # add them by hand and they survive regeneration (see TableConfig#merge /
+    # Mostly user-owned, and they survive regeneration (see TableConfig#merge /
     # MongodbCollectionConfig#merge). `ignore:true` drops the relation from
-    # extraction once the config is loaded (see #reject_ignored_members!).
+    # extraction once the config is loaded (see #reject_ignored_members!). The
+    # schema generators emit them only for a relation they cannot express and so
+    # auto-ignore — currently a cross-database belongs_to (see
+    # SchemaGenerator#annotate_cross_database); a user may also add them by hand.
     attribute :comment, optional(String), skip_serializing_if_nil: true
     attribute :ignore, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
     # Free-form tag recording *why* this relation is ignored (e.g.
+    # "cross_database" for a relation crossing database boundaries,
     # "need_code_fix" for an application-side bug, "unsupported" for a shape
-    # exwiw cannot express). exwiw never interprets or emits it; purely
-    # informational and preserved across regeneration like `comment`.
+    # exwiw cannot express). exwiw never interprets it; purely informational and
+    # preserved across regeneration like `comment`.
     attribute :ignore_type, optional(String), skip_serializing_if_nil: true
 
     def self.from_symbol_keys(hash)

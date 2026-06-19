@@ -292,6 +292,8 @@ exwiw/schema/
 
 Each database keeps its own Rails migration history, so a `schema_migrations` (and `ar_internal_metadata`) entry is emitted under every database that contains one — the example above shows `primary/schema_migrations.json` and would also produce `analytics/schema_migrations.json` when the analytics database has its own migration table. Single-database applications are unaffected and continue to write files flat into the output directory.
 
+A `belongs_to` whose target model lives in a *different* database (e.g. a `primary` model referencing an `analytics` one) cannot be honored: each database is exported on its own connection and into its own subdirectory, so the target table is absent from the directory this config is loaded with, and there is no single connection on which to join the two. `schema:generate` therefore emits such a relation with `ignore: true` and `ignore_type: "cross_database"` (recording why in its `comment`). The foreign-key column itself is still exported as a plain column; only the join/dependency edge is dropped. Polymorphic associations are handled per target — only the targets that cross a database boundary are ignored.
+
 **Limitations**
 
 - The rails-managed table *names* are resolved from the global `ActiveRecord::Base.schema_migrations_table_name` / `internal_metadata_table_name` accessors, which are shared across all connections. A per-database override of these names is not detected, so such a table will be missing from that database's generated configs.

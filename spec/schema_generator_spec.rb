@@ -86,8 +86,11 @@ module Exwiw
       FileUtils.mkdir_p("tmp")
       [PRIMARY_DB_PATH, ANALYTICS_DB_PATH].each { |p| File.delete(p) if File.exist?(p) }
 
+      # `shops` carries a foreign key to a table that lives in the *analytics*
+      # database (`analytics_event_id`), so PrimaryModel can declare a
+      # cross-database belongs_to the generator must auto-ignore.
       SQLite3::Database.new(PRIMARY_DB_PATH).execute_batch(<<~SQL)
-        CREATE TABLE shops (id INTEGER PRIMARY KEY, name TEXT);
+        CREATE TABLE shops (id INTEGER PRIMARY KEY, name TEXT, analytics_event_id INTEGER);
         CREATE TABLE schema_migrations (version TEXT NOT NULL PRIMARY KEY);
       SQL
       # Each database in a Rails multi-DB setup keeps its own migration
@@ -113,8 +116,17 @@ module Exwiw
       const_set(:AnalyticsAbstract, analytics_abstract)
       analytics_abstract.connects_to(database: { writing: :analytics })
 
-      const_set(:PrimaryModel, Class.new(primary_abstract) { self.table_name = "shops" })
       const_set(:AnalyticsModel, Class.new(analytics_abstract) { self.table_name = "analytics_events" })
+      const_set(:PrimaryModel, Class.new(primary_abstract) do
+        self.table_name = "shops"
+        # belongs_to a model on the *analytics* connection: the target table is
+        # bucketed into a different per-database directory, so the generator
+        # must mark this relation ignore:true rather than emit a dangling edge.
+        belongs_to :analytics_event,
+                   class_name: "Exwiw::SchemaGeneratorMultiDbFixtures::AnalyticsModel",
+                   foreign_key: "analytics_event_id",
+                   optional: true
+      end)
     end
   end
 
@@ -306,6 +318,37 @@ module Exwiw
         it "collapses into a single nil-keyed group for a single-database setup" do
           single = described_class.new(models: [SchemaGeneratorMultiDbFixtures::PrimaryModel], output_dir: output_dir)
           expect(single.build_table_groups.keys).to eq([nil])
+        end
+
+        # A belongs_to whose target lives in another database cannot be honored:
+        # the target table is written into a different per-database directory, so
+        # at load time it is absent from the directory this config is read with —
+        # leaving the relation live would emit a dangling edge that crashes
+        # dependency resolution. The generator must auto-ignore it.
+        describe "cross-database belongs_to" do
+          let(:shops_belongs_to) do
+            groups["primary"].find { |t| t.name == "shops" }
+              .belongs_tos.find { |b| b.table_name == "analytics_events" }
+          end
+
+          it "emits the cross-database belongs_to with ignore:true and a cross_database ignore_type" do
+            expect(shops_belongs_to).not_to be_nil
+            expect(shops_belongs_to.foreign_key).to eq("analytics_event_id")
+            expect(shops_belongs_to.ignore).to eq(true)
+            expect(shops_belongs_to.ignore_type).to eq(SchemaGenerator::CROSS_DATABASE_IGNORE_TYPE)
+            expect(shops_belongs_to.comment).to include("analytics", "primary")
+          end
+
+          it "keeps the foreign-key column exported even though the relation is ignored" do
+            expect(groups["primary"].find { |t| t.name == "shops" }.column_names)
+              .to include("analytics_event_id")
+          end
+
+          it "is dropped from extraction once loaded, so it never crashes dependency resolution" do
+            shops = groups["primary"].find { |t| t.name == "shops" }
+            reloaded = TableConfig.from(JSON.parse(shops.to_hash.to_json)).reject_ignored_members!
+            expect(reloaded.belongs_tos.map(&:table_name)).not_to include("analytics_events")
+          end
         end
       end
 
