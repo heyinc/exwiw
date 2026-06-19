@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **MongoDB: dumps now stream, bounding peak memory regardless of collection size** (default; no flag, byte-identical output). The adapter previously loaded each collection's entire result set into memory (`.to_a`) and built the whole collection's JSONL output as one string, so peak memory scaled with collection size. It now wraps the Mongo cursor in a lazy streaming result and writes output in chunks, so at most one chunk of documents (plus the small FK-propagation key arrays) is resident at a time. On a 20k-document × 30-embed collection this cut peak RSS by hundreds of MB and was also faster (less GC pressure). The per-document Extended-JSON masking was also precompiled per collection config, trimming per-document encoding cost. See [`docs/optimization-notes.md`](docs/optimization-notes.md) for the full investigation, and [`docs/optimize-mongodb-export-with-native-ext.md`](docs/optimize-mongodb-export-with-native-ext.md) for the proposed native-encoder follow-up.
+
 ## [0.5.2] - 2026-06-18
 
 ### Fixed

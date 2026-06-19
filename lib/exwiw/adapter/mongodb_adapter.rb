@@ -14,6 +14,57 @@ module Exwiw
         Exwiw::MongodbCollectionConfig
       end
 
+      # A lazy, streaming stand-in for the materialized result array #execute
+      # used to return. Wrapping the Mongo cursor (instead of `.to_a`) keeps the
+      # dump's dominant memory cost — the full result set — off the heap: the
+      # Runner pulls documents through `each_slice`, so at most one chunk of
+      # documents (plus the small propagation-key arrays) is resident at a time,
+      # even for large or embed-heavy collections.
+      #
+      # It satisfies the two things the Runner asks of an execute result:
+      #   - #size: the record count, used to skip empty collections and to log.
+      #     Answered with a `count_documents` query (which only walks index
+      #     entries, far cheaper than fetching every document) rather than by
+      #     draining the cursor.
+      #   - #each (via Enumerable / each_slice): a single streaming pass over the
+      #     cursor. While streaming it captures — per propagation key, BEFORE
+      #     handing the document to the caller's masking — the values downstream
+      #     children will `$in`-match against, publishing them into @state once
+      #     the pass completes.
+      #
+      # Contract note: unlike the old `.to_a` execute, which populated @state
+      # eagerly, this defers state capture until the result is consumed. The
+      # Runner always fully consumes a non-empty result before any child
+      # collection is processed, so propagation is unaffected; a caller that only
+      # needs @state must iterate the result (e.g. `.to_a`).
+      class StreamingResult
+        include Enumerable
+
+        def initialize(view:, collection:, keys:, state:)
+          @view = view
+          @collection = collection
+          @keys = keys
+          @state = state
+        end
+
+        def size
+          @size ||= @view.count_documents
+        end
+        alias length size
+
+        def each
+          return enum_for(:each) { size } unless block_given?
+
+          captured = @keys.each_with_object({}) { |key, acc| acc[key] = [] }
+          @view.each do |doc|
+            @keys.each { |key| captured[key] << doc[key] }
+            yield doc
+          end
+          @state[@collection] = captured
+          self
+        end
+      end
+
       def initialize(connection_config, logger)
         super
         @state = {}
@@ -86,22 +137,24 @@ module Exwiw
       def execute(query)
         @logger.debug("  Executing Mongo find on '#{query.collection}': filter=#{query.filter.inspect} projection=#{query.projection.inspect}")
 
-        docs = db[query.collection]
+        view = db[query.collection]
           .find(query.filter)
           .projection(query.projection)
           .comment(query_comment_text("collection=#{query.collection}"))
-          .to_a
 
-        # Stash, per referenced field, the values children will `$in`-match
-        # against. @propagation_keys is set by the build_query call for this same
+        # Per referenced field, the values children will `$in`-match against.
+        # @propagation_keys is set by the build_query call for this same
         # collection; fall back to the primary key if execute is driven without a
         # preceding build_query (e.g. in isolation from a test).
         keys = @propagation_keys || [query.primary_key]
-        @state[query.collection] = keys.each_with_object({}) do |key, acc|
-          acc[key] = docs.map { |doc| doc[key] }
-        end
 
-        docs
+        # Return a streaming view of the result set rather than `.to_a`-ing the
+        # whole collection into memory. The Runner pulls documents through
+        # `each_slice`, so only one chunk's worth is resident at a time even for
+        # large / embed-heavy collections — the dump's dominant memory cost. The
+        # propagation-key values are captured as the cursor streams and published
+        # into @state once the pass completes (see StreamingResult).
+        StreamingResult.new(view: view, collection: query.collection, keys: keys, state: @state)
       end
 
       # NOTE: relies on @embedded_children_by_parent set by a prior build_query
@@ -110,9 +163,9 @@ module Exwiw
       # to_bulk_insert (SQL adapters don't need it). Safe in Runner, fragile in
       # tests — call build_query first.
       def to_bulk_insert(rows, config)
+        plan = mask_plan(config)
         rows.map do |doc|
-          apply_replace_with!(doc, config)
-          apply_embedded_masking!(doc, config)
+          apply_mask_plan!(doc, plan)
           JSON.generate(extended_json(doc))
         end.join("\n")
       end
@@ -133,6 +186,20 @@ module Exwiw
 
       def output_extension
         'jsonl'
+      end
+
+      # Bound how many documents are serialized at once when a collection config
+      # carries no explicit bulk_insert_chunk_size. A MongoDB dump is one JSONL
+      # line per document and, without chunking, the Runner would materialize the
+      # entire collection's output as a single giant string while the full
+      # in-memory result set is still alive — doubling peak memory on large or
+      # embed-heavy collections. Chunking lets the Runner stream each slice to the
+      # file and release its serialized string (and the transient extended-JSON
+      # trees) before building the next.
+      DEFAULT_BULK_INSERT_CHUNK_SIZE = 1_000
+
+      def default_bulk_insert_chunk_size
+        DEFAULT_BULK_INSERT_CHUNK_SIZE
       end
 
       def schema_output_extension
@@ -325,41 +392,101 @@ module Exwiw
         parent_fields[reference_field]
       end
 
-      private def apply_replace_with!(doc, config)
-        config.fields.each do |field|
+      # A masking plan compiled once per collection config and reused for every
+      # document of that collection. `masked_fields` is `[field_name,
+      # template_segments]` for each field carrying a `replace_with`;
+      # `embedded` is one EmbeddedMask per embedded child.
+      MaskPlan = Struct.new(:masked_fields, :embedded)
+
+      # A pre-resolved embedded-child mask: the parent path split once into
+      # `prefix` (the containers to descend into) and `last` (the field holding
+      # the subdocument(s)), plus the child's own MaskPlan.
+      EmbeddedMask = Struct.new(:prefix, :last, :plan)
+
+      # Build (or fetch) the cached MaskPlan for `config`. Masking runs over every
+      # document AND every embedded subdocument, so for an embed-heavy collection
+      # the same per-config decisions — which fields carry a `replace_with`, how
+      # each template splits into segments, where the embedded children live —
+      # were previously recomputed tens of times per document. Compiling them once
+      # per config lets #apply_mask_plan! do nothing but the work that actually
+      # varies per document (rendering templates, descending into subdocuments),
+      # so the saved per-subdocument overhead scales down with embedding count.
+      #
+      # Cached by config name: names are unique within a run and the configs do
+      # not mutate mid-dump. Relies on @embedded_children_by_parent, set by the
+      # build_query call that always precedes to_bulk_insert (see #to_bulk_insert).
+      private def mask_plan(config)
+        (@mask_plans ||= {})[config.name] ||= build_mask_plan(config)
+      end
+
+      private def build_mask_plan(config)
+        masked_fields = config.fields.each_with_object([]) do |field, acc|
           next unless field.replace_with
 
-          doc[field.name] = field.replace_with.gsub(/\{([^{}]+)\}/) do
-            ref = Regexp.last_match(1)
-            (doc.key?(ref) ? doc[ref] : nil).to_s
+          acc << [field.name, compile_template(field.replace_with)]
+        end
+        embedded = embedded_children_of(config).map do |child|
+          *prefix, last = child.embedded_in.path.split(".")
+          EmbeddedMask.new(prefix, last, build_mask_plan(child))
+        end
+        MaskPlan.new(masked_fields, embedded)
+      end
+
+      # Apply a precompiled MaskPlan to a document in place: render each masked
+      # field, then descend into each embedded child (recursing into its own
+      # plan). Equivalent to the old apply_replace_with! + apply_embedded_masking!
+      # pair, with all per-config lookups hoisted into the plan.
+      private def apply_mask_plan!(doc, plan)
+        plan.masked_fields.each do |name, segments|
+          doc[name] = render_template(segments, doc)
+        end
+        plan.embedded.each do |child|
+          container = child.prefix.reduce(doc) { |acc, seg| acc.is_a?(Hash) ? acc[seg] : nil }
+          next unless container.is_a?(Hash)
+
+          case (value = container[child.last])
+          when Array then value.each { |sub| apply_mask_plan!(sub, child.plan) if sub.is_a?(Hash) }
+          when Hash  then apply_mask_plan!(value, child.plan)
           end
         end
       end
 
-      private def apply_embedded_masking!(doc, parent_config)
-        embedded_children_of(parent_config).each do |child|
-          walk(doc, child.embedded_in.path) do |subdoc|
-            apply_replace_with!(subdoc, child)
-            apply_embedded_masking!(subdoc, child)
+      PLACEHOLDER_PATTERN = /\{([^{}]+)\}/
+
+      # Split a `replace_with` template into a flat list of segments (called once
+      # per masked field at plan-build time, see #build_mask_plan). A segment is
+      # either a literal String or a 1-element Array `[ref]` marking a `{ref}`
+      # placeholder. #render_template then concatenates them, skipping the regex
+      # scan / block / `Regexp.last_match` a per-document `gsub` would repeat (~2.5x
+      # faster per field). The segment walk reproduces the old gsub byte-for-byte
+      # (missing keys render as "", literals pass through unchanged).
+      private def compile_template(template)
+        segments = []
+        pos = 0
+        while (md = PLACEHOLDER_PATTERN.match(template, pos))
+          segments << template[pos...md.begin(0)] if md.begin(0) > pos
+          segments << [md[1]]
+          pos = md.end(0)
+        end
+        segments << template[pos..] if pos < template.length
+        segments
+      end
+
+      private def render_template(segments, doc)
+        out = +''
+        segments.each do |seg|
+          if seg.is_a?(Array)
+            ref = seg[0]
+            out << (doc.key?(ref) ? doc[ref] : nil).to_s
+          else
+            out << seg
           end
         end
+        out
       end
 
       private def embedded_children_of(parent_config)
         @embedded_children_by_parent.fetch(parent_config.name, [])
-      end
-
-      private def walk(doc, dotted_path)
-        segments = dotted_path.split(".")
-        *prefix, last = segments
-        container = prefix.reduce(doc) { |acc, seg| acc.is_a?(Hash) ? acc[seg] : nil }
-        return unless container.is_a?(Hash)
-
-        value = container[last]
-        case value
-        when Array then value.each { |sub| yield sub if sub.is_a?(Hash) }
-        when Hash  then yield value
-        end
       end
 
       private def extended_json(doc)
