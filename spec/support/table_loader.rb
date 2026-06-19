@@ -21,7 +21,7 @@ module TableLoader
       table = table_repository[adapter][table_name]
       return table if table
 
-      path = File.join("scenario", "#{adapter}-schema", "#{table_name}.json")
+      path = File.join("e2e", "#{adapter}-schema", "#{table_name}.json")
       raise "Table config not found: #{path}" unless File.exist?(path)
 
       json = JSON.parse(File.read(path))

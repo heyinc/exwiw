@@ -4,7 +4,7 @@
 # pg_dump enforces a strict major-version match with the server, but the dev
 # DB runs postgres:17 in Docker while a contributor's host may ship pg_dump
 # 14/16 (e.g. Homebrew). Reusing the container's binary lets everyone run
-# `scenario/test_with_postgresql.sh` without installing pg17 system-wide.
+# `e2e/test_with_postgresql.sh` without installing pg17 system-wide.
 #
 # Activated via `mise.toml` (`_.path`) so this only shadows pg_dump inside
 # this repository.

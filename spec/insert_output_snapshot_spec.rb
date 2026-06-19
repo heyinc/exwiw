@@ -32,7 +32,7 @@ module Exwiw
     SCENARIOS = [
       {
         adapter: "sqlite",
-        schema_dir: "scenario/sqlite-schema",
+        schema_dir: "e2e/sqlite-schema",
         connection: {
           adapter: "sqlite",
           database_name: "tmp/test.sqlite3",
@@ -41,7 +41,7 @@ module Exwiw
       },
       {
         adapter: "mysql",
-        schema_dir: "scenario/mysql-schema",
+        schema_dir: "e2e/mysql-schema",
         connection: {
           adapter: "mysql",
           database_name: "exwiw_test",
@@ -51,7 +51,7 @@ module Exwiw
       },
       {
         adapter: "postgresql",
-        schema_dir: "scenario/postgresql-schema",
+        schema_dir: "e2e/postgresql-schema",
         connection: {
           adapter: "postgresql",
           database_name: "exwiw_test",
@@ -61,7 +61,7 @@ module Exwiw
       },
       {
         adapter: "postgresql",
-        schema_dir: "scenario/postgresql-schema",
+        schema_dir: "e2e/postgresql-schema",
         output_format: "copy",
         snapshot_subdir: "postgresql-copy",
         connection: {
@@ -73,7 +73,7 @@ module Exwiw
       },
       {
         adapter: "mongodb",
-        schema_dir: "scenario/mongodb-schema",
+        schema_dir: "e2e/mongodb-schema",
         # The mongo seed keys `_id` with a deterministic ObjectId: a 4-hex
         # per-collection tag (shops -> "a001") + the zero-padded integer. The
         # tag's letter keeps the id from being all-decimal, so the adapter

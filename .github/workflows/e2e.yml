@@ -1,4 +1,4 @@
-name: Scenario
+name: E2E
 
 on:
   push:
@@ -22,19 +22,19 @@ jobs:
           bundler-cache: true
 
       - name: Run exwiw
-        run: scenario/test_with_sqlite.sh
+        run: e2e/test_with_sqlite.sh
 
       - name: Run exwiw (--config file)
-        run: scenario/test_with_sqlite_config.sh
+        run: e2e/test_with_sqlite_config.sh
 
       - name: Run exwiw (from clean target DB)
-        run: scenario/test_with_sqlite_from_clean.sh
+        run: e2e/test_with_sqlite_from_clean.sh
 
       - name: Run exwiw (scope-column mode)
-        run: scenario/test_with_sqlite_scope.sh
+        run: e2e/test_with_sqlite_scope.sh
 
       - name: Run exwiw (explain)
-        run: scenario/test_explain_with_sqlite.sh
+        run: e2e/test_explain_with_sqlite.sh
 
   with_mysql:
     runs-on: ubuntu-latest
@@ -68,13 +68,13 @@ jobs:
           bundler-cache: true
 
       - name: Run exwiw
-        run: scenario/test_with_mysql.sh
+        run: e2e/test_with_mysql.sh
 
       - name: Run exwiw (from clean target DB)
-        run: scenario/test_with_mysql_from_clean.sh
+        run: e2e/test_with_mysql_from_clean.sh
 
       - name: Run exwiw (explain)
-        run: scenario/test_explain_with_mysql.sh
+        run: e2e/test_explain_with_mysql.sh
 
   with_postgres:
     runs-on: ubuntu-latest
@@ -121,16 +121,16 @@ jobs:
           bundler-cache: true
 
       - name: Run exwiw
-        run: scenario/test_with_postgresql.sh
+        run: e2e/test_with_postgresql.sh
 
       - name: Run exwiw (from clean target DB)
-        run: scenario/test_with_postgresql_from_clean.sh
+        run: e2e/test_with_postgresql_from_clean.sh
 
       - name: Run exwiw (copy mode)
-        run: scenario/test_with_postgresql_copy.sh
+        run: e2e/test_with_postgresql_copy.sh
 
       - name: Run exwiw (explain)
-        run: scenario/test_explain_with_postgresql.sh
+        run: e2e/test_explain_with_postgresql.sh
 
   with_mongodb:
     runs-on: ubuntu-latest
@@ -178,10 +178,10 @@ jobs:
           bundler-cache: true
 
       - name: Run exwiw
-        run: scenario/test_with_mongodb.sh
+        run: e2e/test_with_mongodb.sh
 
       - name: Run exwiw (from clean target DB)
-        run: scenario/test_with_mongodb_from_clean.sh
+        run: e2e/test_with_mongodb_from_clean.sh
 
       - name: Run exwiw (--ids-field target)
-        run: scenario/test_with_mongodb_ids_field.sh
+        run: e2e/test_with_mongodb_ids_field.sh

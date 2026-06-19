@@ -6,9 +6,9 @@
 `createCollection` / `createIndex` を書き出す実装を既に持っているが、scenario 側で
 これを apply するパスが無く、CI でも検証できていなかった。具体的なギャップ:
 
-1. `scenario/setup_with_mongodb.rb` は seed を `insert_many` で流すだけで、index を一切作っていない
+1. `e2e/setup_with_mongodb.rb` は seed を `insert_many` で流すだけで、index を一切作っていない
 2. その結果 `tmp/mongodb/insert-000-schema.js` は `createCollection` 行のみで `createIndex` が 0 行
-3. `scenario/import_with_mongodb.rb` は `insert-*.jsonl` だけを glob して処理しており、`insert-000-schema.js` を一切実行しない
+3. `e2e/import_with_mongodb.rb` は `insert-*.jsonl` だけを glob して処理しており、`insert-000-schema.js` を一切実行しない
 
 sqlite3 / mysql2 / postgresql で導入済みの「from clean DB から立ち上げる」流れと
 MongoDB の `insert-000-schema.js` が連動していない状態だった (issue #16)。
@@ -25,10 +25,10 @@ MongoDB の `insert-000-schema.js` が連動していない状態だった (issu
 ### scenario 層
 | パス | 変更 |
 |---|---|
-| `scenario/setup_with_mongodb.rb` | seed 流し込みの後に 3 種類の代表的 index を作る (unique `shops.name` / plain `users.email` / 複合 `orders.shop_id+user_id`) |
-| `scenario/import_with_mongodb.rb` | `--no-drop` と `--input-dir DIR` フラグを追加。from-clean は drop すると schema.js が作った index ごと消えてしまうため |
-| `scenario/verify_with_mongodb.rb` | `--with-indexes` で target collection の index を assert (default scenario では import 時に drop されるのでスキップ) |
-| `scenario/test_with_mongodb_from_clean.sh` (新規) | `mongosh dropDatabase` → exwiw 実行 → `mongosh insert-000-schema.js` → `import --no-drop --input-dir tmp/mongodb-clean` → `verify --with-indexes` |
+| `e2e/setup_with_mongodb.rb` | seed 流し込みの後に 3 種類の代表的 index を作る (unique `shops.name` / plain `users.email` / 複合 `orders.shop_id+user_id`) |
+| `e2e/import_with_mongodb.rb` | `--no-drop` と `--input-dir DIR` フラグを追加。from-clean は drop すると schema.js が作った index ごと消えてしまうため |
+| `e2e/verify_with_mongodb.rb` | `--with-indexes` で target collection の index を assert (default scenario では import 時に drop されるのでスキップ) |
+| `e2e/test_with_mongodb_from_clean.sh` (新規) | `mongosh dropDatabase` → exwiw 実行 → `mongosh insert-000-schema.js` → `import --no-drop --input-dir tmp/mongodb-clean` → `verify --with-indexes` |
 | `.github/workflows/scenario.yml` | with_mongodb job に `mongodb-mongosh` install ステップと `test_with_mongodb_from_clean.sh` 実行ステップを追加。apt repo の codename は `jammy` 固定 (ubuntu-latest が noble に上がる前提) |
 
 ### snapshot test 層
@@ -56,8 +56,8 @@ MongoDB の `insert-000-schema.js` が連動していない状態だった (issu
 
 ## Verification
 
-- `bash scenario/test_with_mongodb.sh` 既存 scenario 維持を確認 ✓
-- `bash scenario/test_with_mongodb_from_clean.sh` 新規 scenario 通過を確認
+- `bash e2e/test_with_mongodb.sh` 既存 scenario 維持を確認 ✓
+- `bash e2e/test_with_mongodb_from_clean.sh` 新規 scenario 通過を確認
   (indexes round-trip OK) ✓
 - `bundle exec rspec` 全 153 examples / 0 failures ✓
 - `tmp/mongodb-clean/insert-000-schema.js` を目視で確認:

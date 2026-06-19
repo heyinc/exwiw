@@ -9,22 +9,22 @@
 
 しかし **生成された COPY-mode SQL を実際に `psql -f` で取り込めるかを検証する end-to-end テストが存在しない**。ユーザーは COPY モードで invalid な SQL が出ているのではと疑っており、それを実DBに対して検証したい。
 
-既存の INSERT モードは `scenario/test_with_postgresql.sh` が `psql -f` での再取込まで含めて検証している。これに対応する COPY モード版が無い状態。
+既存の INSERT モードは `e2e/test_with_postgresql.sh` が `psql -f` での再取込まで含めて検証している。これに対応する COPY モード版が無い状態。
 
 ゴール: COPY モード出力を実際に psql に食わせる E2E シナリオ + スナップショット回帰テストを追加し、潜在的な invalid SQL を表面化する。
 
 ## 変更ファイル
 
-1. **新規** `scenario/test_with_postgresql_copy.sh` — E2E シェル
+1. **新規** `e2e/test_with_postgresql_copy.sh` — E2E シェル
 2. **修正** `spec/insert_output_snapshot_spec.rb` — COPY 用の SCENARIOS エントリと `snapshot_subdir` 対応
 3. **修正** `.github/workflows/scenario.yml` — `with_postgres` ジョブに新ステップ
 4. **新規** `spec/insert_output_snapshots/postgresql-copy/insert-*.sql` — `UPDATE_SNAPSHOTS=1` で自動生成
 
 ## 詳細
 
-### 1. `scenario/test_with_postgresql_copy.sh`
+### 1. `e2e/test_with_postgresql_copy.sh`
 
-`scenario/test_with_postgresql.sh` を雛形にして以下のみ差し替え:
+`e2e/test_with_postgresql.sh` を雛形にして以下のみ差し替え:
 
 - `FROM_DATABASE_NAME="exwiw_scenario_prod_db_copy"`
 - `TO_DATABASE_NAME="exwiw_scenario_dev_db_copy"`（並列実行されても既存シナリオと衝突しない名前）
@@ -47,7 +47,7 @@
 ```ruby
 {
   adapter: "postgresql",
-  config_dir: "scenario/postgresql-schema",
+  config_dir: "e2e/postgresql-schema",
   output_format: "copy",
   snapshot_subdir: "postgresql-copy",
   connection: { adapter: "postgresql", database_name: "exwiw_test",
@@ -64,7 +64,7 @@
 
 ```yaml
       - name: Run exwiw (copy mode)
-        run: scenario/test_with_postgresql_copy.sh
+        run: e2e/test_with_postgresql_copy.sh
 ```
 
 `postgres:17-alpine` サービスと `postgresql-client-17` インストールは既存ステップで完了済みなので追加不要。
@@ -80,7 +80,7 @@ UPDATE_SNAPSHOTS=1 bundle exec rspec spec/insert_output_snapshot_spec.rb
 ## 検証手順
 
 1. ローカルで `docker compose up -d postgres` を起動
-2. `bash scenario/test_with_postgresql_copy.sh` を実行 — exit 0 ならば COPY モード SQL は psql 経由で valid。non-zero なら invalid SQL が表面化（その時点で原因を特定して別途修正）
+2. `bash e2e/test_with_postgresql_copy.sh` を実行 — exit 0 ならば COPY モード SQL は psql 経由で valid。non-zero なら invalid SQL が表面化（その時点で原因を特定して別途修正）
 3. `UPDATE_SNAPSHOTS=1 bundle exec rspec spec/insert_output_snapshot_spec.rb` でスナップショットを生成
 4. `bundle exec rspec spec/insert_output_snapshot_spec.rb` を `UPDATE_SNAPSHOTS` 無しで再実行し、全シナリオ（sqlite3 / mysql2 / postgresql / postgresql-copy / mongodb）が通ることを確認
 5. CI 上で `with_postgres` ジョブの新ステップ `Run exwiw (copy mode)` が通る（または invalid SQL を検出する）ことを確認

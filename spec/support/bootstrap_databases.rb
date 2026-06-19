@@ -94,7 +94,7 @@ module BootstrapDatabases
       client[collection_name].insert_many(docs) unless docs.empty?
     end
 
-    # Mirror scenario/setup_with_mongodb.rb so the insert-000-schema.js
+    # Mirror e2e/setup_with_mongodb.rb so the insert-000-schema.js
     # snapshot exercises createIndex emission (unique / plain / compound).
     client["shops"].indexes.create_one({ "name" => 1 }, name: "idx_shops_name", unique: true)
     client["users"].indexes.create_one({ "email" => 1 }, name: "idx_users_email")

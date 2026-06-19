@@ -117,7 +117,7 @@ Error: `pg_dump` not found in PATH. exwiw needs pg_dump to generate insert-000-s
 | `lib/exwiw/ddl_postprocessor.rb` (新規) | `IF NOT EXISTS` 書き換え / DO ブロックラップ |
 | `lib/exwiw.rb` | 新規ファイルの require |
 | `README.md` | `dump/` の出力に `insert-000-schema.{sql,js}` を追記、import 手順を更新 |
-| `spec/adapter/sqlite3_adapter_spec.rb` | `dump_schema` 統合テスト (`scenario/initdb/init.sqlite3` に対して実行し、出力が `CREATE TABLE IF NOT EXISTS` を含むことを assert) |
+| `spec/adapter/sqlite3_adapter_spec.rb` | `dump_schema` 統合テスト (`e2e/initdb/init.sqlite3` に対して実行し、出力が `CREATE TABLE IF NOT EXISTS` を含むことを assert) |
 | `spec/adapter/mongodb_adapter_spec.rb` | `dump_schema` テスト (db スタブで `listIndexes` を返し、出力 JS を assert) |
 | `spec/runner_spec.rb` | `insert-000-schema.sql` が `output_dir` に書かれることを assert (Sqlite3 経由で実際に流れることを確認) |
 
@@ -134,9 +134,9 @@ Error: `pg_dump` not found in PATH. exwiw needs pg_dump to generate insert-000-s
 2. `bundle exec rspec spec/adapter/mongodb_adapter_spec.rb` — mongo クライアントをスタブして JS 出力に `db.createCollection("users")` と該当 collection の `createIndex(...)` が含まれることを確認。
 
 ### E2E (scenario スクリプト経由)
-3. `scenario/test_with_sqlite3.sh` を実行し、`dump/insert-000-schema.sql` が生成されることと、空 DB に対して `sqlite3 empty.db < dump/insert-000-schema.sql && for f in dump/insert-*.sql; do sqlite3 empty.db < $f; done` が成功することを確認する。
-4. `scenario/test_with_mysql2.sh`, `scenario/test_with_postgresql.sh` も同様に、`mysql empty_db < dump/insert-000-schema.sql` / `psql empty_db -f dump/insert-000-schema.sql` が成功 → 続けて insert ファイル群が流せることを確認。**`mysqldump` / `pg_dump` を docker compose のコンテナ内 (`compose.yml` で起動する DB コンテナ) で実行する必要がある場合は、scenario スクリプトを更新する。**
-5. `scenario/test_with_mongodb.sh` を実行し、`dump/insert-000-schema.js` が出力されることと、空 DB に対して `mongosh "mongodb://localhost/empty_db" < dump/insert-000-schema.js` が成功すること、続いて `mongoimport` で各 jsonl が流せることを確認。
+3. `e2e/test_with_sqlite3.sh` を実行し、`dump/insert-000-schema.sql` が生成されることと、空 DB に対して `sqlite3 empty.db < dump/insert-000-schema.sql && for f in dump/insert-*.sql; do sqlite3 empty.db < $f; done` が成功することを確認する。
+4. `e2e/test_with_mysql2.sh`, `e2e/test_with_postgresql.sh` も同様に、`mysql empty_db < dump/insert-000-schema.sql` / `psql empty_db -f dump/insert-000-schema.sql` が成功 → 続けて insert ファイル群が流せることを確認。**`mysqldump` / `pg_dump` を docker compose のコンテナ内 (`compose.yml` で起動する DB コンテナ) で実行する必要がある場合は、scenario スクリプトを更新する。**
+5. `e2e/test_with_mongodb.sh` を実行し、`dump/insert-000-schema.js` が出力されることと、空 DB に対して `mongosh "mongodb://localhost/empty_db" < dump/insert-000-schema.js` が成功すること、続いて `mongoimport` で各 jsonl が流せることを確認。
 6. **idempotency 確認**: 同じ schema ファイルを 2 回流してもエラーにならないこと (`IF NOT EXISTS` / `DO $$ EXCEPTION WHEN duplicate_object` / `try/catch on createCollection` が効いている)。
 
 ### 手動確認のチェックポイント

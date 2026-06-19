@@ -1,6 +1,6 @@
 [env]
-# Prepend scenario/bin so `pg_dump` resolves to the wrapper that delegates to
+# Prepend e2e/bin so `pg_dump` resolves to the wrapper that delegates to
 # the postgres container (compose.yml). exwiw's PostgreSQL adapter shells out
 # to pg_dump, which requires a server/client major-version match — the dev DB
 # is postgres:17 while host clients are often older (e.g. Homebrew pg14).
-_.path = ["./scenario/bin"]
+_.path = ["./e2e/bin"]

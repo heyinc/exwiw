@@ -5,7 +5,7 @@
 # `_id`. It also confirms downstream `references`-based FK propagation works
 # from a uuid-targeted root (sites.business_entity_uuid -> business_entities.uuid).
 #
-# A dedicated schema-dir (scenario/mongodb-schema-ids-field) holds only
+# A dedicated schema-dir (e2e/mongodb-schema-ids-field) holds only
 # business_entities + sites so the dump stays scoped: the default scenario
 # config's root collections (shops, system_announcements) have no belongs_to
 # and would otherwise each dump in full and cascade. For the same reason
@@ -24,7 +24,7 @@ rm -f tmp/mongodb-ids-field/*.jsonl
 
 # Setup source db from seed (shares the seed with test_with_mongodb.sh; the
 # schema-dir, not the seed, is what scopes this scenario to two collections).
-bundle exec ruby scenario/setup_with_mongodb.rb "${FROM_DATABASE_NAME}"
+bundle exec ruby e2e/setup_with_mongodb.rb "${FROM_DATABASE_NAME}"
 
 # Target business_entities by its `uuid` field via --ids-field (and exercise the
 # mongodb-only --target-collection alias while we are at it).
@@ -33,7 +33,7 @@ bundle exec exe/exwiw \
   --host="${MONGO_HOST}" \
   --port="${MONGO_PORT}" \
   --database="${FROM_DATABASE_NAME}" \
-  --schema-dir=scenario/mongodb-schema-ids-field \
+  --schema-dir=e2e/mongodb-schema-ids-field \
   --target-collection=business_entities \
   --ids=be-uuid-0001 \
   --ids-field=uuid \
@@ -41,11 +41,11 @@ bundle exec exe/exwiw \
   --log-level=debug
 
 # Import generated jsonl into target
-bundle exec ruby scenario/import_with_mongodb.rb --input-dir tmp/mongodb-ids-field "${TO_DATABASE_NAME}"
+bundle exec ruby e2e/import_with_mongodb.rb --input-dir tmp/mongodb-ids-field "${TO_DATABASE_NAME}"
 
 # Verify scoped dump landed correctly
 echo "Verifying import..."
-if bundle exec ruby scenario/verify_with_mongodb_ids_field.rb "${TO_DATABASE_NAME}"; then
+if bundle exec ruby e2e/verify_with_mongodb_ids_field.rb "${TO_DATABASE_NAME}"; then
   echo "✓ MongoDB --ids-field scenario passed"
 else
   echo "✗ MongoDB --ids-field scenario verification failed"

@@ -22,7 +22,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./seed:/seed
-      - ./tmp:/scenario/tmp
+      - ./tmp:/e2e/tmp
 
   mongodb:
     image: mongo:7

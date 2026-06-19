@@ -41,7 +41,7 @@ module Exwiw
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1']) }
 
       before do
-        FileUtils.cp('scenario/sqlite-schema/shops.json', File.join(schema_dir, 'shops.json'))
+        FileUtils.cp('e2e/sqlite-schema/shops.json', File.join(schema_dir, 'shops.json'))
       end
 
       it 'prints compiled SQL and EXPLAIN output for the target table' do
@@ -68,7 +68,7 @@ module Exwiw
       let(:runner) do
         ExplainRunner.new(
           connection_config: connection_config,
-          schema_dir: 'scenario/sqlite-schema',
+          schema_dir: 'e2e/sqlite-schema',
           dump_target: dump_target,
           logger: logger,
           io: io,
@@ -89,7 +89,7 @@ module Exwiw
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1']) }
 
       before do
-        shops = JSON.parse(File.read('scenario/sqlite-schema/shops.json'))
+        shops = JSON.parse(File.read('e2e/sqlite-schema/shops.json'))
         shops['ignore'] = true
         File.write(File.join(schema_dir, 'shops.json'), JSON.dump(shops))
       end

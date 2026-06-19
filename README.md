@@ -665,7 +665,7 @@ The MongoDB adapter is experimental. To use it:
 MongoDB models often store one-to-many relationships as embedded subdocument arrays (e.g. `users` documents with a `posts: [...]` field). To mask fields inside embedded subdocuments, declare a separate config with `embedded_in`:
 
 ```jsonc
-// scenario/users.json — top-level collection
+// e2e/users.json — top-level collection
 {
   "name": "users",
   "primary_key": "_id",
@@ -677,7 +677,7 @@ MongoDB models often store one-to-many relationships as embedded subdocument arr
   ]
 }
 
-// scenario/posts.json — embedded under users.posts
+// e2e/posts.json — embedded under users.posts
 {
   "name": "posts",
   "primary_key": "_id",

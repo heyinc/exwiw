@@ -57,7 +57,7 @@ bundle exec exe/exwiw \
   --port=5432 \
   --user=postgres \
   --database="${FROM_DATABASE_NAME}" \
-  --schema-dir=scenario/postgresql-schema-from-clean \
+  --schema-dir=e2e/postgresql-schema-from-clean \
   --target-table=shops \
   --ids=1 \
   --output-dir=tmp/postgresql-clean
@@ -70,7 +70,7 @@ for file in tmp/postgresql-clean/insert-*.sql; do
   if [ -n "$CI" ]; then
     $PSQL_FILE_CMD -d "${TO_DATABASE_NAME}" -f "${file}" > /dev/null
   else
-    docker compose exec postgres psql -U postgres -d "${TO_DATABASE_NAME}" -f "/scenario/${file}" > /dev/null
+    docker compose exec postgres psql -U postgres -d "${TO_DATABASE_NAME}" -f "/e2e/${file}" > /dev/null
   fi
 done
 

@@ -30,7 +30,7 @@ bundle exec exe/exwiw \
   --port=3306 \
   --user=root \
   --database="${FROM_DATABASE_NAME}" \
-  --schema-dir=scenario/mysql-schema \
+  --schema-dir=e2e/mysql-schema \
   --target-table=shops \
   --ids=1 \
   --output-dir=tmp/mysql \

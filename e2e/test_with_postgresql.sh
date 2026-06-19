@@ -1,16 +1,9 @@
 #!/bin/bash
 
-# Variant of test_with_postgresql.sh that exercises `--output-format=copy`.
-# The generated insert-*.sql files contain `COPY ... FROM stdin;` blocks
-# instead of bulk INSERTs. We feed them back through `psql -f` to confirm
-# the produced SQL is actually valid PostgreSQL — a malformed COPY block,
-# missing `\.` terminator, or unescaped value would surface here as a
-# psql parse/runtime error and abort the script via `set -e`.
-
 set -e
 
-export FROM_DATABASE_NAME="exwiw_scenario_prod_db_copy"
-export TO_DATABASE_NAME="exwiw_scenario_dev_db_copy"
+export FROM_DATABASE_NAME="exwiw_scenario_prod_db"
+export TO_DATABASE_NAME="exwiw_scenario_dev_db"
 
 # Determine PostgreSQL command based on environment
 if [ -n "$CI" ]; then
@@ -41,7 +34,7 @@ fi
 
 # Clean output dir so stale insert-*.sql / delete-*.sql from previous runs do
 # not leak in via the glob loops below.
-rm -rf tmp/postgresql-copy
+rm -rf tmp/postgresql
 
 # run exwiw
 export DATABASE_PASSWORD="test_password"
@@ -51,28 +44,27 @@ bundle exec exe/exwiw \
   --port=5432 \
   --user=postgres \
   --database="${FROM_DATABASE_NAME}" \
-  --schema-dir=scenario/postgresql-schema \
+  --schema-dir=e2e/postgresql-schema \
   --target-table=shops \
   --ids=1 \
-  --output-format=copy \
-  --output-dir=tmp/postgresql-copy
+  --output-dir=tmp/postgresql
 
 # import to db
-for file in tmp/postgresql-copy/delete-*.sql; do
+for file in tmp/postgresql/delete-*.sql; do
   echo "Run ${file}"
   if [ -n "$CI" ]; then
     $PSQL_FILE_CMD -d "${TO_DATABASE_NAME}" -f "${file}" > /dev/null
   else
-    docker compose exec postgres psql -U postgres -d "${TO_DATABASE_NAME}" -f "/scenario/${file}" > /dev/null
+    docker compose exec postgres psql -U postgres -d "${TO_DATABASE_NAME}" -f "/e2e/${file}" > /dev/null
   fi
 done
 
-for file in tmp/postgresql-copy/insert-*.sql; do
+for file in tmp/postgresql/insert-*.sql; do
   echo "Run ${file}"
   if [ -n "$CI" ]; then
     $PSQL_FILE_CMD -d "${TO_DATABASE_NAME}" -f "${file}" > /dev/null
   else
-    docker compose exec postgres psql -U postgres -d "${TO_DATABASE_NAME}" -f "/scenario/${file}" > /dev/null
+    docker compose exec postgres psql -U postgres -d "${TO_DATABASE_NAME}" -f "/e2e/${file}" > /dev/null
   fi
 done
 
@@ -81,9 +73,9 @@ done
 # psql exit non-zero, so we evaluate it directly with `if` instead of doing a
 # follow-up COUNT — `set -e` would otherwise kill the script before we could
 # print a friendly diagnosis.
-echo "Testing insert after import (copy mode)..."
+echo "Testing insert after import..."
 if ! $PSQL_CMD -d "${TO_DATABASE_NAME}" -c "INSERT INTO shops (name, updated_at, created_at) VALUES ('Test Shop', '2025-01-01 00:00:00', '2025-01-01 00:00:00');" > /dev/null; then
-  echo "✗ Insert after copy-mode import failed"
+  echo "✗ Insert after import failed"
   exit 1
 fi
-echo "✓ Insert after copy-mode import works correctly (auto increment)"
+echo "✓ Insert after import works correctly (auto increment)"
