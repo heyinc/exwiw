@@ -34,9 +34,10 @@
 #      localhost, so disable the sandbox for this part). Seeds a synthetic table
 #      and measures the end-to-end dump (fetch + write_inserts) two ways: with a
 #      streaming fetch (the shipped #execute) vs materializing the whole result
-#      set (the pre-streaming behavior). For postgresql #execute streams via
-#      libpq single-row mode, so the peak-RSS delta shows hotspot #1 removed;
-#      mysql/sqlite still materialize, so their two paths are equivalent.
+#      set (the pre-streaming behavior). postgresql (libpq single-row mode) and
+#      mysql (mysql2 stream:true) both stream #execute, so the peak-RSS delta
+#      shows hotspot #1 removed; sqlite has no streaming cursor API, so its two
+#      paths are equivalent.
 #      Skipped automatically (with a warning) if the DB is unreachable, so part
 #      A always produces numbers.
 #
@@ -312,8 +313,8 @@ begin
   # Materialize the full result set the way #execute did BEFORE the streaming
   # change (the array-of-arrays each driver hands back), so Part B can show the
   # peak-RSS delta of streaming the fetch instead of buffering the whole table.
-  # Only postgresql streams today (libpq single-row mode); mysql / sqlite still
-  # materialize, so for them the two paths below are equivalent.
+  # postgresql (libpq single-row mode) and mysql (mysql2 stream:true) stream
+  # today; sqlite still materializes, so for it the two paths below are equivalent.
   def materialize(adapter, kind, query)
     sql = adapter.send(:commented_sql, query)
     conn = adapter.send(:connection)
