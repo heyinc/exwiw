@@ -268,6 +268,21 @@ end
 microbench('as_extended_json only', N) { sample.as_extended_json(mode: :relaxed) }
 ext = sample.as_extended_json(mode: :relaxed)
 microbench('JSON.generate(ext) only', N) { JSON.generate(ext) }
+
+# The native (C) encoder vs the pure-Ruby fallback for the same document. Both
+# go through Exwiw::ExtJson; encode_native exists only when the extension was
+# compiled (`rake compile`). They must be byte-identical — assert it before
+# timing so a speedup is never reported against divergent output.
+native = Exwiw::ExtJson.respond_to?(:encode_native)
+puts "  native extension compiled: #{native}"
+if native
+  unless Exwiw::ExtJson.encode_native(sample) == Exwiw::ExtJson.encode_fragment(sample)
+    abort "  NATIVE ENCODER DIVERGED FROM PURE-RUBY FALLBACK — not benchmarking"
+  end
+end
+microbench('ExtJson.encode_fragment (Ruby)', N) { Exwiw::ExtJson.encode_fragment(sample) }
+microbench('ExtJson.encode_native (C)', N) { Exwiw::ExtJson.encode_native(sample) } if native
+
 microbench('full to_bulk_insert(1 doc)', N) { adapter.to_bulk_insert([sample.dup], users_config) }
 
 client.database.drop unless KEEP

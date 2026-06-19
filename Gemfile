@@ -6,6 +6,7 @@ source "https://rubygems.org"
 gemspec
 
 gem "rake"
+gem "rake-compiler" # builds the optional native Extended-JSON extension
 
 gem "rspec"
 

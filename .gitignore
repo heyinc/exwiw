@@ -12,3 +12,11 @@
 .rspec_status
 
 Gemfile.lock
+
+# Native extension build artifacts (only ext/ sources are committed/shipped)
+/lib/exwiw/*.bundle
+/lib/exwiw/*.so
+/ext/**/*.o
+/ext/**/*.bundle
+/ext/**/*.so
+/ext/**/Makefile

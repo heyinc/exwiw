@@ -166,7 +166,7 @@ module Exwiw
         plan = mask_plan(config)
         rows.map do |doc|
           apply_mask_plan!(doc, plan)
-          JSON.generate(extended_json(doc))
+          Exwiw::ExtJson.encode(doc)
         end.join("\n")
       end
 
@@ -487,14 +487,6 @@ module Exwiw
 
       private def embedded_children_of(parent_config)
         @embedded_children_by_parent.fetch(parent_config.name, [])
-      end
-
-      private def extended_json(doc)
-        if doc.respond_to?(:as_extended_json)
-          doc.as_extended_json(mode: :relaxed)
-        else
-          doc
-        end
       end
 
       private def db

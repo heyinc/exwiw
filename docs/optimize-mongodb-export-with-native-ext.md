@@ -1,8 +1,11 @@
 # Design: optional native (C) extension for the MongoDB Extended-JSON encoder
 
-Status: **proposed / not implemented.** This document captures the design for a
-future change. It is the planned successor to the fork/cursor parallelism that
-was removed (see [`optimization-notes.md`](./optimization-notes.md)).
+Status: **implemented.** This document captured the design; it now describes the
+shipped encoder. Source: `ext/exwiw/ext_json/ext_json.c` (native emitter) and
+`lib/exwiw/ext_json.rb` (the optional-load shim + pure-Ruby fallback); the
+byte-identity guard is `spec/ext_json_spec.rb`. It is the successor to the
+fork/cursor parallelism that was removed (see
+[`optimization-notes.md`](./optimization-notes.md)).
 
 ## Motivation
 
@@ -90,15 +93,23 @@ end
 The encoder splits values into a **native fast path** and a **Ruby delegate**:
 
 - **Native (in C):** `Hash`, `Array`, `String`, `Integer` within int64,
-  `true`/`false`/`nil`, and `BSON::ObjectId`. These are the structural bulk plus
-  the single most common leaf (`_id`), and their formatting is simple and stable.
+  `true`/`false`/`nil`, `BSON::ObjectId`, and **in-range `Time`** (years
+  1970..9999). These are the structural bulk plus the two most common leaves in
+  a dumped document — `_id` and the Mongoid `created_at`/`updated_at` timestamps.
+  The in-range Time path resolves the absolute instant with `rb_time_timespec`
+  (epoch seconds + nanoseconds, no `rb_funcall`), formats with `gmtime_r` +
+  `snprintf`, and reproduces bson's rule exactly: a `.mmm` fraction iff
+  `nsec >= 1000` (i.e. `usec != 0`), with the millisecond floored to
+  `nsec / 1e6`. The in-range window is the half-open epoch-second range
+  `[0, 253402300800)`.
 - **Delegate to Ruby** — call back into
   `JSON.generate(value.as_extended_json(mode: :relaxed))` for the individual
   value and splice the returned fragment into the buffer:
   - `Float` — `Float#to_s` diverges from `JSON.generate` for scientific notation
     (`1e20`), so never reformat floats in C.
-  - `Time` — variable fractional digits + the `[1970,9999]` `$numberLong`
-    boundary + ms flooring; too fragile to risk in C v1.
+  - **out-of-range `Time`** (year < 1970 or > 9999) — its `$numberLong` form
+    involves negative-epoch arithmetic, is vanishingly rare in dumped data, and
+    is left to Ruby. The in-range ISO branch is handled natively (above).
   - out-of-int64 `Integer` — must surface the identical `RangeError`.
   - any unrecognized class — `Decimal128`, `BSON::Binary`, `Symbol`, `Regexp`,
     `Date`, `BSON::Timestamp`, etc.
@@ -112,9 +123,14 @@ would have produced for that position. The native walk can therefore hand any
 value it does not want to format to Ruby and splice the result, with no
 divergence.
 
-`Time` and `Float` are candidates for later promotion into the native path if a
-benchmark shows the per-leaf delegate call is a meaningful fraction of the win
-(timestamp-heavy docs call out to Ruby once per `Time` field).
+`Time` was promoted into the native path because the benchmark showed it was
+decisive: with `Time` delegated, a 30-embedded-post timestamp-heavy document
+(32 `Time` fields) sped up only ~1.03× — the per-`Time` `rb_funcall` +
+`as_extended_json` Hash allocation + second `JSON.generate` pass erased the win.
+Formatting in-range `Time` natively brings the same document to ~2.8× (the
+serialization-step ceiling). `Float` remains delegated: matching
+`JSON.generate`'s shortest-round-trip float formatting in C (not `Float#to_s`)
+is not worth the risk for the few floats a typical document carries.
 
 ## C source & buffer design
 
@@ -218,7 +234,11 @@ The private `#extended_json` helper is removed — its logic (including the
 ## Risk register
 
 1. **Time formatting** — variable fraction + ms flooring + `$numberLong`
-   boundary. Mitigated by delegating `Time` to Ruby in v1.
+   boundary. In-range years (1970..9999) are formatted natively via
+   `rb_time_timespec` + `gmtime_r`; the rare out-of-range `$numberLong` form is
+   delegated. Mitigated by a dense byte-identity fuzz over the whole in-range
+   epoch span with mixed nanosecond precision, plus the boundary/sub-ms edges in
+   `spec/ext_json_spec.rb`.
 2. **Float formatting** — `Float#to_s` ≠ `JSON.generate`. Mitigated by delegating.
 3. **String escaping** — must match JSON exactly. Implemented in C, fuzz-tested
    vs the Ruby fallback.

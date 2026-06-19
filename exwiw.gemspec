@@ -33,6 +33,11 @@ Gem::Specification.new do |spec|
   spec.executables = spec.files.grep(%r{\Aexe/}) { |f| File.basename(f) }
   spec.require_paths = ["lib"]
 
+  # Optional native Relaxed Extended JSON encoder for the MongoDB dump path.
+  # With `extensions` set, `gem install exwiw` compiles it automatically; hosts
+  # that cannot compile fall back to the pure-Ruby path (see lib/exwiw/ext_json.rb).
+  spec.extensions = ["ext/exwiw/ext_json/extconf.rb"]
+
   # Uncomment to register a new dependency of your gem
   spec.add_dependency "serdes", "~> 0.1"
 
