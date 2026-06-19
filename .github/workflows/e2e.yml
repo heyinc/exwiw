@@ -1,4 +1,4 @@
-name: Scenario
+name: E2E
 
 on:
   push:
