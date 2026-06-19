@@ -12,9 +12,12 @@ serialization step with no DB at all. The correctness anchor for any future fix
 is `spec/insert_output_snapshot_spec.rb` — the **byte-exact** snapshot of dump
 output.
 
-> **Status:** hotspot #2 (the whole-table INSERT string) is **fixed** — see
-> [Resolution](#resolution-hotspot-2-streamed-single-insert) below. Hotspot #1
-> (full result-set materialization in `execute`) is still open.
+> **Status:** hotspot #2 (the whole-table INSERT string) is **fixed** for all
+> three SQL adapters — see
+> [Resolution #2](#resolution-hotspot-2-streamed-single-insert). Hotspot #1
+> (full result-set materialization in `execute`) is **fixed for postgresql** —
+> see [Resolution #1](#resolution-hotspot-1-streaming-fetch-postgresql). mysql
+> and sqlite still materialize (see Fix direction).
 
 ## The two hotspots (same shape as MongoDB had pre-optimization)
 
@@ -122,15 +125,62 @@ sampler thread (`ps` every 10 ms) plus run-ordering (streamed runs first, cold),
 not the algorithm. The earlier worry about a per-row `IO#print` penalty only
 applied to the naive row-at-a-time prototype, which `flush_rows` slicing avoids.
 
+## Resolution: hotspot #1 (streaming fetch, postgresql)
+
+Implemented for **postgresql**. `PostgresqlAdapter#execute` no longer returns
+`connection.exec(sql).values` (the whole result set as a Ruby array-of-arrays);
+it returns a lazy `PostgresqlAdapter::StreamingResult` that pulls rows off the
+wire one at a time via libpq **single-row mode** (`send_query` +
+`set_single_row_mode` + a `get_result` loop, each yielding one row's
+text-format `Array<String|nil>`). The Runner drives it exactly like the old
+array — `#size` then a single `each_slice` pass — so nothing else changed and
+the output is byte-identical (verified by `insert_output_snapshot_spec`, both
+the `insert` and `copy` pg scenarios).
+
+It mirrors `MongodbAdapter::StreamingResult`, with two SQL-specific points:
+
+- **`#size`** can't be answered cheaply from the cursor, so it runs a separate
+  `SELECT COUNT(*) FROM (<query>) AS exwiw_count_src` (comment-prefixed, like
+  the data query). Postgres prunes the wrapped subquery's unused projection, so
+  the COUNT transfers no row data — but it does re-run the query plan. This is
+  the deliberate cost of keeping the Runner contract (`#size` before iteration,
+  used to skip empty tables and log the count) unchanged, so MongoDB and the
+  other SQL adapters are untouched. (MongoDB's `count_documents` is an
+  index-only walk and cheaper; the SQL COUNT is the analogue.)
+- the streaming pass ties up the connection until fully drained. The Runner
+  always drains it (`write_inserts`) before issuing `post_insert_sql` / DELETE
+  on the same connection, so the ordering holds. `StreamingResult#each` also
+  drains any queued results if iteration is abandoned mid-stream (a SQL error
+  surfaced by `#check`, or the consumer raising), so the connection stays
+  usable.
+
+Measured in **isolated fresh processes** (one per path, so the peak is not
+polluted by other phases — RSS is sticky), 200k rows / ~41.2 MB output:
+
+| pg fetch path | peak RSS | Δ over baseline |
+|---------------|----------|-----------------|
+| materialize (`exec(sql).values`) + streamed write (OLD) | ~360 MB | ~320 MB |
+| **single-row stream + streamed write (NEW)** | **~48 MB** | **~12 MB** |
+
+So the full result set (~320 MB of Ruby strings/arrays for 200k×8) is no longer
+resident: peak drops ~**310 MB (~87%)** and is now *below* the 41 MB output
+size, because the row is pulled one at a time and the write buffer is bounded to
+~2,000 tuples (hotspot #2's fix). Speed is unchanged (~1.8 s both paths on the
+in-process bench; the COUNT is cheap on an indexed seed). The reproducible A/B
+is in `bench_sql_dump.rb` Part B (`execute(stream)` vs `execute(materialize)`,
+with a byte-identity assertion).
+
 ## Fix direction for the next iteration
 
-1. ~~**Bounded-memory write.**~~ **Done** — see Resolution above.
-2. **Streaming result fetch (removes hotspot #1, more invasive).** Avoid
-   materializing the whole result set: mysql2 supports `stream: true`
-   (`cache_rows: false`), pg supports single-row mode (`set_single_row_mode` /
-   `get_result`). sqlite3 has no streaming cursor API, so it would keep the
-   current behavior. This is the larger, per-driver change and mirrors the
-   MongoDB `StreamingResult` work.
+1. ~~**Bounded-memory write.**~~ **Done (all adapters)** — see Resolution #2.
+2. **Streaming result fetch.** ~~postgresql~~ **Done** — see Resolution #1.
+   Still open for the other drivers: mysql2 supports `stream: true`
+   (`cache_rows: false`) — the `MysqlClient` would need a streaming `query`
+   variant that yields stringified rows lazily instead of `res.to_a.map`.
+   sqlite3 has **no** streaming cursor API (`Database#execute` buffers), so it
+   keeps the current behavior; its `#size` (a separate COUNT) would buy nothing.
+   So the remaining win is mysql only. Its `#size` would also need a COUNT
+   query, same tradeoff as postgresql.
 
 ## Methodology notes
 

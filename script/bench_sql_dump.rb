@@ -30,11 +30,19 @@
 #      SQL would split into multiple INSERT statements and change the output.
 #      This is the controllable memory lever.
 #
-#   B. Live-DB execute bench (needs a reachable DB; the dev sandbox blocks
+#   B. Live-DB fetch bench (needs a reachable DB; the dev sandbox blocks
 #      localhost, so disable the sandbox for this part). Seeds a synthetic table
-#      and measures adapter.execute — the full-result-set materialization cost.
+#      and measures the end-to-end dump (fetch + write_inserts) two ways: with a
+#      streaming fetch (the shipped #execute) vs materializing the whole result
+#      set (the pre-streaming behavior). For postgresql #execute streams via
+#      libpq single-row mode, so the peak-RSS delta shows hotspot #1 removed;
+#      mysql/sqlite still materialize, so their two paths are equivalent.
 #      Skipped automatically (with a warning) if the DB is unreachable, so part
 #      A always produces numbers.
+#
+#      NOTE: read the *isolated* (fresh-process) peaks in the notes for
+#      defensible absolute numbers — in-process RSS is sticky and the second
+#      path's peak is polluted by the first.
 #
 # Usage:
 #   bundle exec ruby script/bench_sql_dump.rb                 # postgresql, both parts
@@ -301,12 +309,53 @@ begin
   query.from(TABLE)
   query.select(table.columns)
 
-  results = measure('execute (SELECT -> rows in memory)') { adapter.execute(query) }
-  puts "  rows materialized: #{results.size}"
+  # Materialize the full result set the way #execute did BEFORE the streaming
+  # change (the array-of-arrays each driver hands back), so Part B can show the
+  # peak-RSS delta of streaming the fetch instead of buffering the whole table.
+  # Only postgresql streams today (libpq single-row mode); mysql / sqlite still
+  # materialize, so for them the two paths below are equivalent.
+  def materialize(adapter, kind, query)
+    sql = adapter.send(:commented_sql, query)
+    conn = adapter.send(:connection)
+    case kind
+    when 'postgresql' then conn.exec(sql).values
+    when 'mysql'      then conn.query(sql).rows
+    when 'sqlite'     then conn.execute(sql)
+    end
+  end
 
-  tmp_full = File.join(Dir.tmpdir, 'exwiw_sql_bench_full.sql')
-  measure('  + WHOLE-string write') { write_whole(adapter, results, table, tmp_full) }
-  File.delete(tmp_full)
+  # End-to-end dump = fetch + write. Both write via the shipped, bounded
+  # #write_inserts (hotspot #2 already streamed); the only difference is whether
+  # the FETCH materializes the whole result set (OLD) or streams it (NEW).
+  def dump_to(adapter, results, table, path)
+    File.open(path, 'w') do |file|
+      adapter.write_inserts(file, results, table, nil)
+      file.print("\n")
+    end
+  end
+
+  # STREAMING fetch first so its peak RSS is not polluted by the materialized
+  # array the OLD path holds (RSS is sticky — reclaimed lazily).
+  tmp_stream = File.join(Dir.tmpdir, 'exwiw_sql_bench_stream_fetch.sql')
+  rows_streamed = nil
+  measure('execute(stream) + write_inserts (NEW)') do
+    results = adapter.execute(query)
+    rows_streamed = results.size
+    dump_to(adapter, results, table, tmp_stream)
+  end
+  puts "  rows: #{rows_streamed}"
+
+  tmp_mat = File.join(Dir.tmpdir, 'exwiw_sql_bench_materialized.sql')
+  measure('execute(materialize) + write_inserts (OLD)') do
+    results = materialize(adapter, ADAPTER, query)
+    dump_to(adapter, results, table, tmp_mat)
+  end
+
+  identical = File.size(tmp_stream) == File.size(tmp_mat) &&
+              File.read(tmp_stream) == File.read(tmp_mat)
+  printf("  -> stream/materialize byte-identical: %s\n", identical.to_s)
+  File.delete(tmp_stream)
+  File.delete(tmp_mat)
 ensure
   drop!(adapter, ADAPTER, TABLE)
   puts "\nDone (dropped #{TABLE})."
