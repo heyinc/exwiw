@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **MongoDB: optional native (C) encoder for the Extended-JSON dump path** (no flag, byte-identical output, pure-Ruby fallback). Encoding each document to MongoDB Relaxed Extended JSON — previously `JSON.generate(doc.as_extended_json(mode: :relaxed))`, which rebuilds the whole document into an intermediate transformed Hash tree and then walks it again — was the dominant per-document CPU cost (~82% of serialization on embed-heavy data). A new C extension (`ext/exwiw/ext_json/`) emits the JSONL line in a single native tree-walk. It formats the structural bulk plus the leaves that dominate a dumped document — `Hash`, `Array`, `String`, fixnum `Integer`, `true`/`false`/`nil`, `BSON::ObjectId` (`_id`), and in-range `Time` (the Mongoid `created_at`/`updated_at` timestamps) — and delegates everything else (`Float`, out-of-int64 `Integer`, out-of-range `Time`, `Symbol`, `Decimal128`, …) back to the exact pure-Ruby path, so the output is provably byte-for-byte identical. On a 30-embedded-post timestamp-heavy document this serializes ~2.8× faster. With `gem install exwiw` the extension compiles automatically; hosts that cannot compile (JRuby/TruffleRuby, no toolchain) fall back to the pure-Ruby encoder, so exwiw stays installable as a pure-Ruby gem. See [`docs/optimize-mongodb-export-with-native-ext.md`](docs/optimize-mongodb-export-with-native-ext.md).
+
 ## [0.5.3] - 2026-06-19
 
 ### Changed
