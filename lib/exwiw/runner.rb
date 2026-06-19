@@ -35,6 +35,8 @@ module Exwiw
 
       table_by_name = configs.each_with_object({}) { |config, hash| hash[config.name] = config }
 
+      validate_target_exists!(table_by_name)
+
       target = table_by_name[@dump_target.table_name]
       adapter.validate_as_dump_target!(target) if target
 
@@ -215,6 +217,20 @@ module Exwiw
       end
 
       ignored_names.each { |n| @logger.info("Table '#{n}' is marked ignore:true (schema will be included, data extraction skipped)") }
+    end
+
+    # A --target-table naming a table with no matching schema config produces no
+    # where/join clauses for any table, so every table falls through to the "no
+    # relation -> dump all" path: instead of a scoped extraction the user would
+    # get a full dump of the whole database. Catch the (almost certainly mistyped)
+    # name up front. Scope-column mode has no target table, so this is a no-op there.
+    private def validate_target_exists!(table_by_name)
+      return if @dump_target.table_name.nil?
+      return if table_by_name.key?(@dump_target.table_name)
+
+      raise ArgumentError,
+            "--target-table '#{@dump_target.table_name}' was not found among the " \
+            "schema configs in #{@schema_dir}. Check the table name."
     end
 
     private def validate_rails_managed_target!(configs)

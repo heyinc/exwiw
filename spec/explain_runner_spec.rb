@@ -98,5 +98,17 @@ module Exwiw
         expect { runner.run }.to raise_error(ArgumentError, /target-table 'shops' is marked ignore:true/)
       end
     end
+
+    describe '#run when --target-table does not exist in the schema' do
+      let(:dump_target) { DumpTarget.new(table_name: 'nonexistent', ids: ['1']) }
+
+      before do
+        FileUtils.cp('e2e/sqlite-schema/shops.json', File.join(schema_dir, 'shops.json'))
+      end
+
+      it 'raises ArgumentError' do
+        expect { runner.run }.to raise_error(ArgumentError, /target-table 'nonexistent' was not found/)
+      end
+    end
   end
 end

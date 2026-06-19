@@ -81,6 +81,8 @@ exwiw \
 
 By default `--ids` are matched against the target table's primary key. `--ids-column=COLUMN` matches them against a different column instead (e.g. `--target-table=users --ids=alice@example.com --ids-column=email`). Related tables are still extracted correctly: their foreign keys are resolved through the target via a subquery (`WHERE fk IN (SELECT pk FROM target WHERE COLUMN IN (...))`), so only the target table's filter column changes. This is the SQL-adapter counterpart of the mongodb `--ids-field`; the two are mutually exclusive and each is rejected by the other adapter family. Note: if `COLUMN` is itself masked, re-running `delete-*` against an already-imported (masked) dump won't match, so prefer a stable natural key.
 
+`--target-table` must name a table that has a schema config in `--schema-dir`; a name with no matching config raises `ArgumentError` (rather than silently falling through to a full dump of every table).
+
 When `--target-table` and `--ids` are omitted, exwiw dumps all tables defined in `--schema-dir`:
 
 ```bash

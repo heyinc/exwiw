@@ -23,6 +23,8 @@ module Exwiw
 
       table_by_name = configs.each_with_object({}) { |config, hash| hash[config.name] = config }
 
+      validate_target_exists!(table_by_name)
+
       target = table_by_name[@dump_target.table_name]
       adapter.validate_as_dump_target!(target) if target
 
@@ -60,6 +62,17 @@ module Exwiw
         json = JSON.parse(File.read(file))
         klass.from(json).reject_ignored_members!
       end
+    end
+
+    # See Runner#validate_target_exists! — a --target-table with no matching
+    # schema config would otherwise fall through to a full dump of every table.
+    private def validate_target_exists!(table_by_name)
+      return if @dump_target.table_name.nil?
+      return if table_by_name.key?(@dump_target.table_name)
+
+      raise ArgumentError,
+            "--target-table '#{@dump_target.table_name}' was not found among the " \
+            "schema configs in #{@schema_dir}. Check the table name."
     end
 
     private def validate_ignored(configs)
