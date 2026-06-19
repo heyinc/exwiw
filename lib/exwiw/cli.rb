@@ -16,8 +16,9 @@ module Exwiw
     # Config file loaded automatically when --config is omitted, if one exists in
     # the current directory. Kept at the project root (rather than under exwiw/)
     # so that config-relative paths like `schema_dir: exwiw/schema` read naturally.
-    # Both extensions are accepted; .yml wins when both are present.
-    DEFAULT_CONFIG_PATHS = %w[exwiw.yml exwiw.yaml].freeze
+    # Both extensions are accepted; .yml wins when both are present. Shared with
+    # the rake tasks via ConfigFile so the two never drift.
+    DEFAULT_CONFIG_PATHS = ConfigFile::DEFAULT_PATHS
 
     # Keys accepted in the config file. Anything outside this set is rejected so
     # a typo surfaces immediately instead of being silently ignored. These mirror

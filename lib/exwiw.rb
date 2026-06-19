@@ -6,6 +6,7 @@ require "json"
 require "serdes"
 
 require_relative "exwiw/ext_json"
+require_relative "exwiw/config_file"
 require_relative "exwiw/belongs_to"
 require_relative "exwiw/table_column"
 require_relative "exwiw/table_config"

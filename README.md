@@ -255,7 +255,13 @@ The config generator is provided as a Rake task.
 bundle exec rake exwiw:schema:generate
 ```
 
-By default, the schema files will be saved in the `exwiw/schema` directory. You can specify a different output directory by setting the `EXWIW_SCHEMA_DIR_PATH` environment variable:
+Where the files are written is resolved with the following precedence (highest first):
+
+1. the `EXWIW_SCHEMA_DIR_PATH` environment variable (explicit per-invocation override),
+2. `schema_dir` in the project's [`exwiw.yml`](#config-file-exwiwyml) — so generation lands in exactly the directory `exwiw export` / `explain` later read from, without repeating it, and
+3. the default `exwiw/schema` directory.
+
+So with a project-root `exwiw.yml` containing `schema_dir: exwiw/schema`, `rake exwiw:schema:generate` writes there automatically — no environment variable needed. The `schema_dir` value is resolved relative to the config file's own directory, exactly as it is for the CLI. (Set `EXWIW_CONFIG` to point the task at a non-default config file path, mirroring the CLI's `--config`.) To override the location for a single run:
 
 ```sh
 EXWIW_SCHEMA_DIR_PATH=custom_directory bundle exec rake exwiw:schema:generate
@@ -276,7 +282,7 @@ bundle exec rake exwiw:schema:tidy
 
 Because it reads the database directly, a table that still exists in the database but has lost (or never had) an ActiveRecord model is **kept** — only a table that is genuinely gone is removed. (This is the deliberate counterpart to `generate`, which is model-driven and only ever adds what the models know about.)
 
-It respects `EXWIW_SCHEMA_DIR_PATH` and the per-database subdirectory layout in the same way as `schema:generate`. Unlike `generate`, `tidy` never adds or regenerates entries — every surviving table/column (including hand-edited `comment` / `ignore` / `replace_with`) is left untouched, so it is safe to run on a customized config. The task prints which tables and columns it removed (or that the config was already tidy). Stale `belongs_tos` are not pruned by `tidy`; rerun `schema:generate` to refresh those.
+It resolves its output directory (`EXWIW_SCHEMA_DIR_PATH` → `exwiw.yml`'s `schema_dir` → `exwiw/schema`) and the per-database subdirectory layout in the same way as `schema:generate`. Unlike `generate`, `tidy` never adds or regenerates entries — every surviving table/column (including hand-edited `comment` / `ignore` / `replace_with`) is left untouched, so it is safe to run on a customized config. The task prints which tables and columns it removed (or that the config was already tidy). Stale `belongs_tos` are not pruned by `tidy`; rerun `schema:generate` to refresh those.
 
 #### Multiple databases
 
