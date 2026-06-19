@@ -20,14 +20,14 @@ rm -f "$TARGET_DB_PATH" "$NEW_DB_PATH"
 # Seed only the FROM (source) database. The NEW (target) DB file is left
 # unseeded on purpose; sqlite3 will create it as an empty DB when
 # insert-000-schema.sql runs.
-cp scenario/initdb/init.sqlite3 "$TARGET_DB_PATH"
+cp e2e/initdb/init.sqlite3 "$TARGET_DB_PATH"
 
 # run exwiw — output to a dedicated dir so we don't collide with the other
 # scenario's artifacts.
 bundle exec exe/exwiw \
   --adapter=sqlite \
   --database="${TARGET_DB_PATH}" \
-  --schema-dir=scenario/sqlite-schema \
+  --schema-dir=e2e/sqlite-schema \
   --target-table=shops \
   --ids=1 \
   --output-dir=tmp/sqlite-clean \

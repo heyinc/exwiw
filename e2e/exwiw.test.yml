@@ -1,9 +1,9 @@
-# Example exwiw config file, exercised by scenario/test_with_sqlite_config.sh.
+# Example exwiw config file, exercised by e2e/test_with_sqlite_config.sh.
 #
 # It carries the non-connection arguments so the scenario only has to pass the
 # database (and output dir) on the CLI. Relative paths are resolved against THIS
-# file's directory (scenario/), so `schema_dir: sqlite-schema` points at
-# scenario/sqlite-schema regardless of the current working directory.
+# file's directory (e2e/), so `schema_dir: sqlite-schema` points at
+# e2e/sqlite-schema regardless of the current working directory.
 #
 # Database connection settings (host/port/user/database/uri/password) are NOT
 # allowed here — they must come from the CLI/environment. `adapter` is the one

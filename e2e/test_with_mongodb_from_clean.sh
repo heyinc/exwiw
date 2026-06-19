@@ -27,7 +27,7 @@ mongosh --quiet "mongodb://${MONGO_HOST}:${MONGO_PORT}/${TO_DATABASE_NAME}" \
 
 # Setup source db from seed (also creates representative indexes that
 # dump_schema should pick up).
-bundle exec ruby scenario/setup_with_mongodb.rb "${FROM_DATABASE_NAME}"
+bundle exec ruby e2e/setup_with_mongodb.rb "${FROM_DATABASE_NAME}"
 
 # Run exwiw — output to a dedicated dir so we don't collide with the default
 # scenario's artifacts.
@@ -36,7 +36,7 @@ bundle exec exe/exwiw \
   --host="${MONGO_HOST}" \
   --port="${MONGO_PORT}" \
   --database="${FROM_DATABASE_NAME}" \
-  --schema-dir=scenario/mongodb-schema \
+  --schema-dir=e2e/mongodb-schema \
   --target-table=shops \
   --ids=a00100000000000000000001 \
   --output-dir=tmp/mongodb-clean \
@@ -54,11 +54,11 @@ mongosh --quiet "mongodb://${MONGO_HOST}:${MONGO_PORT}/${TO_DATABASE_NAME}" "$SC
 
 # Import the jsonl payload into the just-created collections. --no-drop keeps
 # the collections (and the indexes the schema file just made) intact.
-bundle exec ruby scenario/import_with_mongodb.rb --no-drop --input-dir tmp/mongodb-clean "${TO_DATABASE_NAME}"
+bundle exec ruby e2e/import_with_mongodb.rb --no-drop --input-dir tmp/mongodb-clean "${TO_DATABASE_NAME}"
 
 # Verify scoped dump landed correctly AND that the indexes round-tripped.
 echo "Verifying import to clean DB..."
-if bundle exec ruby scenario/verify_with_mongodb.rb "${TO_DATABASE_NAME}" --with-indexes; then
+if bundle exec ruby e2e/verify_with_mongodb.rb "${TO_DATABASE_NAME}" --with-indexes; then
   echo "✓ MongoDB from-clean scenario passed"
 else
   echo "✗ MongoDB from-clean scenario verification failed"

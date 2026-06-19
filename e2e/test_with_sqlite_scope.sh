@@ -41,7 +41,7 @@ sqlite3 "$NEW_DB_PATH" "$SCHEMA_SQL"
 bundle exec exe/exwiw \
   --adapter=sqlite \
   --database="${TARGET_DB_PATH}" \
-  --schema-dir=scenario/scope-schema \
+  --schema-dir=e2e/scope-schema \
   --scope-column=tenant_id \
   --ids=1 \
   --output-dir="$OUTPUT_DIR" \

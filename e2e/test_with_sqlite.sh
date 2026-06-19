@@ -10,21 +10,21 @@ rm -rf tmp/sqlite
 mkdir -p tmp/sqlite
 
 # Setup db
-cp scenario/initdb/init.sqlite3 $TARGET_DB_PATH
-cp scenario/initdb/init.sqlite3 $NEW_DB_PATH
+cp e2e/initdb/init.sqlite3 $TARGET_DB_PATH
+cp e2e/initdb/init.sqlite3 $NEW_DB_PATH
 
 # run exwiw
 bundle exec exe/exwiw \
   --adapter=sqlite \
   --database="${TARGET_DB_PATH}" \
-  --schema-dir=scenario/sqlite-schema \
+  --schema-dir=e2e/sqlite-schema \
   --target-table=shops \
   --ids=1 \
   --output-dir=tmp/sqlite \
   --log-level=debug
 
 # import to db
-bundle exec ruby scenario/import_with_sqlite.rb $NEW_DB_PATH
+bundle exec ruby e2e/import_with_sqlite.rb $NEW_DB_PATH
 
 # Verify insert works after import.
 # A failed INSERT (e.g. PK collision) makes sqlite3 exit non-zero, so we

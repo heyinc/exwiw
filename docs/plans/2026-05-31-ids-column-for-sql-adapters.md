@@ -81,7 +81,7 @@ indirect / polymorphic を一律に正しく扱える。
   `ids_field` 指定時に対象テーブルの WHERE が主キーではなく当該カラムになることを確認する
   ケースを追加。
 - `explain` サブコマンド（SQL のみ対応）で end-to-end 確認:
-  既存 scenario（例 `scenario/sqlite3-schema`）に対し
+  既存 scenario（例 `e2e/sqlite3-schema`）に対し
   `--target-table=... --ids=... --ids-column=<col>` を渡し、出力 SQL の WHERE が
   `<table>.<col> IN (...)` になることを目視確認。
 - `bundle exec rspec`（全体）でリグレッションが無いこと。

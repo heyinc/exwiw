@@ -10,7 +10,7 @@ rm -f "$TARGET_DB_PATH" "$EXPLAIN_OUT"
 mkdir -p tmp
 
 # Setup db
-cp scenario/initdb/init.sqlite3 "$TARGET_DB_PATH"
+cp e2e/initdb/init.sqlite3 "$TARGET_DB_PATH"
 
 # Snapshot the current `tmp/` listing so we can detect any unintended file
 # creation by `exwiw explain` (it should write only to stdout, never to disk).
@@ -21,7 +21,7 @@ tmp_before=$(ls -1 tmp 2>/dev/null | sort)
 bundle exec exe/exwiw explain \
   --adapter=sqlite \
   --database="${TARGET_DB_PATH}" \
-  --schema-dir=scenario/sqlite-schema \
+  --schema-dir=e2e/sqlite-schema \
   --target-table=shops \
   --ids=1 \
   | tee "$EXPLAIN_OUT"
@@ -58,7 +58,7 @@ set +e
 bundle exec exe/exwiw explain \
     --adapter=sqlite \
     --database="${TARGET_DB_PATH}" \
-    --schema-dir=scenario/sqlite-schema \
+    --schema-dir=e2e/sqlite-schema \
     --output-format=copy \
     2>&1 | tee tmp/sqlite-explain.err
 rejection_exit=${PIPESTATUS[0]}

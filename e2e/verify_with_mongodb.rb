@@ -34,7 +34,7 @@ expected = {
   # at one of those two are pulled in (the fourth references the other shop's
   # entity). Crucially, `sites` is non-zero: its FK is a String `uuid`, and
   # before the `references` fix it was `$in`-matched against the parent's
-  # ObjectId `_id` and matched nothing. See scenario/mongodb-schema/sites.json.
+  # ObjectId `_id` and matched nothing. See e2e/mongodb-schema/sites.json.
   "business_entities" => 2,
   "sites" => 3,
 }

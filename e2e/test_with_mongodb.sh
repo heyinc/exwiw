@@ -13,7 +13,7 @@ rm -f tmp/mongodb/*.jsonl
 # Setup source db from seed. Target db is populated entirely by import
 # (MongoDB adapter has no delete-*.jsonl; import_with_mongodb.rb drops
 # each target collection before insert).
-bundle exec ruby scenario/setup_with_mongodb.rb "${FROM_DATABASE_NAME}"
+bundle exec ruby e2e/setup_with_mongodb.rb "${FROM_DATABASE_NAME}"
 
 # Run exwiw. This scenario connects via a full --uri (rather than
 # --host/--port) so the URI code path is exercised end-to-end against a real
@@ -23,18 +23,18 @@ bundle exec ruby scenario/setup_with_mongodb.rb "${FROM_DATABASE_NAME}"
 bundle exec exe/exwiw \
   --adapter=mongodb \
   --uri="mongodb://${MONGO_HOST}:${MONGO_PORT}/${FROM_DATABASE_NAME}" \
-  --schema-dir=scenario/mongodb-schema \
+  --schema-dir=e2e/mongodb-schema \
   --target-table=shops \
   --ids=a00100000000000000000001 \
   --output-dir=tmp/mongodb \
   --log-level=debug
 
 # Import generated jsonl into target
-bundle exec ruby scenario/import_with_mongodb.rb "${TO_DATABASE_NAME}"
+bundle exec ruby e2e/import_with_mongodb.rb "${TO_DATABASE_NAME}"
 
 # Verify scoped dump landed correctly
 echo "Verifying import..."
-if bundle exec ruby scenario/verify_with_mongodb.rb "${TO_DATABASE_NAME}"; then
+if bundle exec ruby e2e/verify_with_mongodb.rb "${TO_DATABASE_NAME}"; then
   echo "✓ MongoDB scenario passed"
 else
   echo "✗ MongoDB scenario verification failed"

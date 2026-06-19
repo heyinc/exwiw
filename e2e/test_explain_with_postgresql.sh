@@ -41,7 +41,7 @@ bundle exec exe/exwiw explain \
   --port=5432 \
   --user=postgres \
   --database="${FROM_DATABASE_NAME}" \
-  --schema-dir=scenario/postgresql-schema \
+  --schema-dir=e2e/postgresql-schema \
   --target-table=shops \
   --ids=1 \
   | tee "$EXPLAIN_OUT"
@@ -79,7 +79,7 @@ bundle exec exe/exwiw explain \
     --port=5432 \
     --user=postgres \
     --database="${FROM_DATABASE_NAME}" \
-    --schema-dir=scenario/postgresql-schema \
+    --schema-dir=e2e/postgresql-schema \
     --output-format=copy \
     2>&1 | tee tmp/postgresql-explain.err
 rejection_exit=${PIPESTATUS[0]}

@@ -78,7 +78,7 @@ RSpec.describe Exwiw::DetermineTableProcessingOrder do
     end
 
     context 'when there is polymorphic' do
-      # No scenario/sqlite-schema/reviews.json fixture exists on purpose (it would
+      # No e2e/sqlite-schema/reviews.json fixture exists on purpose (it would
       # be consumed by the full-dump snapshot specs), so the polymorphic reviews
       # config is built inline. The polymorphic belongs_to is expanded into one
       # regular table_name dependency per target (here products), exactly as
