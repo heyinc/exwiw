@@ -44,6 +44,9 @@ module Exwiw
       # Scope-column mode: abort if any extractable table cannot be scoped (no-op
       # otherwise). Done before extraction so nothing is dumped if it would leak.
       QueryAstBuilder.validate_scope!(dumpable_configs, table_by_name, @dump_target, @logger)
+      # Target-table mode: abort if any extractable table has no relation to the
+      # target and would be dumped in full unless explicitly `scope_exempt: true`.
+      QueryAstBuilder.validate_target_scope!(dumpable_configs, table_by_name, @dump_target, @logger)
 
       @logger.info("Determining table processing order...")
       ordered_table_names = DetermineTableProcessingOrder.run(dumpable_configs, logger: @logger)

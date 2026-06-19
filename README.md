@@ -83,6 +83,8 @@ By default `--ids` are matched against the target table's primary key. `--ids-co
 
 `--target-table` must name a table that has a schema config in `--schema-dir`; a name with no matching config raises `ArgumentError` (rather than silently falling through to a full dump of every table).
 
+In `--target-table` mode, every other table must be reachable from the target — directly or transitively via `belongs_to`, or by being referenced by an extractable child. A table with **no** such relation has no WHERE clause and would otherwise be dumped in full across every scope, so exwiw aborts before extracting and lists the offending table(s). To dump a genuine reference/master table in full anyway, mark it [`scope_exempt: true`](#scope_exempt-intentional-full-dump); to leave it out, set `ignore: true`. Rails-managed tables (`schema_migrations`, `ar_internal_metadata`) are exempt automatically. (This check is SQL-only and does not apply to the no-target dump-all mode below or to MongoDB.)
+
 When `--target-table` and `--ids` are omitted, exwiw dumps all tables defined in `--schema-dir`:
 
 ```bash
@@ -192,8 +194,11 @@ opt out of the strict check and be exported in full:
 }
 ```
 
-Rails-managed tables (`schema_migrations`, `ar_internal_metadata`) are treated as
-exempt automatically.
+`scope_exempt` is honored in **both** modes: in scope-column mode it opts a table
+out of the shared-column filter, and in `--target-table` mode it opts a table with
+no relation to the target out of the "would be dumped in full" abort. Rails-managed
+tables (`schema_migrations`, `ar_internal_metadata`) are treated as exempt
+automatically in both.
 
 #### Per-table `scope_column` override
 

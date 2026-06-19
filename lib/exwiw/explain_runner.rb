@@ -30,6 +30,7 @@ module Exwiw
 
       dumpable_configs = configs.select { |c| adapter.dumpable?(c) }
       QueryAstBuilder.validate_scope!(dumpable_configs, table_by_name, @dump_target, @logger)
+      QueryAstBuilder.validate_target_scope!(dumpable_configs, table_by_name, @dump_target, @logger)
 
       @logger.debug("Determining table processing order...")
       ordered_table_names = DetermineTableProcessingOrder.run(dumpable_configs, logger: @logger)

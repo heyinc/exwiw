@@ -2,6 +2,7 @@
   "name": "system_announcements",
   "primary_key": "id",
   "belongs_tos": [],
+  "scope_exempt": true,
   "columns": [{
     "name": "id"
   }, {

@@ -110,5 +110,20 @@ module Exwiw
         expect { runner.run }.to raise_error(ArgumentError, /target-table 'nonexistent' was not found/)
       end
     end
+
+    describe '#run when a table has no relation to --target-table' do
+      let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1']) }
+
+      before do
+        FileUtils.cp('e2e/sqlite-schema/shops.json', File.join(schema_dir, 'shops.json'))
+        announcements = JSON.parse(File.read('e2e/sqlite-schema/system_announcements.json'))
+        announcements.delete('scope_exempt')
+        File.write(File.join(schema_dir, 'system_announcements.json'), JSON.dump(announcements))
+      end
+
+      it 'raises ArgumentError before explaining' do
+        expect { runner.run }.to raise_error(ArgumentError, /system_announcements.*scope_exempt: true/m)
+      end
+    end
   end
 end
