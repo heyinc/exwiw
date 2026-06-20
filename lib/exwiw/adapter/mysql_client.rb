@@ -118,6 +118,49 @@ module Exwiw
         end
       end
 
+      # Stream a query's rows one at a time, yielding each as an
+      # Array<String|nil> (the same row shape as #query) instead of buffering
+      # the whole result set. This keeps a large dump's dominant memory cost — a
+      # Ruby array as big as the table — from materializing.
+      #
+      # mysql2 streams server-side (`stream: true` + `cache_rows: false`).
+      # Its contract: a streamed result MUST be fully consumed before the next
+      # query on this connection, or the driver raises "Commands out of sync".
+      # The Runner consumes every row (it writes them all), but if the consumer
+      # block raises mid-stream we drain the remaining rows so the same
+      # connection is still usable for the next table's query.
+      #
+      # trilogy has no streaming cursor (no QUERY_FLAGS_STREAMING), so it buffers
+      # the result and yields from it — parity, but without the memory win (the
+      # same situation as the sqlite adapter). trilogy is a test-only driver;
+      # production connects via mysql2.
+      #
+      # @param sql [String]
+      # @yieldparam row [Array<String|nil>]
+      def stream_rows(sql)
+        return enum_for(:stream_rows, sql) unless block_given?
+
+        case @driver
+        when :mysql2
+          res = raw.query(sql, cast: false, as: :array, stream: true, cache_rows: false)
+          begin
+            res.each { |row| yield row.map { |value| self.class.stringify_value(value) } }
+          rescue StandardError
+            begin
+              res.each { |_row| } # drain the remainder so the connection stays usable
+            rescue StandardError
+              nil
+            end
+            raise
+          end
+        when :trilogy
+          raw.query(sql).rows.each { |row| yield row.map { |value| self.class.stringify_value(value) } }
+        else
+          raise "Unsupported MySQL driver: #{@driver.inspect}"
+        end
+        self
+      end
+
       private def ensure_driver_loaded!
         case @driver
         when :mysql2 then require 'mysql2'

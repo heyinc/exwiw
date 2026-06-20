@@ -123,6 +123,34 @@ module Exwiw
         nil
       end
 
+      # Write the bulk INSERT/JSONL output for `results` to the open `io`,
+      # returning the number of statements written. The Runner calls this once
+      # per table for the non-COPY path.
+      #
+      # Default: build each chunk's output as a full string via #to_bulk_insert
+      # and write it, separating statements with "\n" — exactly what the Runner
+      # used to inline. This keeps the dominant memory cost at one chunk's
+      # serialized string (bounded by `chunk_size`), which is why MongoDB sets a
+      # positive default chunk size. Adapters whose output is a single large
+      # statement (the SQL adapters, where chunk_size is nil) override this to
+      # stream the statement to `io` in bounded buffers instead of holding the
+      # whole thing in memory.
+      #
+      # @param io [IO] open output file
+      # @param results [Enumerable] rows/documents from #execute
+      # @param table the table/collection config
+      # @param chunk_size [Integer, nil] rows per statement (nil => one statement)
+      def write_inserts(io, results, table, chunk_size)
+        chunks = chunk_size ? results.each_slice(chunk_size) : [results]
+        statement_count = 0
+        chunks.each do |chunk_rows|
+          io.print("\n") if statement_count.positive?
+          io.print(to_bulk_insert(chunk_rows, table))
+          statement_count += 1
+        end
+        statement_count
+      end
+
       # Run the database-specific EXPLAIN for the given query and return the
       # output as a single string for `explain` subcommand to print.
       # SQL adapters override; MongodbAdapter currently raises.

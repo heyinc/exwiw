@@ -161,8 +161,10 @@ module Exwiw
       end
 
       describe "#execute" do
+        # #execute returns a lazy StreamingResult (cursor-backed); drain it with
+        # .to_a to compare the materialized rows.
         context "simple select query" do
-          let(:results) { adapter.execute(build_select_shops_ast) }
+          let(:results) { adapter.execute(build_select_shops_ast).to_a }
 
           it "returns correct results" do
             expect(results).to eq([
@@ -172,7 +174,7 @@ module Exwiw
         end
 
         context "select query with masking" do
-          let(:results) { adapter.execute(build_select_users_ast) }
+          let(:results) { adapter.execute(build_select_users_ast).to_a }
 
           it "returns correct results" do
             expect(results).to eq([
@@ -183,7 +185,7 @@ module Exwiw
         end
 
         context "select query with filter" do
-          let(:results) { adapter.execute(build_select_users_ast("users.id > 1")) }
+          let(:results) { adapter.execute(build_select_users_ast("users.id > 1")).to_a }
 
           it "returns correct results" do
             expect(results).to eq([
@@ -193,7 +195,7 @@ module Exwiw
         end
 
         context "select query with one join" do
-          let(:results) { adapter.execute(build_order_items_ast) }
+          let(:results) { adapter.execute(build_order_items_ast).to_a }
 
           it "returns correct results" do
             expect(results).to eq([
@@ -208,7 +210,7 @@ module Exwiw
         end
 
         context "select query with one join, one filter" do
-          let(:results) { adapter.execute(build_order_items_ast("order_items.id > 1", nil)) }
+          let(:results) { adapter.execute(build_order_items_ast("order_items.id > 1", nil)).to_a }
 
           it "returns correct results" do
             expect(results).to eq([
@@ -222,7 +224,7 @@ module Exwiw
         end
 
         context "select query with filter on join" do
-          let(:results) { adapter.execute(build_order_items_ast(nil, "orders.id < 6")) }
+          let(:results) { adapter.execute(build_order_items_ast(nil, "orders.id < 6")).to_a }
 
           it "returns correct results" do
             expect(results).to eq([
@@ -236,7 +238,7 @@ module Exwiw
         end
 
         context "select query with filter on join and filter on where" do
-          let(:results) { adapter.execute(build_order_items_ast("order_items.id > 1", "orders.id < 6")) }
+          let(:results) { adapter.execute(build_order_items_ast("order_items.id > 1", "orders.id < 6")).to_a }
 
           it "returns correct results" do
             expect(results).to eq([

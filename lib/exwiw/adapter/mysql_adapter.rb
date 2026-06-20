@@ -5,15 +5,67 @@ require 'open3'
 module Exwiw
   module Adapter
     class MysqlAdapter < Base
+      include SqlBulkInsert
+
+      # A lazy, streaming stand-in for the materialized rows #execute used to
+      # return (`connection.query(sql).rows`). It pulls rows off the wire one at
+      # a time (mysql2 single-row stream) instead of buffering the whole result
+      # set, so the dump's dominant memory cost — a Ruby array as large as the
+      # table — never materializes. The Runner drives it exactly like the old
+      # Array: #size to skip empty tables and log the count, then a single
+      # streaming pass (SqlBulkInsert#write_inserts -> each_slice).
+      #
+      # Mirrors PostgresqlAdapter::StreamingResult, with two MySQL specifics:
+      #   - #size runs a separate `SELECT COUNT(*)` of the same query. Unlike the
+      #     pg path, it does NOT wrap the SELECT in a subquery: MySQL rejects a
+      #     derived table with duplicate column names, which a rails-managed
+      #     `SELECT *` joined to another table produces. Instead the projection
+      #     is replaced by `COUNT(*)` (compile_ast(count_only: true)) — exact
+      #     because exwiw's extraction queries have no DISTINCT/GROUP BY/LIMIT,
+      #     so the row count is independent of the projected columns.
+      #   - the stream ties up the connection until fully drained. The Runner
+      #     always drains it (write_inserts) before any further query
+      #     (post_insert_sql / DELETE), and MysqlClient#stream_rows drains the
+      #     remainder if iteration is abandoned, so the connection stays usable.
+      class StreamingResult
+        include Enumerable
+
+        def initialize(client:, data_sql:, count_sql:)
+          @client = client
+          @data_sql = data_sql
+          @count_sql = count_sql
+        end
+
+        def size
+          @size ||= @client.query(@count_sql).rows.dig(0, 0).to_i
+        end
+        alias length size
+
+        # Stream the result set row by row. Each row is an Array of String|nil
+        # (mysql2 `cast: false` / stringified) — identical to what
+        # `connection.query(sql).rows` produced, so the generated INSERT is
+        # unchanged.
+        def each(&block)
+          return enum_for(:each) { size } unless block_given?
+
+          @client.stream_rows(@data_sql, &block)
+          self
+        end
+      end
+
       def build_query(table, dump_target, table_by_name)
         Exwiw::QueryAstBuilder.run(table.name, table_by_name, dump_target, @logger)
       end
 
       def execute(query_ast)
-        sql = commented_sql(query_ast)
+        data_sql = commented_sql(query_ast)
+        # Count via the same FROM/JOIN/WHERE (projection replaced by COUNT(*)) so
+        # the Runner can skip empty tables and log the row count without draining
+        # the stream. See StreamingResult for why this is not a subquery wrap.
+        count_sql = "#{sql_query_comment(query_ast)} #{compile_ast(query_ast, count_only: true)}"
 
-        @logger.debug("  Executing SQL: \n#{sql}")
-        connection.query(sql).rows
+        @logger.debug("  Executing SQL (streaming): \n#{data_sql}")
+        StreamingResult.new(client: connection, data_sql: data_sql, count_sql: count_sql)
       end
 
       def explain(query_ast)
@@ -99,22 +151,16 @@ module Exwiw
         "SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS;"
       end
 
-      def to_bulk_insert(results, table)
+      # The INSERT header for this adapter. MySQL backtick-quotes the table and
+      # column identifiers. #to_bulk_insert / #write_inserts (SqlBulkInsert)
+      # append the value tuples and the trailing `;`.
+      private def insert_header(table)
         table_name = table.name
-
-        value_list = results.map do |row|
-          quoted_values = row.map do |value|
-            escape_value(value)
-          end
-          "(" + quoted_values.join(', ') + ")"
-        end
-        values = value_list.join(",\n")
-
         if table.rails_managed?
-          "INSERT INTO `#{table_name}` VALUES\n#{values};"
+          "INSERT INTO `#{table_name}` VALUES\n"
         else
           column_names = table.columns.map { |c| "`#{c.name}`" }.join(', ')
-          "INSERT INTO `#{table_name}` (#{column_names}) VALUES\n#{values};"
+          "INSERT INTO `#{table_name}` (#{column_names}) VALUES\n"
         end
       end
 
@@ -176,11 +222,17 @@ module Exwiw
         sql
       end
 
-      def compile_ast(query_ast)
+      # @param count_only [Boolean] emit `SELECT COUNT(*)` instead of the
+      #   projected columns (used by StreamingResult#size). Safe because exwiw's
+      #   extraction queries have no DISTINCT/GROUP BY/LIMIT, so the count does
+      #   not depend on the projection.
+      def compile_ast(query_ast, count_only: false)
         raise NotImplementedError unless query_ast.is_a?(Exwiw::QueryAst::Select)
 
         sql = "SELECT "
-        sql += if query_ast.select_all
+        sql += if count_only
+                 "COUNT(*)"
+               elsif query_ast.select_all
                  "*"
                else
                  query_ast.columns.map { |col| compile_column_name(query_ast, col) }.join(', ')

@@ -3,15 +3,91 @@
 module Exwiw
   module Adapter
     class PostgresqlAdapter < Base
+      include SqlBulkInsert
+
+      # A lazy, streaming stand-in for the materialized rows #execute used to
+      # return (`connection.exec(sql).values`). It pulls rows off the wire one
+      # at a time via libpq's single-row mode instead of buffering the whole
+      # result set, so the dump's dominant memory cost — a Ruby array as large
+      # as the table — never materializes. The Runner drives it exactly like the
+      # old Array: #size to skip empty tables and log the count, then a single
+      # streaming pass (SqlBulkInsert#write_inserts -> each_slice) to write the
+      # INSERT.
+      #
+      # Mirrors MongodbAdapter::StreamingResult; two SQL-specific differences:
+      #   - #size cannot be answered cheaply from the cursor, so it runs a
+      #     separate `SELECT COUNT(*)` of the same query. (MongoDB uses
+      #     count_documents, an index-only walk; the SQL COUNT re-runs the query
+      #     plan but transfers no row data — Postgres prunes the unused
+      #     projection of the wrapped subquery.) This keeps the Runner contract
+      #     unchanged, so MongoDB and the other SQL adapters are untouched.
+      #   - the streaming pass ties up the connection until fully drained. The
+      #     Runner always drains it (write_inserts) before issuing any further
+      #     query (post_insert_sql / DELETE) on the same connection, so the
+      #     ordering invariant holds.
+      class StreamingResult
+        include Enumerable
+
+        def initialize(connection:, data_sql:, count_sql:)
+          @connection = connection
+          @data_sql = data_sql
+          @count_sql = count_sql
+        end
+
+        def size
+          @size ||= @connection.exec(@count_sql).getvalue(0, 0).to_i
+        end
+        alias length size
+
+        # Stream the result set row by row. Each row is an Array of String|nil
+        # in libpq's text format — byte-identical to what `#exec(sql).values`
+        # produced, so the generated INSERT is unchanged.
+        def each
+          return enum_for(:each) { size } unless block_given?
+
+          @connection.send_query(@data_sql)
+          @connection.set_single_row_mode
+          begin
+            while (result = @connection.get_result)
+              begin
+                result.check
+                result.each_row { |row| yield row }
+              ensure
+                result.clear
+              end
+            end
+          rescue StandardError
+            # If iteration is abandoned mid-stream (a SQL error surfaced by
+            # #check, or the consumer raised), drain any results still queued so
+            # a later query on this same connection does not fail with "another
+            # command is already in progress".
+            drain
+            raise
+          end
+          self
+        end
+
+        private def drain
+          while (result = @connection.get_result)
+            result.clear
+          end
+        rescue PG::Error
+          # Connection already errored/clean; nothing left to drain.
+        end
+      end
+
       def build_query(table, dump_target, table_by_name)
         Exwiw::QueryAstBuilder.run(table.name, table_by_name, dump_target, @logger)
       end
 
       def execute(query_ast)
-        sql = commented_sql(query_ast)
+        data_sql = commented_sql(query_ast)
+        # Count via the same query (wrapped as a subquery) so the Runner can
+        # skip empty tables and log the row count without draining the stream.
+        count_sql = "#{sql_query_comment(query_ast)} SELECT COUNT(*) FROM (#{compile_ast(query_ast)}) AS exwiw_count_src"
 
-        @logger.debug("  Executing SQL: \n#{sql}")
-        connection.exec(sql).values
+        @logger.debug("  Executing SQL (single-row stream): \n#{data_sql}")
+        StreamingResult.new(connection: connection, data_sql: data_sql, count_sql: count_sql)
       end
 
       def explain(query_ast)
@@ -97,22 +173,16 @@ module Exwiw
         @logger.info("  Wrote schema for #{table_names.size} table(s) to #{output_path}.")
       end
 
-      def to_bulk_insert(results, table)
+      # The INSERT header for this adapter. PostgreSQL uses bare identifiers.
+      # #to_bulk_insert / #write_inserts (SqlBulkInsert) append the value tuples
+      # and the trailing `;`.
+      private def insert_header(table)
         table_name = table.name
-
-        value_list = results.map do |row|
-          quoted_values = row.map do |value|
-            escape_value(value)
-          end
-          "(" + quoted_values.join(', ') + ")"
-        end
-        values = value_list.join(",\n")
-
         if table.rails_managed?
-          "INSERT INTO #{table_name} VALUES\n#{values};"
+          "INSERT INTO #{table_name} VALUES\n"
         else
           column_names = table.columns.map(&:name).join(', ')
-          "INSERT INTO #{table_name} (#{column_names}) VALUES\n#{values};"
+          "INSERT INTO #{table_name} (#{column_names}) VALUES\n"
         end
       end
 
