@@ -849,6 +849,7 @@ module Exwiw
         dump_target = Exwiw::DumpTarget.new(table_name: "shops", ids: [1])
 
         query = adapter.build_query(config_by_name.fetch("users"), dump_target, config_by_name)
+        # shops is users' sole genuine parent -> strict anchor.
         expect(query.filter).to eq("shop_id" => { "$in" => [1] })
       end
 
@@ -885,6 +886,7 @@ module Exwiw
         dump_target = Exwiw::DumpTarget.new(table_name: "uuid_referenced_parents", ids: ["u-1"])
 
         query = adapter.build_query(by_name.fetch("uuid_referencing_children"), dump_target, by_name)
+        # uuid_referenced_parents is the sole genuine parent -> strict anchor.
         expect(query.filter).to eq("entity_id" => { "$in" => ["u-1", "u-2"] })
       end
 
@@ -898,10 +900,12 @@ module Exwiw
         dump_target = Exwiw::DumpTarget.new(table_name: "users", ids: [10])
 
         query = adapter.build_query(config_by_name.fetch("transactions"), dump_target, config_by_name)
+        # All three genuine parents produced one id, so the first (order_id) is the
+        # strict anchor; the others are applied null-aware (see related_collection_filter).
         expect(query.filter).to eq(
           "order_id" => { "$in" => [30] },
-          "paid_by_id" => { "$in" => [10] },
-          "reviewer_id" => { "$in" => [10] },
+          "paid_by_id" => { "$in" => [nil, 10] },
+          "reviewer_id" => { "$in" => [nil, 10] },
         )
       end
     end
