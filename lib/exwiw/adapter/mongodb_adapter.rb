@@ -123,7 +123,7 @@ module Exwiw
               { config.primary_key => { "$in" => coerce_ids(dump_target.ids) } }
             end
           else
-            related_collection_filter(config, config_by_name)
+            related_collection_filter(config, config_by_name, dump_target)
           end
 
         Exwiw::MongoQuery::Find.new(
@@ -352,22 +352,73 @@ module Exwiw
       # the values were captured from that field in #execute, so their BSON type
       # already matches the stored FK — no coercion.
       #
-      # A belongs_to whose parent produced no ids contributes no constraint:
-      # either the parent matched nothing, or it is not dumped here (e.g. an
-      # embedded collection, or one excluded from the run). If that leaves the
-      # filter empty even though the collection HAS belongs_to, the collection
-      # cannot be scoped from the dump target — and falling back to an empty `{}`
-      # filter would scan and dump the ENTIRE collection across every scope. That
-      # is never what a scoped extraction wants, so constrain it to match nothing
-      # and warn instead. (A collection with no belongs_to at all is genuine
-      # reference/master data and is still dumped in full via `{}`.)
-      private def related_collection_filter(config, config_by_name)
-        filter = config.belongs_tos.each_with_object({}) do |relation, acc|
+      # Scope flows from the dump target along belongs_to edges. A belongs_to is
+      # classified by whether its parent is *genuinely scoped* — reachable back to
+      # the dump target through belongs_to chains (see #genuine_scope_set) — which
+      # determines how its constraint is applied:
+      #
+      # - Among the genuine parents, the most selective one (fewest captured ids)
+      #   is the ANCHOR and is applied strictly. It carries the real narrowing and,
+      #   being strict, bounds the result to a small set — which keeps both this
+      #   query and the `$in` sets it feeds downstream from ballooning.
+      #
+      # - The OTHER genuine parents are applied null-aware: a row whose (nullable)
+      #   FK is null/absent has no reference through that relation and must not be
+      #   excluded by it. `nil` is added to the `$in` set (Mongo's `$in: [nil]`
+      #   matches both explicit nulls and missing fields). Without this, a nullable
+      #   genuine FK that is null on otherwise in-scope rows ANDs the result to
+      #   empty — dropping legitimate rows, and (when it zeroes a parent) making
+      #   children lose that parent's selective+indexed scope and degenerate to a
+      #   full COLLSCAN. See docs/mongodb-scoping-fullscan-notes.md. Null-aware is
+      #   applied to non-anchor parents only: making the sole/anchor scope itself
+      #   null-aware would match every row whose FK is null (e.g. a not-yet-
+      #   backfilled column), ballooning the result instead of scoping it.
+      #
+      # - Reference parents (NOT reachable to the dump target — master/reference
+      #   data dumped in full, or only reachable via such data) produce a non-
+      #   scoping id set: "all/most of a reference table", which neither narrows
+      #   meaningfully nor, made null-aware, stays bounded. So when the collection
+      #   has a genuine parent to anchor on, reference-parent constraints are
+      #   dropped entirely.
+      #
+      # When NO genuine parent produced ids, the collection is not reachable from
+      # the dump target; fall back to the historical strict-AND of whatever
+      # constraints exist (bounded, preserves prior behavior).
+      #
+      # A belongs_to whose parent produced no ids contributes no constraint: either
+      # the parent matched nothing, or it is not dumped here (e.g. an embedded
+      # collection, or one excluded from the run). If that leaves the filter empty
+      # even though the collection HAS belongs_to, the collection cannot be scoped
+      # from the dump target — and an empty `{}` filter would scan and dump the
+      # ENTIRE collection across every scope. That is never what a scoped
+      # extraction wants, so constrain it to match nothing and warn instead. (A
+      # collection with no belongs_to at all is genuine reference/master data and
+      # is still dumped in full via `{}`.)
+      private def related_collection_filter(config, config_by_name, dump_target)
+        genuine = genuine_scope_set(config_by_name, dump_target.table_name)
+
+        genuine_clauses = []
+        reference_clauses = []
+        config.belongs_tos.each do |relation|
           values = parent_state_for(relation, config_by_name)
           next if values.nil? || values.empty?
 
-          acc[relation.foreign_key] = { "$in" => values }
+          target = genuine.include?(relation.table_name) ? genuine_clauses : reference_clauses
+          target << [relation.foreign_key, values]
         end
+
+        filter =
+          if genuine_clauses.any?
+            anchor_index = (0...genuine_clauses.size).min_by { |i| genuine_clauses[i][1].size }
+            genuine_clauses.each_with_index.each_with_object({}) do |((foreign_key, values), index), acc|
+              acc[foreign_key] =
+                index == anchor_index ? { "$in" => values } : { "$in" => [nil] + values }
+            end
+          else
+            reference_clauses.each_with_object({}) do |(foreign_key, values), acc|
+              acc[foreign_key] = { "$in" => values }
+            end
+          end
 
         return filter unless filter.empty? && config.belongs_tos.any?
 
@@ -377,6 +428,31 @@ module Exwiw
           "Constraining it to match no rows to avoid an unscoped full-collection dump."
         )
         { config.primary_key => { "$in" => [] } }
+      end
+
+      # The set of collection names *genuinely scoped* by the dump target: the
+      # target itself, plus every collection that can reach it by following
+      # belongs_to edges (child -> parent) transitively. Computed by fixpoint over
+      # the configs. Everything outside this set is reference/master data (or only
+      # reachable through it) whose belongs_to id sets do not represent a real
+      # scope. Memoized per target name; the configs do not mutate mid-run.
+      private def genuine_scope_set(config_by_name, target_name)
+        (@genuine_scope_set_cache ||= {})[target_name] ||=
+          begin
+            reachable = Set.new([target_name])
+            loop do
+              added = false
+              config_by_name.each_value do |cfg|
+                next if cfg.embedded? || reachable.include?(cfg.name)
+                next unless cfg.belongs_tos.any? { |relation| reachable.include?(relation.table_name) }
+
+                reachable << cfg.name
+                added = true
+              end
+              break unless added
+            end
+            reachable
+          end
       end
 
       # The captured parent-collection values a child belongs_to should be

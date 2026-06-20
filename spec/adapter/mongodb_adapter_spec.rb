@@ -173,6 +173,7 @@ module Exwiw
             adapter.execute(shops_query).to_a
 
             users_query = adapter.build_query(users, dump_target, config_by_name)
+            # users' only genuine parent (shops) is the anchor, applied strictly.
             expect(users_query.filter).to eq("shop_id" => { "$in" => [shop1_oid] })
           end
         end
@@ -233,7 +234,104 @@ module Exwiw
             adapter.execute(adapter.build_query(business_entities, dump_target, local_config_by_name)).to_a
 
             child_query = adapter.build_query(stores, dump_target, local_config_by_name)
+            # The dump target is stores' only genuine parent -> strict anchor.
             expect(child_query.filter).to eq("maja_business_entity_id" => { "$in" => ["be-uuid-1"] })
+          end
+        end
+
+        context "when a belongs_to parent is reference data not reachable to the dump target" do
+          # `stores` is reachable to the target (`entities` via entity_id) AND
+          # also belongs_to `malls`, which has no path back to the target — it is
+          # reference data dumped in full. The mall id set is "all malls", which
+          # is not a real scope; ANDing it would drop stores with a null mall_id.
+          let(:entities) do
+            MongodbCollectionConfig.from(
+              "name" => "entities", "primary_key" => "_id",
+              "belongs_tos" => [], "fields" => [{ "name" => "_id" }],
+            )
+          end
+          let(:malls) do
+            MongodbCollectionConfig.from(
+              "name" => "malls", "primary_key" => "_id",
+              "belongs_tos" => [], "fields" => [{ "name" => "_id" }],
+            )
+          end
+          let(:stores) do
+            MongodbCollectionConfig.from(
+              "name" => "stores", "primary_key" => "_id",
+              "belongs_tos" => [
+                { "table_name" => "entities", "foreign_key" => "entity_id" },
+                { "table_name" => "malls", "foreign_key" => "mall_id" },
+              ],
+              "fields" => [{ "name" => "_id" }, { "name" => "entity_id" }, { "name" => "mall_id" }],
+            )
+          end
+          let(:mall_banners) do
+            MongodbCollectionConfig.from(
+              "name" => "mall_banners", "primary_key" => "_id",
+              "belongs_tos" => [{ "table_name" => "malls", "foreign_key" => "mall_id" }],
+              "fields" => [{ "name" => "_id" }, { "name" => "mall_id" }],
+            )
+          end
+          # items has a selective genuine anchor (stores -> store_id) plus a second,
+          # less selective genuine parent (delivery_configs, also reachable to the
+          # target) and a reference parent (malls).
+          let(:delivery_configs) do
+            MongodbCollectionConfig.from(
+              "name" => "delivery_configs", "primary_key" => "_id",
+              "belongs_tos" => [{ "table_name" => "stores", "foreign_key" => "store_id" }],
+              "fields" => [{ "name" => "_id" }],
+            )
+          end
+          let(:items) do
+            MongodbCollectionConfig.from(
+              "name" => "items", "primary_key" => "_id",
+              "belongs_tos" => [
+                { "table_name" => "stores", "foreign_key" => "store_id" },
+                { "table_name" => "delivery_configs", "foreign_key" => "delivery_id" },
+                { "table_name" => "malls", "foreign_key" => "mall_id" },
+              ],
+              "fields" => [{ "name" => "_id" }, { "name" => "store_id" }, { "name" => "delivery_id" }, { "name" => "mall_id" }],
+            )
+          end
+          let(:local_config_by_name) do
+            [entities, malls, stores, mall_banners, delivery_configs, items]
+              .each_with_object({}) { |c, h| h[c.name] = c }
+          end
+          let(:dump_target) { Exwiw::DumpTarget.new(table_name: "entities", ids: ["e1"]) }
+
+          it "scopes by the genuine anchor (strict) and drops the reference-parent constraint" do
+            adapter.instance_variable_set(:@state, {
+              "entities" => { "_id" => ["e1"] },
+              "malls" => { "_id" => %w[m1 m2] },
+            })
+            query = adapter.build_query(stores, dump_target, local_config_by_name)
+            # entity_id is the sole genuine parent -> strict anchor; mall_id (reference) dropped.
+            expect(query.filter).to eq("entity_id" => { "$in" => ["e1"] })
+          end
+
+          it "applies the most selective genuine parent strictly and the others null-aware" do
+            adapter.instance_variable_set(:@state, {
+              "stores" => { "_id" => ["s1"] },
+              "delivery_configs" => { "_id" => %w[d1 d2 d3] },
+              "malls" => { "_id" => %w[m1 m2] },
+            })
+            query = adapter.build_query(items, dump_target, local_config_by_name)
+            # store_id (1 id) is the most selective genuine parent -> strict anchor;
+            # delivery_id (3 ids) is null-aware so items with a null delivery_id survive;
+            # mall_id (reference) is dropped.
+            expect(query.filter).to eq(
+              "store_id" => { "$in" => ["s1"] },
+              "delivery_id" => { "$in" => [nil, "d1", "d2", "d3"] },
+            )
+          end
+
+          it "keeps the strict-AND when the collection has no genuine parent at all" do
+            # mall_banners is reachable only via malls (reference), so it has no
+            # genuine scope: the historical strict $in (no nil) is preserved.
+            adapter.instance_variable_set(:@state, { "malls" => { "_id" => %w[m1 m2] } })
+            query = adapter.build_query(mall_banners, dump_target, local_config_by_name)
+            expect(query.filter).to eq("mall_id" => { "$in" => %w[m1 m2] })
           end
         end
 
