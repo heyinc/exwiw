@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-20
+
 ### Added
 
 - Optimize memory usage https://github.com/heyinc/exwiw/pull/118 
