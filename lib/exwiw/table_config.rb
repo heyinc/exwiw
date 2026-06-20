@@ -26,16 +26,19 @@ module Exwiw
     attribute :columns, array(TableColumn), default: []
     attribute :bulk_insert_chunk_size, optional(Integer), skip_serializing_if_nil: true
     attribute :ignore, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
-    # Scope-column mode only (see Exwiw::DumpTarget#scope_column). Both are
-    # user-configured and never emitted by the schema generators.
+    # Both are user-configured and never emitted by the schema generators.
     #
     # `scope_exempt: true` exports the whole table without scope filtering — the
     # explicit, auditable escape hatch for genuine reference/master tables under
-    # the strict "every table must be scopable" rule.
+    # the strict "every table must be scopable" rule. It is honored in both
+    # modes: in scope-column mode (see Exwiw::DumpTarget#scope_column) it opts a
+    # table out of the shared-column filter, and in target-table mode it opts a
+    # table with no relation to the target out of the "would be dumped in full"
+    # abort (rails-managed tables are treated as exempt automatically in both).
     #
-    # `scope_column` overrides the physical column this table is filtered on when
-    # it differs from the global `--scope-column` name (same scope value, just a
-    # different column name on this table).
+    # `scope_column` (scope-column mode only) overrides the physical column this
+    # table is filtered on when it differs from the global `--scope-column` name
+    # (same scope value, just a different column name on this table).
     attribute :scope_exempt, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
     attribute :scope_column, optional(String), skip_serializing_if_nil: true
 

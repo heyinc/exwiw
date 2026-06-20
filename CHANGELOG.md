@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: in `--target-table` mode (SQL adapters), a table with no relation to the target now aborts the run unless it is explicitly `scope_exempt: true`.** Previously a table that has no `belongs_to` path to the `--target-table` and is not referenced by any extractable child produced a SELECT with no WHERE and was dumped **in full across every scope** — easy to miss, and a cross-scope data-exposure risk for a table that was simply forgotten. exwiw now refuses to start and lists the offending table(s), mirroring the strict pre-flight already used by `--scope-column` mode. To dump a genuine reference/master table in full, mark it `scope_exempt: true` (the same user-owned key already honored in scope-column mode); to skip it, set `ignore: true`. Rails-managed tables (`schema_migrations`, `ar_internal_metadata`) are treated as exempt automatically. The check also runs under `exwiw explain`. This only affects `--target-table` mode; `--scope-column` mode and the no-target dump-all mode are unchanged, and MongoDB is unaffected (it already constrains belongs_to-less collections separately and has no `scope_exempt` key). Existing schemas that relied on the silent full dump must add `scope_exempt: true` to those tables.
+
 ## [0.6.0] - 2026-06-20
 
 ### Added

@@ -327,6 +327,31 @@ module Exwiw
       end
     end
 
+    describe 'when a table has no relation to --target-table (would be a full dump)' do
+      let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1']) }
+
+      before do
+        FileUtils.cp('e2e/sqlite-schema/shops.json', File.join(schema_dir, 'shops.json'))
+        # system_announcements has no relation to shops; strip its scope_exempt so
+        # it falls into the "would be dumped in full" abort.
+        announcements = JSON.parse(File.read('e2e/sqlite-schema/system_announcements.json'))
+        announcements.delete('scope_exempt')
+        File.write(File.join(schema_dir, 'system_announcements.json'), JSON.dump(announcements))
+      end
+
+      it 'raises ArgumentError instead of dumping it in full' do
+        expect { runner.run }.to raise_error(ArgumentError, /system_announcements.*scope_exempt: true/m)
+      end
+
+      it 'passes once the table is marked scope_exempt:true' do
+        announcements = JSON.parse(File.read(File.join(schema_dir, 'system_announcements.json')))
+        announcements['scope_exempt'] = true
+        File.write(File.join(schema_dir, 'system_announcements.json'), JSON.dump(announcements))
+
+        expect { runner.run }.not_to raise_error
+      end
+    end
+
     describe 'with output_format copy' do
       let(:connection_config) do
         ConnectionConfig.new(

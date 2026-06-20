@@ -81,6 +81,8 @@ exwiw \
 
 By default `--ids` are matched against the target table's primary key. `--ids-column=COLUMN` matches them against a different column instead (e.g. `--target-table=users --ids=alice@example.com --ids-column=email`). Related tables are still extracted correctly: their foreign keys are resolved through the target via a subquery (`WHERE fk IN (SELECT pk FROM target WHERE COLUMN IN (...))`), so only the target table's filter column changes. This is the SQL-adapter counterpart of the mongodb `--ids-field`; the two are mutually exclusive and each is rejected by the other adapter family. Note: if `COLUMN` is itself masked, re-running `delete-*` against an already-imported (masked) dump won't match, so prefer a stable natural key.
 
+In `--target-table` mode, every other table must be reachable from the target — directly or transitively via `belongs_to`, or by being referenced by an extractable child. A table with **no** such relation has no WHERE clause and would otherwise be dumped in full across every scope, so exwiw aborts before extracting and lists the offending table(s). To dump a genuine reference/master table in full anyway, mark it [`scope_exempt: true`](#scope_exempt-intentional-full-dump); to leave it out, set `ignore: true`. Rails-managed tables (`schema_migrations`, `ar_internal_metadata`) are exempt automatically. (This check is SQL-only and does not apply to the no-target dump-all mode below or to MongoDB.)
+
 When `--target-table` and `--ids` are omitted, exwiw dumps all tables defined in `--schema-dir`:
 
 ```bash
@@ -190,8 +192,11 @@ opt out of the strict check and be exported in full:
 }
 ```
 
-Rails-managed tables (`schema_migrations`, `ar_internal_metadata`) are treated as
-exempt automatically.
+`scope_exempt` is honored in **both** modes: in scope-column mode it opts a table
+out of the shared-column filter, and in `--target-table` mode it opts a table with
+no relation to the target out of the "would be dumped in full" abort. Rails-managed
+tables (`schema_migrations`, `ar_internal_metadata`) are treated as exempt
+automatically in both.
 
 #### Per-table `scope_column` override
 

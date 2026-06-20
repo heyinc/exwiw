@@ -818,4 +818,83 @@ RSpec.describe Exwiw::QueryAstBuilder do
       )
     end
   end
+
+  describe '.validate_target_scope!' do
+    let(:logger) { Logger.new(nil) }
+    let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'shops', ids: ['1']) }
+
+    # belongs_to shops -> constrained.
+    let(:users) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'users', primary_key: 'id',
+        belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id' }],
+        columns: [{ name: 'id' }, { name: 'shop_id' }]
+      )
+    end
+    let(:shops) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'shops', primary_key: 'id', belongs_tos: [],
+        columns: [{ name: 'id' }, { name: 'name' }]
+      )
+    end
+    # No relation to shops -> would be a no-WHERE full dump.
+    let(:coupons) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'coupons', primary_key: 'id', belongs_tos: [],
+        columns: [{ name: 'id' }, { name: 'code' }]
+      )
+    end
+    let(:schema_migrations) do
+      Exwiw::TableConfig.from_symbol_keys(name: 'schema_migrations', type: 'rails_managed_schema_migrations')
+    end
+
+    let(:all_tables) { [shops, users, coupons, schema_migrations] }
+    let(:table_by_name) { all_tables.each_with_object({}) { |t, h| h[t.name] = t } }
+
+    def validate!
+      described_class.validate_target_scope!(all_tables, table_by_name, dump_target, logger)
+    end
+
+    it 'raises listing the unrelated table(s)' do
+      expect { validate! }.to raise_error(ArgumentError, /coupons/)
+    end
+
+    it 'flags only the unrelated table, not the target or its related tables' do
+      expect { validate! }.to raise_error(ArgumentError) { |e|
+        expect(e.message).to include('1 table(s)')
+        expect(e.message).to include('coupons')
+        expect(e.message).not_to include('users')
+      }
+    end
+
+    it 'does not flag rails-managed tables (treated as exempt)' do
+      expect { validate! }.to raise_error(ArgumentError) { |e|
+        expect(e.message).not_to include('schema_migrations')
+      }
+    end
+
+    it 'passes once the unrelated table is marked scope_exempt:true' do
+      coupons.scope_exempt = true
+      expect { validate! }.not_to raise_error
+    end
+
+    it 'passes once the unrelated table is marked ignore:true' do
+      coupons.ignore = true
+      expect { validate! }.not_to raise_error
+    end
+
+    it 'is a no-op in dump-all mode (no target table)' do
+      target = Exwiw::DumpTarget.new(table_name: nil, ids: [])
+      expect {
+        described_class.validate_target_scope!(all_tables, table_by_name, target, logger)
+      }.not_to raise_error
+    end
+
+    it 'is a no-op in scope-column mode' do
+      target = Exwiw::DumpTarget.new(ids: ['1'], scope_column: 'tenant_id')
+      expect {
+        described_class.validate_target_scope!(all_tables, table_by_name, target, logger)
+      }.not_to raise_error
+    end
+  end
 end

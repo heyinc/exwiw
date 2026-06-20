@@ -34,6 +34,39 @@ module Exwiw
             "column name differs on that table)."
     end
 
+    # Strict pre-flight for target-table mode: abort if any extractable table has
+    # no relation to the dump target and would therefore be selected with no
+    # WHERE (a full-table dump across every scope — see the "no relation -> dump
+    # all" case in #run). Such a table must opt in explicitly with `scope_exempt:
+    # true` (rails-managed tables are exempt automatically), so a genuine
+    # reference/master table is dumped in full only on purpose. No-op outside
+    # target-table mode (scope-column mode is covered by validate_scope!).
+    # `tables` is the set of dumpable configs (ignore:true tables are skipped —
+    # they are not extracted). Configs whose adapter does not support
+    # `scope_exempt` (e.g. MongoDB) are left alone.
+    def self.validate_target_scope!(tables, table_by_name, dump_target, logger)
+      return if dump_target.table_name.nil?
+      return unless dump_target.scope_column.nil?
+
+      unscoped =
+        tables.reject(&:ignore).select do |table|
+          next false unless table.respond_to?(:scope_exempt)
+          next false if table.name == dump_target.table_name
+          next false if table.scope_exempt || table.rails_managed?
+
+          query = run(table.name, table_by_name, dump_target, logger)
+          query.where_clauses.empty? && query.join_clauses.empty?
+        end
+      return if unscoped.empty?
+
+      names = unscoped.map(&:name).sort.join(", ")
+      raise ArgumentError,
+            "--target-table '#{dump_target.table_name}': #{unscoped.size} table(s) have no " \
+            "relation to it and would be dumped in full (a no-WHERE SELECT across every scope): " \
+            "#{names}. For each, add `scope_exempt: true` to export it in full, or set " \
+            "`ignore: true` to skip it."
+    end
+
     attr_reader :table_name, :table_by_name, :dump_target
 
     def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_forward: true)
