@@ -112,6 +112,36 @@ module Exwiw
           expect(strip_zero_fraction(trilogy_result.rows)).to eq(strip_zero_fraction(mysql2_result.rows))
           expect(mysql2_result.rows).not_to be_empty
         end
+
+        # #stream_rows must hand back the same rows #query buffers (the dump's
+        # generated INSERT depends on this), for both drivers and after the
+        # connection is reused for a follow-up query.
+        %i[mysql2 trilogy].each do |driver|
+          it "streams the same rows #query returns and leaves the connection usable (#{driver})" do
+            client = MysqlClient.new(connection_config, driver: driver)
+            sql = 'SELECT * FROM shops ORDER BY id'
+
+            buffered = client.query(sql).rows
+            streamed = client.stream_rows(sql).to_a
+
+            expect(streamed).to eq(buffered)
+            expect(streamed).not_to be_empty
+            # The stream must be fully drained so the next query on this same
+            # connection does not raise "Commands out of sync" (mysql2).
+            expect(client.query('SELECT COUNT(*) FROM shops').rows.dig(0, 0).to_i).to eq(buffered.size)
+          end
+        end
+
+        it 'drains the remainder when the consumer aborts mid-stream, keeping the connection usable (mysql2)' do
+          client = MysqlClient.new(connection_config, driver: :mysql2)
+
+          expect do
+            client.stream_rows('SELECT * FROM shops ORDER BY id') { raise 'boom' }
+          end.to raise_error('boom')
+
+          # Connection recovered (remaining rows drained), so a follow-up succeeds.
+          expect(client.query('SELECT COUNT(*) FROM shops').rows.dig(0, 0).to_i).to be > 0
+        end
       end
     end
   end
