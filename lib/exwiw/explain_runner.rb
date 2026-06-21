@@ -24,6 +24,7 @@ module Exwiw
       table_by_name = configs.each_with_object({}) { |config, hash| hash[config.name] = config }
 
       target = table_by_name[@dump_target.table_name]
+      validate_target_exists!(target)
       adapter.validate_as_dump_target!(target) if target
 
       dumpable_configs = configs.select { |c| adapter.dumpable?(c) }
@@ -60,6 +61,17 @@ module Exwiw
         json = JSON.parse(File.read(file))
         klass.from(json).reject_ignored_members!
       end
+    end
+
+    # Reject a `--target-table` (or `--target-collection`) absent from the loaded
+    # schema; mirrors Runner#validate_target_exists! so explain and export fail the
+    # same way on a typo. `target` is the looked-up config (nil when not found).
+    private def validate_target_exists!(target)
+      return if @dump_target.table_name.nil?
+      return unless target.nil?
+
+      raise ArgumentError,
+            "--target-table '#{@dump_target.table_name}' does not exist in the schema (#{@schema_dir})."
     end
 
     private def validate_ignored(configs)
