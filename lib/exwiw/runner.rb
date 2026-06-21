@@ -217,6 +217,11 @@ module Exwiw
     # matched nothing and produced an empty dump with no indication of the mistake.
     # `target` is the looked-up config (nil when not found); a nil dump target
     # (dump-all / scope-column mode) is allowed through.
+    #
+    # TODO: this checks the loaded schema (schema_dir JSON), not the live DB
+    # connection — a table that exists in the database but has no schema config
+    # is still rejected here. We may instead want to verify existence against the
+    # connection (would need a table-exists capability on each adapter). revisit.
     private def validate_target_exists!(target)
       return if @dump_target.table_name.nil?
       return unless target.nil?

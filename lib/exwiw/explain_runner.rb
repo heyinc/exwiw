@@ -66,6 +66,10 @@ module Exwiw
     # Reject a `--target-table` (or `--target-collection`) absent from the loaded
     # schema; mirrors Runner#validate_target_exists! so explain and export fail the
     # same way on a typo. `target` is the looked-up config (nil when not found).
+    #
+    # TODO: same caveat as Runner#validate_target_exists! — this checks the schema
+    # (schema_dir JSON), not the live DB connection; verifying against the
+    # connection would need a table-exists capability on each adapter. revisit.
     private def validate_target_exists!(target)
       return if @dump_target.table_name.nil?
       return unless target.nil?
