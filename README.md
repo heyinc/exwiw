@@ -253,11 +253,17 @@ The config generator is provided as a Rake task.
 bundle exec rake exwiw:schema:generate
 ```
 
-By default, the schema files will be saved in the `exwiw/schema` directory. You can specify a different output directory by setting the `EXWIW_SCHEMA_DIR_PATH` environment variable:
+The output directory is resolved in this order:
+
+1. the `EXWIW_SCHEMA_DIR_PATH` environment variable, if set;
+2. otherwise `schema_dir` from the config file (`exwiw.yml` / `exwiw.yaml` in the current directory), so the generator and the `exwiw` CLI share one location without repeating the path;
+3. otherwise the `exwiw/schema` default.
 
 ```sh
 EXWIW_SCHEMA_DIR_PATH=custom_directory bundle exec rake exwiw:schema:generate
 ```
+
+As with the CLI, a relative `schema_dir` in the config file is resolved relative to the config file's own directory.
 
 #### Tidying stale config (`schema:tidy`)
 
