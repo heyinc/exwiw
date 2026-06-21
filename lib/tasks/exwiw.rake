@@ -2,12 +2,23 @@
 
 namespace :exwiw do
   namespace :schema do
+    # Output directory for the generated schema config. Precedence:
+    #   1. EXWIW_SCHEMA_DIR_PATH env var (explicit per-run override)
+    #   2. schema_dir in the exwiw config file (exwiw.yml/.yaml), so generating
+    #      the schema and running the `exwiw` CLI agree on one location without
+    #      repeating the path
+    #   3. the historical "exwiw/schema" default
+    # Resolved at task-run time (after `require "exwiw"` has loaded ConfigFile).
+    resolve_schema_dir = lambda do
+      ENV["EXWIW_SCHEMA_DIR_PATH"] || Exwiw::ConfigFile.schema_dir || "exwiw/schema"
+    end
+
     desc "Generate schema from application"
     task generate: :environment do
       require "exwiw"
 
       Exwiw::SchemaGenerator.from_rails_application(
-        output_dir: ENV["EXWIW_SCHEMA_DIR_PATH"] || "exwiw/schema",
+        output_dir: resolve_schema_dir.call,
       ).generate!
     end
 
@@ -16,7 +27,7 @@ namespace :exwiw do
       require "exwiw"
 
       result = Exwiw::SchemaGenerator.from_rails_application(
-        output_dir: ENV["EXWIW_SCHEMA_DIR_PATH"] || "exwiw/schema",
+        output_dir: resolve_schema_dir.call,
       ).tidy!
 
       if result.empty?
@@ -47,7 +58,7 @@ namespace :exwiw do
       require "exwiw"
 
       Exwiw::MongoidSchemaGenerator.from_rails_application(
-        output_dir: ENV["EXWIW_SCHEMA_DIR_PATH"] || "exwiw/schema",
+        output_dir: resolve_schema_dir.call,
         skip_unsupported: ENV["EXWIW_SKIP_UNSUPPORTED"] == "1",
       ).generate!
     end
