@@ -327,6 +327,18 @@ module Exwiw
       end
     end
 
+    describe 'when --target-table does not exist in the schema' do
+      let(:dump_target) { DumpTarget.new(table_name: 'no_such_table', ids: ['1']) }
+
+      before do
+        FileUtils.cp('e2e/sqlite-schema/shops.json', File.join(schema_dir, 'shops.json'))
+      end
+
+      it 'raises ArgumentError instead of silently dumping nothing' do
+        expect { runner.run }.to raise_error(ArgumentError, /--target-table 'no_such_table' does not exist in the schema/)
+      end
+    end
+
     describe 'with output_format copy' do
       let(:connection_config) do
         ConnectionConfig.new(

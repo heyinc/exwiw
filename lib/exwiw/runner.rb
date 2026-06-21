@@ -36,6 +36,7 @@ module Exwiw
       table_by_name = configs.each_with_object({}) { |config, hash| hash[config.name] = config }
 
       target = table_by_name[@dump_target.table_name]
+      validate_target_exists!(target)
       adapter.validate_as_dump_target!(target) if target
 
       dumpable_configs = configs.select { |c| adapter.dumpable?(c) }
@@ -209,6 +210,24 @@ module Exwiw
       end
 
       ignored_names.each { |n| @logger.info("Table '#{n}' is marked ignore:true (schema will be included, data extraction skipped)") }
+    end
+
+    # Reject a `--target-table` (or `--target-collection`) that does not match any
+    # table/collection in the loaded schema. Without this a typo'd target silently
+    # matched nothing and produced an empty dump with no indication of the mistake.
+    # `target` is the looked-up config (nil when not found); a nil dump target
+    # (dump-all / scope-column mode) is allowed through.
+    #
+    # TODO: this checks the loaded schema (schema_dir JSON), not the live DB
+    # connection — a table that exists in the database but has no schema config
+    # is still rejected here. We may instead want to verify existence against the
+    # connection (would need a table-exists capability on each adapter). revisit.
+    private def validate_target_exists!(target)
+      return if @dump_target.table_name.nil?
+      return unless target.nil?
+
+      raise ArgumentError,
+            "--target-table '#{@dump_target.table_name}' does not exist in the schema (#{@schema_dir})."
     end
 
     private def validate_rails_managed_target!(configs)
