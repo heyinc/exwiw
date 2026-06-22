@@ -109,6 +109,18 @@ The full design (byte-identity strategy, fast-path vs Ruby-delegate types,
 optional-load + pure-Ruby fallback, packaging) is in
 [`optimize-mongodb-export-with-native-ext.md`](./optimize-mongodb-export-with-native-ext.md).
 
+The native ext shipped (0.6.1+) and the dump is now **decode-bound** (the driver's
+BSON→Ruby decode is 64–92 % of per-collection cost). The single-process levers are
+exhausted short of 2×. The lever that *was* measured past 2× — **byte-identical
+inter-collection fork parallelism** (parallelize whole collections across
+processes, so the decode itself runs in parallel while each collection keeps its
+natural order) — is written up in
+[`mongodb-dump-parallelism-2x-notes.md`](./mongodb-dump-parallelism-2x-notes.md).
+Unlike the `--parallel-workers` attempt removed above (which parallelized
+serialization only and so was capped at ~1.4×), this parallelizes the actual
+bottleneck and reaches ~2.1× wall / ~2.5× compute on a real extraction, given
+≥4 vCPU to spend.
+
 ## Methodology notes (for re-running)
 
 - The CPU hotspot reproduces **with no database**: the Mongo driver hands back
