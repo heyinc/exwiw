@@ -170,6 +170,22 @@ module Exwiw
         end
       end
 
+      context 'when belongs_to has ignore_type (e.g. a cross_database relation)' do
+        let(:current_belongs_tos) do
+          [{ table_name: 'clients', foreign_key: 'company_id', ignore: true, ignore_type: 'cross_database' }]
+        end
+        let(:passed_belongs_tos) do
+          [{ table_name: 'clients', foreign_key: 'company_id' }]
+        end
+
+        it 'preserves ignore_type from the receiver across regeneration' do
+          actual = merged_config.belongs_tos
+          expect(actual.map(&:to_hash)).to eq([
+            { 'table_name' => 'clients', 'foreign_key' => 'company_id', 'ignore' => true, 'ignore_type' => 'cross_database' },
+          ])
+        end
+      end
+
       context 'when columns have user-owned comment/ignore' do
         let(:current_columns) do
           [{ name: 'id' }, { name: 'secret', comment: 'PII', ignore: true }]

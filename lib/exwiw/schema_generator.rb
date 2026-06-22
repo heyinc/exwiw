@@ -59,6 +59,20 @@ module Exwiw
       groups
     end
 
+    # Flatten the generated `groups` (the Hash returned by generate! /
+    # build_table_groups) into the list of cross-database belongs_tos the
+    # generator auto-ignored, so a caller (the rake task) can surface them. Each
+    # entry is `{ table:, foreign_key:, target: }`. Empty for single-database apps.
+    def self.cross_database_belongs_tos(groups)
+      groups.values.flatten.flat_map do |table|
+        next [] unless table.respond_to?(:belongs_tos)
+
+        table.belongs_tos
+             .select { |bt| bt.ignore_type == CROSS_DATABASE_IGNORE_TYPE }
+             .map { |bt| { table: table.name, foreign_key: bt.foreign_key, target: bt.table_name } }
+      end
+    end
+
     # Reconcile the config files already on disk against the live database,
     # removing only what no longer exists there:
     #
@@ -278,10 +292,14 @@ module Exwiw
 
     private def aggregate_belongs_tos(models)
       belongs_to_assocs = models.flat_map { |m| belongs_to_associations_for(m) }
+      owner_db = database_name_for(models.first)
 
       non_polymorphic = belongs_to_assocs
         .reject(&:polymorphic?)
-        .map { |assoc| { table_name: assoc.table_name, foreign_key: assoc.foreign_key } }
+        .map do |assoc|
+          entry = { table_name: assoc.table_name, foreign_key: assoc.foreign_key }
+          annotate_cross_database(entry, owner_db, assoc.klass)
+        end
 
       # A polymorphic belongs_to (`belongs_to :reviewable, polymorphic: true`)
       # has no single target table. The candidate tables are found by looking up
@@ -292,16 +310,49 @@ module Exwiw
         .select(&:polymorphic?)
         .flat_map do |assoc|
           polymorphic_target_models(assoc.name).map do |target_model|
-            {
+            entry = {
               table_name: target_model.table_name,
               foreign_key: assoc.foreign_key,
               foreign_type: assoc.foreign_type,
               type_value: target_model.polymorphic_name,
             }
+            annotate_cross_database(entry, owner_db, target_model)
           end
         end
 
       (non_polymorphic + polymorphic).uniq
+    end
+
+    CROSS_DATABASE_IGNORE_TYPE = "cross_database"
+
+    # A belongs_to whose target model lives in a *different* database than the
+    # owning table cannot be joined: in a Rails multi-database (`connects_to`)
+    # setup each database is exported on its own connection and into its own
+    # per-database config directory, so the target table is absent from the
+    # directory this config is loaded with, and there is no single connection to
+    # join the two on. Leaving the relation live would emit a dangling belongs_to
+    # whose target is never present at extraction time (a nil-target crash in
+    # dependency resolution). So emit it with `ignore: true` (dropped from
+    # extraction at load via TableConfig#reject_ignored_members!) tagged
+    # `ignore_type: "cross_database"`, with a `comment` recording why and pointing
+    # at the recovery path. The foreign-key column itself is still exported as a
+    # plain column; only the join/dependency edge is dropped. Polymorphic
+    # associations are annotated per target, so only the targets that cross a
+    # database boundary are ignored. Single-database apps are unaffected.
+    private def annotate_cross_database(entry, owner_db, target_model)
+      target_db = database_name_for(target_model)
+      return entry if target_db == owner_db
+
+      entry.merge(
+        ignore: true,
+        ignore_type: CROSS_DATABASE_IGNORE_TYPE,
+        comment: "Cross-database belongs_to: target '#{entry[:table_name]}' is in database " \
+                 "'#{target_db}', not '#{owner_db}'. exwiw exports each database separately and " \
+                 "cannot join across them, so this relation is ignored during extraction; its " \
+                 "foreign-key column '#{entry[:foreign_key]}' is still exported. To extract across " \
+                 "this boundary, run with `--scope-column=#{entry[:foreign_key]}` (optionally with " \
+                 "`--target-table`) so the foreign-key column is filtered directly.",
+      )
     end
 
     # `belongs_to` reflections for a model, with the synthetic HABTM left-side

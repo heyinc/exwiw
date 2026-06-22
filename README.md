@@ -258,6 +258,11 @@ column, override the column name for that table:
 Both `scope_exempt` and `scope_column` are user-maintained and preserved across
 `schema:generate` regeneration (the generators never emit them).
 
+A per-table `scope_column` is only consulted in scope-column mode. Running without
+`--scope-column` while any loaded config sets a per-table `scope_column` is an
+error (it would silently do nothing) — pass `--scope-column=COLUMN`, or remove the
+per-table override.
+
 ### Config file (`exwiw.yml`)
 
 Options you would otherwise repeat on every run can be kept in a YAML config file. Pass it with `--config=PATH`; when `--config` is omitted, exwiw automatically loads `exwiw.yml` (or `exwiw.yaml`) from the current directory if present.
@@ -344,6 +349,8 @@ exwiw/schema/
 ```
 
 Each database keeps its own Rails migration history, so a `schema_migrations` (and `ar_internal_metadata`) entry is emitted under every database that contains one — the example above shows `primary/schema_migrations.json` and would also produce `analytics/schema_migrations.json` when the analytics database has its own migration table. Single-database applications are unaffected and continue to write files flat into the output directory.
+
+A `belongs_to` whose target model lives in a *different* database (e.g. a `primary` model referencing an `analytics` one) cannot be joined: each database is exported on its own connection and into its own subdirectory, so the target table is absent from the directory this config is loaded with. `schema:generate` detects such a relation (by comparing the owning and target models' database config names) and emits it with `ignore: true` and `ignore_type: "cross_database"`, recording why in the `comment`; the relation is then dropped from extraction at load time, while the foreign-key column itself is still exported as a plain column. Polymorphic associations are handled per target, so only the targets that cross a database boundary are ignored. The task also prints a summary of every cross-database `belongs_to` it ignored. **To extract across such a boundary, the foreign-key column can be filtered directly via [hybrid mode](#hybrid-mode---target-table----scope-column) (`--scope-column=<foreign_key>`, optionally with `--target-table`)** — there is no join, so the cross-database boundary is not a problem there.
 
 **Limitations**
 

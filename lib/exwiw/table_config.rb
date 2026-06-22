@@ -154,10 +154,10 @@ module Exwiw
         merged_table.scope_column = scope_column
 
         # Structural facts of each belongs_to come from the freshly generated
-        # config, but the user-owned `comment`/`ignore`/`references` carry over
-        # when the same relation still exists. (`references` is only consumed by
-        # the MongodbAdapter, but it lives on the shared BelongsTo, so preserve
-        # it here too rather than silently dropping a hand-added value.)
+        # config, but the user-owned `comment`/`ignore`/`ignore_type`/`references`
+        # carry over when the same relation still exists. (`references` is only
+        # consumed by the MongodbAdapter, but it lives on the shared BelongsTo, so
+        # preserve it here too rather than silently dropping a hand-added value.)
         receiver_belongs_to_by_identity = belongs_tos.each_with_object({}) { |bt, hash| hash[bt.identity] = bt }
         merged_table.belongs_tos =
           passed_table.belongs_tos.map do |passed_belongs_to|
@@ -165,6 +165,7 @@ module Exwiw
             if receiver_belongs_to
               passed_belongs_to.comment = receiver_belongs_to.comment if receiver_belongs_to.comment
               passed_belongs_to.ignore = receiver_belongs_to.ignore unless receiver_belongs_to.ignore.nil?
+              passed_belongs_to.ignore_type = receiver_belongs_to.ignore_type if receiver_belongs_to.ignore_type
               passed_belongs_to.references = receiver_belongs_to.references if receiver_belongs_to.references
             end
             passed_belongs_to

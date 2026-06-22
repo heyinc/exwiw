@@ -86,8 +86,11 @@ module Exwiw
       FileUtils.mkdir_p("tmp")
       [PRIMARY_DB_PATH, ANALYTICS_DB_PATH].each { |p| File.delete(p) if File.exist?(p) }
 
+      # `shops` carries a foreign key to a table in the *analytics* database
+      # (`analytics_event_id`), so PrimaryModel can declare a cross-database
+      # belongs_to that the generator must auto-ignore.
       SQLite3::Database.new(PRIMARY_DB_PATH).execute_batch(<<~SQL)
-        CREATE TABLE shops (id INTEGER PRIMARY KEY, name TEXT);
+        CREATE TABLE shops (id INTEGER PRIMARY KEY, name TEXT, analytics_event_id INTEGER);
         CREATE TABLE schema_migrations (version TEXT NOT NULL PRIMARY KEY);
       SQL
       # Each database in a Rails multi-DB setup keeps its own migration
@@ -113,8 +116,17 @@ module Exwiw
       const_set(:AnalyticsAbstract, analytics_abstract)
       analytics_abstract.connects_to(database: { writing: :analytics })
 
-      const_set(:PrimaryModel, Class.new(primary_abstract) { self.table_name = "shops" })
       const_set(:AnalyticsModel, Class.new(analytics_abstract) { self.table_name = "analytics_events" })
+      const_set(:PrimaryModel, Class.new(primary_abstract) do
+        self.table_name = "shops"
+        # belongs_to a model on the *analytics* connection: the target table is
+        # bucketed into a different per-database directory, so the generator must
+        # mark this relation ignore:true rather than emit a dangling edge.
+        belongs_to :analytics_event,
+                   class_name: "Exwiw::SchemaGeneratorMultiDbFixtures::AnalyticsModel",
+                   foreign_key: "analytics_event_id",
+                   optional: true
+      end)
     end
   end
 
@@ -306,6 +318,48 @@ module Exwiw
         it "collapses into a single nil-keyed group for a single-database setup" do
           single = described_class.new(models: [SchemaGeneratorMultiDbFixtures::PrimaryModel], output_dir: output_dir)
           expect(single.build_table_groups.keys).to eq([nil])
+        end
+      end
+
+      describe "cross-database belongs_to" do
+        let(:groups) { described_class.new(models: multidb_models, output_dir: output_dir).build_table_groups }
+        let(:shops_belongs_to) do
+          groups["primary"].find { |t| t.name == "shops" }
+            .belongs_tos.find { |b| b.table_name == "analytics_events" }
+        end
+
+        it "is emitted with ignore:true and a cross_database ignore_type" do
+          expect(shops_belongs_to).not_to be_nil
+          expect(shops_belongs_to.foreign_key).to eq("analytics_event_id")
+          expect(shops_belongs_to.ignore).to eq(true)
+          expect(shops_belongs_to.ignore_type).to eq(SchemaGenerator::CROSS_DATABASE_IGNORE_TYPE)
+        end
+
+        it "records why in the comment and points at --scope-column" do
+          expect(shops_belongs_to.comment).to include("analytics", "primary", "--scope-column=analytics_event_id")
+        end
+
+        it "keeps the foreign-key column exported even though the relation is ignored" do
+          expect(groups["primary"].find { |t| t.name == "shops" }.column_names)
+            .to include("analytics_event_id")
+        end
+
+        it "is dropped from extraction once loaded, so it never crashes dependency resolution" do
+          shops = groups["primary"].find { |t| t.name == "shops" }
+          reloaded = TableConfig.from(JSON.parse(shops.to_hash.to_json)).reject_ignored_members!
+          expect(reloaded.belongs_tos.map(&:table_name)).not_to include("analytics_events")
+        end
+
+        it "is surfaced by .cross_database_belongs_tos for the rake task summary" do
+          summary = described_class.cross_database_belongs_tos(groups)
+          expect(summary).to include(
+            { table: "shops", foreign_key: "analytics_event_id", target: "analytics_events" }
+          )
+        end
+
+        it "reports nothing for a single-database setup" do
+          single = described_class.new(models: [Shop], output_dir: output_dir).build_table_groups
+          expect(described_class.cross_database_belongs_tos(single)).to eq([])
         end
       end
 
