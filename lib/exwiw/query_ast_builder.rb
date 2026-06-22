@@ -40,6 +40,28 @@ module Exwiw
             "column name differs on that table)."
     end
 
+    # A per-table `scope_column` override is only ever consulted in scope-column
+    # mode (it names the column that table is filtered on; see
+    # resolved_scope_column). Outside scope-column mode it is silently ignored, so
+    # a config that sets it while the run has no `--scope-column` is almost
+    # certainly a mistake — the user expects scoping that will not happen. Abort so
+    # it surfaces. No-op when `--scope-column` is in effect (pure scope or hybrid).
+    def self.validate_scope_column_usage!(tables, dump_target)
+      return unless dump_target.scope_column.nil?
+
+      offenders = tables.reject(&:ignore).select do |table|
+        table.respond_to?(:scope_column) && table.scope_column
+      end
+      return if offenders.empty?
+
+      names = offenders.map(&:name).sort.join(", ")
+      raise ArgumentError,
+            "#{offenders.size} table(s) set a per-table `scope_column` but the run is not in " \
+            "scope-column mode: #{names}. A per-table `scope_column` is only consulted with " \
+            "`--scope-column`; pass `--scope-column=COLUMN` to run in scope-column mode, or " \
+            "remove the per-table `scope_column` from those configs."
+    end
+
     # Strict pre-flight for hybrid mode (both --target-table and --scope-column
     # set). No-op otherwise. Enforces the two invariants that make the OR-union of
     # the target and scope-column extractions well-formed:

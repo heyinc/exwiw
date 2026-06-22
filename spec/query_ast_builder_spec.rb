@@ -808,6 +808,36 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
     end
 
+    describe '.validate_scope_column_usage!' do
+      let(:target_mode) { Exwiw::DumpTarget.new(table_name: 'orders', ids: ['1']) }
+
+      it 'raises when a table sets a per-table scope_column but the run is not in scope-column mode' do
+        # legacy_orders sets scope_column: 'legacy_tenant'.
+        expect {
+          described_class.validate_scope_column_usage!(all_tables, target_mode)
+        }.to raise_error(ArgumentError, /not in scope-column mode.*legacy_orders/m)
+      end
+
+      it 'is a no-op in scope-column mode (the override is consulted)' do
+        expect {
+          described_class.validate_scope_column_usage!(all_tables, dump_target)
+        }.not_to raise_error
+      end
+
+      it 'is a no-op when no table sets a per-table scope_column' do
+        expect {
+          described_class.validate_scope_column_usage!([orders, order_items], target_mode)
+        }.not_to raise_error
+      end
+
+      it 'ignores a scope_column on an ignore:true table' do
+        legacy_orders.ignore = true
+        expect {
+          described_class.validate_scope_column_usage!(all_tables, target_mode)
+        }.not_to raise_error
+      end
+    end
+
     def sqlite_adapter
       Exwiw::Adapter::SqliteAdapter.new(
         Exwiw::ConnectionConfig.new(
