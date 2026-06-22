@@ -140,15 +140,44 @@ module Exwiw
       # @param results [Enumerable] rows/documents from #execute
       # @param table the table/collection config
       # @param chunk_size [Integer, nil] rows per statement (nil => one statement)
+      # @return [Array(Integer, Integer)] [statement_count, record_count]
+      #
+      # record_count is tallied from the rows actually streamed here so the
+      # Runner no longer needs a separate upfront count query (MongoDB's
+      # count_documents / the SQL adapters' SELECT COUNT(*)) just to log the row
+      # count and decide whether an empty table can be skipped. That count was a
+      # second full pass over the same filter — a wasted COLLSCAN when the scope
+      # is unindexed; counting during the single streaming pass removes it.
+      #
+      # Batches rows by accumulating into a buffer and flushing every chunk_size
+      # rows, rather than `results.each_slice(chunk_size)`. This is deliberate:
+      # `Enumerable#each_slice` calls `#size` on the receiver as an allocation
+      # hint, which for a streaming result (MongoDB's StreamingResult) issues a
+      # `count_documents` — the very redundant count this single-pass design
+      # removes. Driving the buffer off `#each` keeps the result's `#size`
+      # untouched, so the cursor is walked exactly once. The chunk boundaries and
+      # "\n" separators reproduce the each_slice output byte-for-byte.
+      #
+      # chunk_size is always positive for callers of this default (MongoDB); the
+      # SQL adapters pass nil and override #write_inserts, so the unbounded
+      # nil-branch buffer is never reached here in practice.
       def write_inserts(io, results, table, chunk_size)
-        chunks = chunk_size ? results.each_slice(chunk_size) : [results]
         statement_count = 0
-        chunks.each do |chunk_rows|
+        record_count = 0
+        buffer = []
+        flush = lambda do
           io.print("\n") if statement_count.positive?
-          io.print(to_bulk_insert(chunk_rows, table))
+          io.print(to_bulk_insert(buffer, table))
           statement_count += 1
+          record_count += buffer.size
+          buffer.clear
         end
-        statement_count
+        results.each do |row|
+          buffer << row
+          flush.call if chunk_size && buffer.size >= chunk_size
+        end
+        flush.call unless buffer.empty?
+        [statement_count, record_count]
       end
 
       # Run the database-specific EXPLAIN for the given query and return the
