@@ -172,9 +172,56 @@ Each table is resolved as follows:
   skip it, or mark it `scope_exempt: true` (below) to export it in full.
 
 `--scope-column` is SQL-only (mysql / postgresql / sqlite) and mutually exclusive
-with `--target-table`, `--target-collection`, `--ids-column`, and `--ids-field`.
-It works with `exwiw explain` too, which is the recommended way to preview the
-queries before exporting.
+with `--target-collection`, `--ids-column`, and `--ids-field`. It may be combined
+with `--target-table` (hybrid mode, below). It works with `exwiw explain` too,
+which is the recommended way to preview the queries before exporting.
+
+#### Hybrid mode (`--target-table` + `--scope-column`)
+
+Some schemas need *both* anchors at once. The motivating case is a foreign key
+that cannot be joined: when a `belongs_to` target lives in a different database
+(see the cross-database `belongs_to` note under the generator), that join is
+impossible, but the foreign-key *column* is still present and can be filtered
+directly. Passing `--target-table` and `--scope-column` together resolves **each
+table as the union (`OR`) of however it is reachable from the target anchor and
+however it is reachable by the shared scope column** — and the scope values are
+**derived from the target**, so a single `--ids` (in the target's id-space) is
+enough:
+
+```bash
+exwiw \
+  --adapter=postgresql \
+  --host=localhost --port=5432 --user=reader \
+  --database=app_production \
+  --schema-dir=exwiw/schema \
+  --target-table=shops --ids=1 \
+  --scope-column=business_entity_id \
+  --insert-only \
+  --output-dir=dump
+```
+
+Here `shops` is filtered to id 1 *and* broadened to its whole
+`business_entity_id` (`WHERE shop_id-reachable OR business_entity_id IN (SELECT
+business_entity_id FROM shops WHERE id IN (1))`); a `customers` table that carries
+`business_entity_id` but has no join path to `shops` is reached purely by the
+derived scope. A table reachable by only one anchor is filtered by just that one
+(no `OR`), so single-anchor tables are unchanged.
+
+- The target table must carry the scope column (that is where the scope values
+  are derived from).
+- Every table must still be reachable by *some* anchor; one reachable by neither
+  aborts the run (same guarantee as pure scope-column mode), so nothing is
+  silently dumped in full. Use a `belongs_to` path, `scope_exempt: true`, or
+  `ignore: true` as needed.
+- Hybrid mode is **insert-only**: `delete-*.sql` generation is not supported for
+  the `OR`-composed queries, so `--insert-only` is required.
+- Because each row is matched via `pk IN (<branch>)` subqueries there is no join
+  fan-out, so a row is never emitted twice. Referential closure of the union
+  holds in the common case (including the cross-database FK case above); an exotic
+  shape — a scope-broadened table whose `belongs_to` parent has several scoped
+  referencers and is only narrowly reached by the target — can still leave a
+  dangling foreign key, so preview with `exwiw explain` and add a `belongs_to` /
+  `scope_exempt` if needed.
 
 #### `scope_exempt` (intentional full dump)
 

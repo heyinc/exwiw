@@ -143,11 +143,19 @@ module Exwiw
         expect(cli.instance_variable_get(:@scope_column)).to eq('tenant_id')
       end
 
-      it 'rejects combining --scope-column with --target-table' do
+      it 'allows combining --scope-column with --target-table (hybrid mode) when --insert-only is given' do
+        cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3', '--schema-dir=e2e/sqlite-schema',
+                       '--scope-column=tenant_id', '--target-table=users', '--ids=1', '--insert-only'])
+        expect { cli.send(:validate_options!) }.not_to raise_error
+        expect(cli.instance_variable_get(:@scope_column)).to eq('tenant_id')
+        expect(cli.instance_variable_get(:@target_table_name)).to eq('users')
+      end
+
+      it 'requires --insert-only when combining --scope-column with --target-table (hybrid export)' do
         argv = ['--adapter=sqlite', '--database=tmp/test.sqlite3', '--schema-dir=e2e/sqlite-schema',
                 '--scope-column=tenant_id', '--target-table=users', '--ids=1']
         expect { run_cli(argv) }.to raise_error(SystemExit)
-          .and output(/--scope-column cannot be combined with --target-table/).to_stderr
+          .and output(/hybrid mode\) requires --insert-only/).to_stderr
       end
 
       it 'rejects combining --scope-column with --ids-column' do

@@ -2,14 +2,16 @@
 
 module Exwiw
   class QueryAstBuilder
-    def self.run(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_forward: true)
-      new(table_name, table_by_name, dump_target, logger, allow_reverse: allow_reverse, allow_forward: allow_forward).run
+    def self.run(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_forward: true, mode: nil)
+      new(table_name, table_by_name, dump_target, logger, allow_reverse: allow_reverse, allow_forward: allow_forward, mode: mode).run
     end
 
     # Scope-column mode classification for a single table. One of
     # :exempt / :direct / :via_path / :referenced_by / :via_scoped_parent / :unscopable.
+    # Always evaluated with scope-column semantics (mode: :scope) so it is correct
+    # even in hybrid mode, where the instance's own mode would be :hybrid.
     def self.scope_category(table_name, table_by_name, dump_target, logger)
-      new(table_name, table_by_name, dump_target, logger).scope_category
+      new(table_name, table_by_name, dump_target, logger, mode: :scope).scope_category
     end
 
     # Strict pre-flight for scope-column mode: abort if any extractable table
@@ -18,6 +20,10 @@ module Exwiw
     # dumpable configs (ignore:true tables are skipped — they are not extracted).
     def self.validate_scope!(tables, table_by_name, dump_target, logger)
       return if dump_target.scope_column.nil?
+      # Hybrid mode (target + scope-column) has its own, looser pre-flight: a
+      # table only target-reachable is fine there, so the all-tables-scopable
+      # check below must not run. See validate_hybrid!.
+      return unless dump_target.table_name.nil?
 
       unscopable =
         tables.reject(&:ignore).select do |table|
@@ -34,9 +40,67 @@ module Exwiw
             "column name differs on that table)."
     end
 
+    # Strict pre-flight for hybrid mode (both --target-table and --scope-column
+    # set). No-op otherwise. Enforces the two invariants that make the OR-union of
+    # the target and scope-column extractions well-formed:
+    #
+    #   1. The target table must carry the scope column, since the scope values
+    #      are *derived* from it (`scope_column IN (SELECT target.scope_column
+    #      FROM target WHERE <target ids>)`); without it there is nothing to
+    #      derive from.
+    #   2. Every extractable table must be resolvable by the target anchor OR by
+    #      the scope column — otherwise it would be dumped in full (the same PII
+    #      risk validate_scope! guards in pure scope mode).
+    #
+    # Note: this does NOT statically guarantee referential closure of the union.
+    # The union of the (individually closed) target and scope extractions is
+    # closed in the common case — including when the scope column is a foreign key
+    # to a hub the target also reaches — but an exotic shape (a scope-broadened
+    # table whose belongs_to parent has several scoped referencers, so it is only
+    # narrowly reached by the target) can leave a dangling foreign key at import.
+    # A correct check needs value-level reasoning; instead hybrid runs are
+    # insert-only (see CLI) and the caveat is documented. Add a belongs_to path or
+    # `scope_exempt: true` on such a parent if it surfaces.
+    def self.validate_hybrid!(tables, table_by_name, dump_target, logger)
+      return if dump_target.table_name.nil? || dump_target.scope_column.nil?
+
+      target = table_by_name[dump_target.table_name]
+      if target && !target.columns.any? { |c| c.name == dump_target.scope_column }
+        raise ArgumentError,
+              "hybrid mode (--target-table + --scope-column): target table " \
+              "'#{dump_target.table_name}' does not carry the scope column " \
+              "'#{dump_target.scope_column}', so scope values cannot be derived from it. " \
+              "Use a target table that carries the scope column, or drop --scope-column."
+      end
+
+      unresolvable = tables.reject(&:ignore).reject do |table|
+        target_reachable?(table, table_by_name, dump_target, logger) ||
+          scope_reachable?(table, table_by_name, dump_target, logger)
+      end
+      return if unresolvable.empty?
+
+      names = unresolvable.map(&:name).sort.join(", ")
+      raise ArgumentError,
+            "hybrid mode: #{unresolvable.size} table(s) are reachable neither from " \
+            "--target-table '#{dump_target.table_name}' nor by --scope-column " \
+            "'#{dump_target.scope_column}': #{names}. For each, add a belongs_to path, " \
+            "set `scope_exempt: true` to export it in full, or `ignore: true` to skip it."
+    end
+
+    def self.target_reachable?(table, table_by_name, dump_target, logger)
+      return true if table.name == dump_target.table_name
+
+      query = new(table.name, table_by_name, dump_target, logger, mode: :target).run
+      query.where_clauses.any? || query.join_clauses.any?
+    end
+
+    def self.scope_reachable?(table, table_by_name, dump_target, logger)
+      scope_category(table.name, table_by_name, dump_target, logger) != :unscopable
+    end
+
     attr_reader :table_name, :table_by_name, :dump_target
 
-    def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_forward: true)
+    def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_forward: true, mode: nil)
       @table_name = table_name
       @table_by_name = table_by_name
       @dump_target = dump_target
@@ -47,13 +111,37 @@ module Exwiw
       # parent/child subquery so a single forward hop never recurses into another
       # (which could loop on a belongs_to cycle).
       @allow_forward = allow_forward
+      # :target / :scope / :hybrid. Inferred from the dump target when not forced.
+      # build_hybrid forces :target and :scope on its sub-builds so each branch is
+      # internally consistent; recursive subquery builds inherit this instance's
+      # mode (see the `mode: @mode` recursive run calls) instead of re-inferring
+      # :hybrid from the dump target.
+      @mode = mode || infer_mode
+    end
+
+    private def infer_mode
+      has_scope = !dump_target.scope_column.nil?
+      has_target = !dump_target.table_name.nil?
+      return :hybrid if has_scope && has_target
+      return :scope if has_scope
+
+      :target
     end
 
     def run
       table = table_by_name.fetch(table_name)
 
-      return build_scoped(table) if scope_mode?
+      case @mode
+      when :hybrid
+        build_hybrid(table)
+      when :scope
+        build_scoped(table)
+      else
+        build_target(table)
+      end
+    end
 
+    private def build_target(table)
       where_clauses = build_where_clauses(table, dump_target)
       join_clauses = build_join_clauses(table, table_by_name, dump_target)
 
@@ -80,6 +168,98 @@ module Exwiw
         join_clauses.each { |join_clause| ast.join(join_clause) }
         where_clauses.each { |where_clause| ast.where(where_clause) }
       end
+    end
+
+    # Hybrid mode: a table is the UNION (`OR`) of however it is reachable from the
+    # single `--target-table` anchor AND however it is reachable by the shared
+    # `--scope-column` (whose values are derived from the target — see
+    # scope_where_clause). A table matched by both branches broadens to cover both
+    # row sets; one query per table is still emitted, and because each branch is an
+    # `pk IN (<branch projected to pk>)` subquery there is no row fan-out (no
+    # duplicate rows). validate_hybrid! has already rejected tables reachable by
+    # neither branch, so this only ever composes genuinely reachable branches.
+    private def build_hybrid(table)
+      # Reference/master/rails-managed: exported in full regardless of anchor.
+      return build_full_dump(table) if scope_exempt?(table)
+
+      branches = []
+
+      target_branch = self.class.run(
+        table.name, table_by_name, dump_target, @logger,
+        allow_reverse: @allow_reverse, allow_forward: @allow_forward, mode: :target
+      )
+      branches << target_branch if constrained?(target_branch)
+
+      if scope_category_for(table) != :unscopable
+        scope_branch = self.class.run(
+          table.name, table_by_name, dump_target, @logger,
+          allow_reverse: @allow_reverse, allow_forward: @allow_forward, mode: :scope
+        )
+        branches << scope_branch if constrained?(scope_branch)
+      end
+
+      return compose_or(table, branches) if branches.size > 1
+      return branches.first if branches.size == 1
+
+      # Neither branch constrained: would be a full dump. validate_hybrid! rejects
+      # such tables before extraction, so this is defensive — return the
+      # (unconstrained) target build rather than inventing a filter.
+      target_branch
+    end
+
+    private def constrained?(query)
+      query.where_clauses.any? || query.join_clauses.any?
+    end
+
+    private def scope_category_for(table)
+      self.class.new(
+        table.name, table_by_name, dump_target, @logger,
+        allow_reverse: @allow_reverse, allow_forward: @allow_forward, mode: :scope
+      ).scope_category
+    end
+
+    private def build_full_dump(table)
+      ast = QueryAst::Select.new
+      ast.from(table.name)
+      if table.rails_managed?
+        ast.select_all!
+      else
+        ast.select(table.columns)
+      end
+      ast
+    end
+
+    # Compose several independent per-table resolutions into one query that
+    # selects the table's (masked) columns where its primary key is in ANY branch.
+    # Each branch is projected down to the table's primary key and OR'd, so the
+    # outer query has no join fan-out and emits each row at most once.
+    private def compose_or(table, branches)
+      ast = QueryAst::Select.new
+      ast.from(table.name)
+      if table.rails_managed?
+        ast.select_all!
+      else
+        ast.select(table.columns)
+      end
+
+      or_conditions = branches.map { |branch| pk_in_subquery(table, branch) }
+      ast.where(QueryAst::WhereClause.new(column_name: nil, operator: :or, value: or_conditions))
+      ast
+    end
+
+    private def pk_in_subquery(table, branch_query)
+      pk_column = TableColumn.from_symbol_keys(name: table.primary_key)
+      projected = QueryAst::Select.new
+      projected.from(branch_query.from_table_name)
+      projected.select([pk_column])
+      branch_query.join_clauses.each { |j| projected.join(j) }
+      branch_query.where_clauses.each { |w| projected.where(w) }
+
+      QueryAst::WhereClause.new(
+        column_name: table.primary_key,
+        operator: :in_subquery,
+        value: QueryAst::SelectSubquery.new(query: projected)
+      )
     end
 
     private def build_join_clauses(table, table_by_name, dump_target)
@@ -168,7 +348,7 @@ module Exwiw
         # chain of FK-less tables from recursing back into each other;
         # allow_forward:false stops the child from forward-scoping back through
         # this very table (which would loop).
-        child_query = self.class.run(other.name, table_by_name, dump_target, @logger, allow_reverse: false, allow_forward: false)
+        child_query = self.class.run(other.name, table_by_name, dump_target, @logger, allow_reverse: false, allow_forward: false, mode: @mode)
 
         # Only an *already constrained* child narrows anything; an unconstrained
         # child would select every fk value (i.e. dump all) and not help.
@@ -228,7 +408,7 @@ module Exwiw
         # Build the parent's own scoped query. allow_reverse stays true so the
         # parent may be scoped via referenced_by; allow_forward:false bounds this
         # to a single forward hop so a belongs_to cycle cannot loop.
-        parent_query = self.class.run(parent.name, table_by_name, dump_target, @logger, allow_reverse: true, allow_forward: false)
+        parent_query = self.class.run(parent.name, table_by_name, dump_target, @logger, allow_reverse: true, allow_forward: false, mode: @mode)
 
         # Only a constrained parent narrows anything; an unconstrained parent
         # would select every pk (i.e. dump all) and not help.
@@ -369,10 +549,6 @@ module Exwiw
     # scope column" rather than "the one named target".
     # ------------------------------------------------------------------
 
-    private def scope_mode?
-      !dump_target.scope_column.nil?
-    end
-
     # Classifier used by validate_scope! and mirrored by build_scoped below.
     def scope_category
       table = table_by_name.fetch(table_name)
@@ -464,9 +640,32 @@ module Exwiw
       table.columns.any? { |c| c.name == column }
     end
 
+    # In pure scope-column mode the scope values are the literal `--ids`. In
+    # hybrid mode (a target table is also set) the `--ids` belong to the target's
+    # id-space, not the scope column's, so the scope values are *derived* from the
+    # target instead: `scope_column IN (SELECT target.scope_column FROM target
+    # WHERE <target ids>)`. The outer column may be a per-table `scope_column`
+    # override while the derived values always come from the target's
+    # `--scope-column` (the same shared value-space).
     private def scope_where_clause(table)
+      column = resolved_scope_column(table)
+
+      if dump_target.table_name
+        target = table_by_name.fetch(dump_target.table_name)
+        return Exwiw::QueryAst::WhereClause.new(
+          column_name: column,
+          operator: :in_subquery,
+          value: Exwiw::QueryAst::Subquery.new(
+            table_name: target.name,
+            select_column: dump_target.scope_column,
+            where_column: dump_target.ids_field || target.primary_key,
+            where_values: dump_target.ids
+          )
+        )
+      end
+
       Exwiw::QueryAst::WhereClause.new(
-        column_name: resolved_scope_column(table),
+        column_name: column,
         operator: :eq,
         value: dump_target.ids
       )

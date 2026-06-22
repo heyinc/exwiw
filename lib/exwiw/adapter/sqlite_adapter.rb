@@ -249,6 +249,8 @@ module Exwiw
           end
         elsif where_clause.operator == :in_subquery
           "#{key} IN (#{compile_subquery(where_clause.value)})"
+        elsif where_clause.operator == :or
+          "(#{where_clause.value.map { |sub| compile_where_condition(sub, table_name) }.join(' OR ')})"
         else
           raise "Unsupported operator: #{where_clause.operator}"
         end

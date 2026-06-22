@@ -210,6 +210,16 @@ module Exwiw
           $stderr.puts "--output-format=copy is only supported with the postgresql adapter"
           exit 1
         end
+
+        # Hybrid mode (--target-table + --scope-column) composes each table from
+        # OR'd subqueries; the delete-NNN-*.sql generator does not handle that
+        # shape, so delete output is unsupported. Require --insert-only so the
+        # run produces only insert files (and fail fast rather than mid-export).
+        if @target_table_name && @scope_column && !@insert_only
+          $stderr.puts "--scope-column combined with --target-table (hybrid mode) requires --insert-only " \
+                       "(delete output is not supported for hybrid extraction)"
+          exit 1
+        end
       end
 
       if @schema_dir.nil?
@@ -401,11 +411,12 @@ module Exwiw
         exit 1
       end
 
-      if @target_table_name
-        $stderr.puts "--scope-column cannot be combined with --target-table/--target-collection"
-        exit 1
-      end
-
+      # --scope-column may be combined with --target-table: "hybrid" mode, where
+      # each table is the union (OR) of however it is reachable from the target
+      # anchor and however it is reachable by the shared scope column (whose
+      # values are derived from the target). --target-collection stays mongodb-only
+      # (resolve_target_collection_alias! already rejected it for the sql adapters
+      # required above), so only a genuine --target-table reaches here.
       if @ids_field || @ids_column
         flag = @ids_column ? "--ids-column" : "--ids-field"
         $stderr.puts "--scope-column cannot be combined with #{flag}"
@@ -538,7 +549,7 @@ module Exwiw
         opts.on("--ids=[IDS]", "Comma-separated list of identifiers. Required when --target-table is given.") { |v| @ids = v.split(',') }
         opts.on("--ids-field=[FIELD]", "Field on the target collection that --ids is matched against. Defaults to the primary key. (mongodb adapter only)") { |v| @ids_field = v }
         opts.on("--ids-column=[COLUMN]", "Column on the target table that --ids is matched against. Defaults to the primary key. (sql adapters only)") { |v| @ids_column = v }
-        opts.on("--scope-column=[COLUMN]", "Filter every table by this shared column (--ids are its values) instead of a single --target-table. Tables lacking it are reached via belongs_to. SQL adapters only; mutually exclusive with --target-table.") { |v| @scope_column = v }
+        opts.on("--scope-column=[COLUMN]", "Filter every table by this shared column (--ids are its values) instead of a single --target-table. Tables lacking it are reached via belongs_to. SQL adapters only. May be combined with --target-table for hybrid mode (each table is the OR-union of both; scope values derived from the target; requires --insert-only).") { |v| @scope_column = v }
         opts.on("--output-format=[FORMAT]", "Output format: insert (default) or copy (PostgreSQL only, export subcommand only)") { |v| @output_format = v }
         opts.on("--insert-only", "Do not generate DELETE SQL files (export subcommand only)") { @insert_only = true }
         opts.on("--after-insert-hook=PATH", "Path to a .rb or .sh post-processing hook executed after all insert/delete files are written (export subcommand only)") do |v|

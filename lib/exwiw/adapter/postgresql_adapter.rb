@@ -364,6 +364,8 @@ module Exwiw
           cast_to = subquery_cast_to(where_clause.value, table_name, where_clause.column_name)
           outer_key = cast_to ? "#{key}::#{cast_to}" : key
           "#{outer_key} IN (#{subquery_sql})"
+        elsif where_clause.operator == :or
+          "(#{where_clause.value.map { |sub| compile_where_condition(sub, table_name) }.join(' OR ')})"
         else
           raise "Unsupported operator: #{where_clause.operator}"
         end

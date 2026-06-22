@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Hybrid extraction: `--target-table` may now be combined with `--scope-column`.** Each table is resolved as the union (`OR`) of however it is reachable from the single target anchor and however it is reachable by the shared scope column, and the scope values are *derived from the target* (`scope_column IN (SELECT target.scope_column FROM target WHERE <target ids>)`) so one `--ids` in the target's id-space drives both. This handles a foreign key that cannot be joined — most importantly a cross-database `belongs_to` (its join is impossible, but the FK column is still filterable): the table is reached via the scope column instead of being dropped or dumped in full. A table reachable by only one anchor is filtered by just that one, so single-anchor extraction is byte-identical to before. The target table must carry the scope column; every table must still be reachable by some anchor (a table reachable by neither aborts the run, as in pure scope-column mode); and hybrid runs are insert-only (`--insert-only` is required, since the `OR`-composed queries have no `delete-*.sql` form). Because each row is matched via `pk IN (<branch>)` subqueries there is no join fan-out, so no row is emitted twice. SQL adapters only.
+
 ## [0.6.2] - 2026-06-21
 
 ## [0.6.1] - 2026-06-20
