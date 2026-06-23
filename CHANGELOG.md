@@ -13,6 +13,12 @@
 - **`--scope-column` is deprecated.** The global flag still selects scope-column mode (SQL-only, mutually exclusive with `--target-table`) but now emits a deprecation warning. Prefer declaring a per-table `scope_column:` in the schema config and running with `--target-table`. A per-table `scope_column` takes precedence over the flag for any table that sets both.
 - **A scoped target's `--ids` now mean scope values, not primary keys.** When `--target-table` names a table that declares a `scope_column`, exwiw runs in scope-column mode and `--ids` are matched against that shared column; the target is scoped like any other table rather than anchored by primary key. A table that declares a `scope_column` can therefore no longer be single-extracted by primary key.
 
+## [0.7.0] - 2026-06-23
+
+### Changed
+
+- **`replace_with` now preserves NULL.** A NULL source value stays NULL instead of being replaced by the masked literal (all adapters: MySQL, PostgreSQL, SQLite, MongoDB). Previously masking a nullable column clobbered NULL into a non-NULL value, losing the "not set" signal in the dump and making `.nil?`/`.present?`-dependent code behave differently than against production. The SQL adapters now wrap the masking expression in `CASE WHEN <column> IS NOT NULL THEN <masked> ELSE NULL END`, and the MongoDB adapter skips masking a field whose value is nil or absent. This is a behavior change for **nullable** masked columns only — `NOT NULL` columns are unaffected, and an empty string is a real value that is still masked (only true NULL/absent is preserved). It removes the need for hand-written `raw_sql` `CASE` workarounds to keep NULLs.
+
 ## [0.6.2] - 2026-06-21
 
 ## [0.6.1] - 2026-06-20
