@@ -614,6 +614,12 @@ and you can use the column name with `{}` to replace the value with the column v
 For example, Let assume we have the record which id is 1,
 then "user{id}@example.com" will be replaced with "user1@example.com".
 
+`replace_with` **preserves NULL**: a source value that is `NULL` (or, for MongoDB, an
+absent field) is left as-is instead of being replaced by the masked literal, so the
+"not set" signal survives into the dump. Only true `NULL`/absent is preserved — an empty
+string is a real value and is still masked. Because of this you do not need to hand-write a
+`raw_sql` `CASE WHEN ... IS NOT NULL ...` to keep NULLs.
+
 #### `raw_sql`
 
 It will used instead of the original value.
