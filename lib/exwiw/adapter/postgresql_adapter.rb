@@ -458,7 +458,7 @@ module Exwiw
           end
 
           replaced = parts.join(", ")
-          "CONCAT(#{replaced})"
+          null_preserving(ast, column, "CONCAT(#{replaced})")
         else
           raise "Unreachable case: #{column.inspect}"
         end

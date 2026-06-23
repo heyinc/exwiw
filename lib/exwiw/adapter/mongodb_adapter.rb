@@ -514,6 +514,11 @@ module Exwiw
       # pair, with all per-config lookups hoisted into the plan.
       private def apply_mask_plan!(doc, plan)
         plan.masked_fields.each do |name, segments|
+          # Preserve a NULL / absent source value instead of clobbering it into a
+          # masked literal. `doc[name].nil?` is true for both an explicit nil and
+          # an absent key, so an absent key is left absent (not created).
+          next if doc[name].nil?
+
           doc[name] = render_template(segments, doc)
         end
         plan.embedded.each do |child|

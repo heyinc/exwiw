@@ -503,6 +503,51 @@ module Exwiw
           ])
           expect(parsed["posts"].first["title"]).to eq("masked-title-101")
         end
+
+        it "preserves a NULL field value instead of masking it" do
+          users_t = config_by_name.fetch("users")
+          adapter.build_query(users_t, dump_target, config_by_name)
+          rows = [
+            { "_id" => 1, "name" => nil, "email" => "user1@example.com", "shop_id" => 1 },
+          ]
+          parsed = JSON.parse(adapter.to_bulk_insert(rows, users_t))
+
+          expect(parsed["name"]).to be_nil
+          expect(parsed["email"]).to eq("masked1@example.com")
+        end
+
+        it "leaves an absent masked field absent (does not create the key)" do
+          users_t = config_by_name.fetch("users")
+          adapter.build_query(users_t, dump_target, config_by_name)
+          rows = [
+            { "_id" => 1, "email" => "user1@example.com", "shop_id" => 1 },
+          ]
+          parsed = JSON.parse(adapter.to_bulk_insert(rows, users_t))
+
+          expect(parsed).not_to have_key("name")
+          expect(parsed["email"]).to eq("masked1@example.com")
+        end
+
+        it "preserves a NULL field in an embedded subdocument" do
+          users_t = config_by_name.fetch("users")
+          adapter.build_query(users_t, dump_target, config_by_name)
+          rows = [
+            {
+              "_id" => 1,
+              "name" => "User 1",
+              "email" => "user1@example.com",
+              "shop_id" => 1,
+              "posts" => [
+                { "_id" => 101, "title" => nil },
+                { "_id" => 102, "title" => "Second" },
+              ],
+            },
+          ]
+          parsed = JSON.parse(adapter.to_bulk_insert(rows, users_t))
+
+          expect(parsed["posts"][0]["title"]).to be_nil
+          expect(parsed["posts"][1]["title"]).to eq("masked-title-102")
+        end
       end
 
       describe "#to_bulk_delete" do
