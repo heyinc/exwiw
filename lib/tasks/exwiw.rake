@@ -32,8 +32,8 @@ namespace :exwiw do
         cross.each do |c|
           $stderr.puts "  - #{c[:table]}.#{c[:foreign_key]} -> #{c[:target]} (in another database)"
         end
-        $stderr.puts "  To extract across a boundary, run with --scope-column=<foreign_key> " \
-                     "(optionally with --target-table). Otherwise the relation stays ignored " \
+        $stderr.puts "  To extract across a boundary, declare `scope_column: <foreign_key>` on the " \
+                     "owning table's config (scope-column mode). Otherwise the relation stays ignored " \
                      "and the foreign key is exported as a plain value."
       end
     end

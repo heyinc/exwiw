@@ -350,8 +350,8 @@ module Exwiw
                  "'#{target_db}', not '#{owner_db}'. exwiw exports each database separately and " \
                  "cannot join across them, so this relation is ignored during extraction; its " \
                  "foreign-key column '#{entry[:foreign_key]}' is still exported. To extract across " \
-                 "this boundary, run with `--scope-column=#{entry[:foreign_key]}` (optionally with " \
-                 "`--target-table`) so the foreign-key column is filtered directly.",
+                 "this boundary, declare `scope_column: \"#{entry[:foreign_key]}\"` on this table's " \
+                 "config so its rows are filtered by that foreign-key value directly (scope-column mode).",
       )
     end
 

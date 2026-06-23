@@ -34,7 +34,6 @@ module Exwiw
       target_collection
       ids
       ids_field
-      ids_column
       scope_column
     ].freeze
 
@@ -77,7 +76,6 @@ module Exwiw
       @target_collection_name = nil
       @ids = []
       @ids_field = nil
-      @ids_column = nil
       @scope_column = nil
       @output_format = nil
       @insert_only = nil
@@ -165,7 +163,7 @@ module Exwiw
 
       resolve_target_collection_alias!
       resolve_scope_column!
-      resolve_ids_column_alias!
+      resolve_ids_field!
       resolve_uri_option!
 
       if @subcommand == "explain"
@@ -208,16 +206,6 @@ module Exwiw
 
         if @output_format == "copy" && @database_adapter != "postgresql"
           $stderr.puts "--output-format=copy is only supported with the postgresql adapter"
-          exit 1
-        end
-
-        # Hybrid mode (--target-table + --scope-column) composes each table from
-        # OR'd subqueries; the delete-NNN-*.sql generator does not handle that
-        # shape, so delete output is unsupported. Require --insert-only so the
-        # run produces only insert files (and fail fast rather than mid-export).
-        if @target_table_name && @scope_column && !@insert_only
-          $stderr.puts "--scope-column combined with --target-table (hybrid mode) requires --insert-only " \
-                       "(delete output is not supported for hybrid extraction)"
           exit 1
         end
       end
@@ -327,7 +315,6 @@ module Exwiw
         @ids = (raw.is_a?(String) ? raw.split(",") : Array(raw)).map(&:to_s)
       end
       @ids_field ||= config["ids_field"]
-      @ids_column ||= config["ids_column"]
       @scope_column ||= config["scope_column"]
     end
 
@@ -359,49 +346,33 @@ module Exwiw
       @target_table_name = @target_collection_name
     end
 
-    # `--ids-column` is the sql-adapter spelling of `--ids-field` (the mongodb
-    # spelling). Both override which column/field `--ids` is matched against on
-    # the target table; internally they fold into the single @ids_field carried
-    # by DumpTarget. Mirror the --target-table/--target-collection split: each
-    # flag is restricted to its adapter family and the two are mutually
-    # exclusive. Runs after resolve_target_collection_alias! so
+    # `--ids-field` overrides which field `--ids` is matched against on the target
+    # collection (defaulting to its primary key). It is mongodb-only and
+    # meaningless without a target collection to constrain. (The SQL adapters have
+    # no equivalent: a scoped target's `scope_column` is the column `--ids` filter
+    # against there.) Runs after resolve_target_collection_alias! so
     # @target_table_name already reflects the collection alias.
-    private def resolve_ids_column_alias!
-      if @ids_field && @ids_column
-        $stderr.puts "Specify only one of --ids-field and --ids-column"
+    private def resolve_ids_field!
+      return if @ids_field.nil?
+
+      if @database_adapter != "mongodb"
+        $stderr.puts "--ids-field is only supported by the mongodb adapter"
         exit 1
       end
 
-      if @ids_field && @database_adapter != "mongodb"
-        $stderr.puts "--ids-field is only supported by the mongodb adapter (use --ids-column)"
-        exit 1
-      end
-
-      if @ids_column
-        sql_adapters = ["mysql", "postgresql", "sqlite"]
-        unless sql_adapters.include?(@database_adapter)
-          $stderr.puts "--ids-column is only supported by the sql adapters (use --ids-field)"
-          exit 1
-        end
-
-        @ids_field = @ids_column
-      end
-
-      # --ids-field/--ids-column override the column --ids filters against on
-      # the target table; meaningless without a target table to constrain.
-      if @ids_field && !@target_table_name
-        flag = @ids_column ? "--ids-column" : "--ids-field"
-        $stderr.puts "--target-table is required when #{flag} is specified"
+      unless @target_table_name
+        $stderr.puts "--target-table is required when --ids-field is specified"
         exit 1
       end
     end
 
-    # `--scope-column` switches to scope-column mode: every table is filtered by a
-    # shared column (`--ids` are its values) instead of anchoring on one
-    # `--target-table`. It is SQL-only and mutually exclusive with the single-target
-    # flags. Runs after resolve_target_collection_alias! (so --target-collection is
-    # already folded into @target_table_name) and before resolve_ids_column_alias!
-    # so the clearer "cannot combine" message wins over the generic ids-column one.
+    # `--scope-column` is **deprecated**: it selected scope-column mode with a
+    # single global column for every table. The preferred way is to declare a
+    # per-table `scope_column:` in the schema config and pass `--target-table`
+    # (the target is then scoped like any other table). The flag still works as
+    # before — SQL-only and mutually exclusive with `--target-table` — but emits a
+    # deprecation warning. Runs after resolve_target_collection_alias! so
+    # --target-collection is already folded into @target_table_name.
     private def resolve_scope_column!
       return if @scope_column.nil?
 
@@ -411,17 +382,18 @@ module Exwiw
         exit 1
       end
 
-      # --scope-column may be combined with --target-table: "hybrid" mode, where
-      # each table is the union (OR) of however it is reachable from the target
-      # anchor and however it is reachable by the shared scope column (whose
-      # values are derived from the target). --target-collection stays mongodb-only
-      # (resolve_target_collection_alias! already rejected it for the sql adapters
-      # required above), so only a genuine --target-table reaches here.
-      if @ids_field || @ids_column
-        flag = @ids_column ? "--ids-column" : "--ids-field"
-        $stderr.puts "--scope-column cannot be combined with #{flag}"
+      if @target_table_name
+        $stderr.puts "--scope-column cannot be combined with --target-table/--target-collection"
         exit 1
       end
+
+      if @ids_field
+        $stderr.puts "--scope-column cannot be combined with --ids-field"
+        exit 1
+      end
+
+      $stderr.puts "warning: --scope-column is deprecated; declare a per-table `scope_column:` " \
+                   "in the schema config and run with --target-table instead."
     end
 
     # `--uri` supplies a full connection string (e.g. `mongodb+srv://...`) and is
@@ -548,8 +520,7 @@ module Exwiw
         opts.on("--target-collection=[COLLECTION]", "Alias of --target-table for the mongodb adapter.") { |v| @target_collection_name = v }
         opts.on("--ids=[IDS]", "Comma-separated list of identifiers. Required when --target-table is given.") { |v| @ids = v.split(',') }
         opts.on("--ids-field=[FIELD]", "Field on the target collection that --ids is matched against. Defaults to the primary key. (mongodb adapter only)") { |v| @ids_field = v }
-        opts.on("--ids-column=[COLUMN]", "Column on the target table that --ids is matched against. Defaults to the primary key. (sql adapters only)") { |v| @ids_column = v }
-        opts.on("--scope-column=[COLUMN]", "Filter every table by this shared column (--ids are its values) instead of a single --target-table. Tables lacking it are reached via belongs_to. SQL adapters only. May be combined with --target-table for hybrid mode (each table is the OR-union of both; scope values derived from the target; requires --insert-only).") { |v| @scope_column = v }
+        opts.on("--scope-column=[COLUMN]", "DEPRECATED. Filter every table by this shared global column (--ids are its values) instead of a single --target-table. SQL adapters only; mutually exclusive with --target-table. Prefer declaring a per-table `scope_column:` in the schema config and running with --target-table.") { |v| @scope_column = v }
         opts.on("--output-format=[FORMAT]", "Output format: insert (default) or copy (PostgreSQL only, export subcommand only)") { |v| @output_format = v }
         opts.on("--insert-only", "Do not generate DELETE SQL files (export subcommand only)") { @insert_only = true }
         opts.on("--after-insert-hook=PATH", "Path to a .rb or .sh post-processing hook executed after all insert/delete files are written (export subcommand only)") do |v|

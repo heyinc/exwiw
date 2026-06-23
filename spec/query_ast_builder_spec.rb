@@ -808,33 +808,35 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
     end
 
-    describe '.validate_scope_column_usage!' do
-      let(:target_mode) { Exwiw::DumpTarget.new(table_name: 'orders', ids: ['1']) }
+    # The preferred trigger: no --scope-column flag, but the named --target-table
+    # declares a per-table scope_column, so the run is scope-column mode and the
+    # target's --ids are scope values rather than primary keys.
+    context 'scope-column mode triggered by a target that declares scope_column' do
+      # legacy_orders declares scope_column: 'legacy_tenant'.
+      let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'legacy_orders', ids: ['t1']) }
 
-      it 'raises when a table sets a per-table scope_column but the run is not in scope-column mode' do
-        # legacy_orders sets scope_column: 'legacy_tenant'.
-        expect {
-          described_class.validate_scope_column_usage!(all_tables, target_mode)
-        }.to raise_error(ArgumentError, /not in scope-column mode.*legacy_orders/m)
+      it 'reports scope_mode? for the declaring target' do
+        expect(described_class.scope_mode?(table_by_name, dump_target)).to eq(true)
       end
 
-      it 'is a no-op in scope-column mode (the override is consulted)' do
-        expect {
-          described_class.validate_scope_column_usage!(all_tables, dump_target)
-        }.not_to raise_error
+      it 'scopes the target by its own scope_column, not by its primary key' do
+        ast = build('legacy_orders')
+        expect(ast.join_clauses).to eq([])
+        expect(ast.where_clauses.map(&:to_h)).to eq([
+          { column_name: 'legacy_tenant', operator: :eq, value: ['t1'] },
+        ])
       end
 
-      it 'is a no-op when no table sets a per-table scope_column' do
+      it 'still triggers validate_scope! so an unscopable table aborts' do
         expect {
-          described_class.validate_scope_column_usage!([orders, order_items], target_mode)
-        }.not_to raise_error
+          described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+        }.to raise_error(ArgumentError, /widgets/)
       end
 
-      it 'ignores a scope_column on an ignore:true table' do
-        legacy_orders.ignore = true
-        expect {
-          described_class.validate_scope_column_usage!(all_tables, target_mode)
-        }.not_to raise_error
+      it 'is plain target mode when the target declares no scope_column' do
+        # orders carries a tenant_id column but does not *declare* scope_column.
+        target_mode = Exwiw::DumpTarget.new(table_name: 'orders', ids: ['1'])
+        expect(described_class.scope_mode?(table_by_name, target_mode)).to eq(false)
       end
     end
 
@@ -846,133 +848,6 @@ RSpec.describe Exwiw::QueryAstBuilder do
         ),
         logger,
       )
-    end
-  end
-
-  describe 'hybrid mode (--target-table + --scope-column)' do
-    let(:logger) { Logger.new(nil) }
-    # Anchor on `shops` (id-space = shop ids) AND derive a `business_entity_id`
-    # scope from the selected shops. `shops`/`customers` belong_to a
-    # business_entity that lives in another database, so that belongs_to is
-    # dropped (PR #98); the scope column survives on each table.
-    let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'shops', ids: ['1'], scope_column: 'business_entity_id') }
-
-    let(:shops) do
-      Exwiw::TableConfig.from_symbol_keys(
-        name: 'shops', primary_key: 'id', belongs_tos: [],
-        columns: [{ name: 'id' }, { name: 'name' }, { name: 'business_entity_id' }]
-      )
-    end
-    # Reachable from the target by join (shop_id) AND scope-reachable via_path.
-    let(:orders) do
-      Exwiw::TableConfig.from_symbol_keys(
-        name: 'orders', primary_key: 'id',
-        belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id' }],
-        columns: [{ name: 'id' }, { name: 'shop_id' }]
-      )
-    end
-    # Not reachable from the target (its belongs_to to the business_entity is
-    # cross-database and dropped); scope-reachable directly by business_entity_id.
-    let(:customers) do
-      Exwiw::TableConfig.from_symbol_keys(
-        name: 'customers', primary_key: 'id', belongs_tos: [],
-        columns: [{ name: 'id' }, { name: 'business_entity_id' }]
-      )
-    end
-
-    let(:all_tables) { [shops, orders, customers] }
-    let(:table_by_name) { all_tables.each_with_object({}) { |t, h| h[t.name] = t } }
-
-    def build(name)
-      described_class.run(name, table_by_name, dump_target, logger)
-    end
-
-    def sqlite_adapter
-      Exwiw::Adapter::SqliteAdapter.new(
-        Exwiw::ConnectionConfig.new(
-          adapter: 'sqlite', database_name: 'tmp/test.sqlite3',
-          host: nil, port: nil, user: nil, password: nil
-        ),
-        logger,
-      )
-    end
-
-    context 'a table reachable by both anchors (the target table itself)' do
-      it 'ORs the target filter with the derived-scope filter' do
-        ast = build('shops')
-        expect(ast.from_table_name).to eq('shops')
-        where = ast.where_clauses
-        expect(where.size).to eq(1)
-        expect(where[0].operator).to eq(:or)
-        expect(where[0].value.size).to eq(2)
-        expect(where[0].value.map(&:operator)).to eq([:in_subquery, :in_subquery])
-      end
-
-      it 'compiles the OR-union to SQL (sqlite), scope values derived from the target' do
-        expect(sqlite_adapter.compile_ast(build('shops'))).to eq(
-          'SELECT shops.id, shops.name, shops.business_entity_id FROM shops WHERE (' \
-          "shops.id IN (SELECT shops.id FROM shops WHERE shops.id = '1') OR " \
-          'shops.id IN (SELECT shops.id FROM shops WHERE shops.business_entity_id IN ' \
-          "(SELECT shops.business_entity_id FROM shops WHERE shops.id IN ('1'))))"
-        )
-      end
-    end
-
-    context 'a table reachable from the target by join and scope-reachable via_path' do
-      it 'ORs the join-to-target with the scope join' do
-        expect(sqlite_adapter.compile_ast(build('orders'))).to eq(
-          'SELECT orders.id, orders.shop_id FROM orders WHERE (' \
-          "orders.id IN (SELECT orders.id FROM orders WHERE orders.shop_id = '1') OR " \
-          'orders.id IN (SELECT orders.id FROM orders JOIN shops ON orders.shop_id = shops.id ' \
-          "AND shops.business_entity_id IN (SELECT shops.business_entity_id FROM shops WHERE shops.id IN ('1'))))"
-        )
-      end
-    end
-
-    context 'a table reachable only by the scope column' do
-      it 'is a single scope branch (no OR), with derived values' do
-        ast = build('customers')
-        expect(ast.where_clauses.size).to eq(1)
-        expect(ast.where_clauses[0].operator).to eq(:in_subquery)
-        expect(sqlite_adapter.compile_ast(ast)).to eq(
-          'SELECT customers.id, customers.business_entity_id FROM customers WHERE ' \
-          "customers.business_entity_id IN (SELECT shops.business_entity_id FROM shops WHERE shops.id IN ('1'))"
-        )
-      end
-    end
-
-    describe '.validate_hybrid!' do
-      it 'is a no-op outside hybrid mode (target-only / scope-only)' do
-        target_only = Exwiw::DumpTarget.new(table_name: 'shops', ids: ['1'])
-        expect {
-          described_class.validate_hybrid!(all_tables, table_by_name, target_only, logger)
-        }.not_to raise_error
-      end
-
-      it 'passes when every table is reachable by the target or the scope column' do
-        expect {
-          described_class.validate_hybrid!(all_tables, table_by_name, dump_target, logger)
-        }.not_to raise_error
-      end
-
-      it 'raises when the target table does not carry the scope column' do
-        shops.columns = shops.columns.reject { |c| c.name == 'business_entity_id' }
-        expect {
-          described_class.validate_hybrid!(all_tables, table_by_name, dump_target, logger)
-        }.to raise_error(ArgumentError, /does not carry the scope column/)
-      end
-
-      it 'raises listing tables reachable by neither anchor' do
-        widgets = Exwiw::TableConfig.from_symbol_keys(
-          name: 'widgets', primary_key: 'id', belongs_tos: [],
-          columns: [{ name: 'id' }, { name: 'name' }]
-        )
-        tables = all_tables + [widgets]
-        by_name = tables.each_with_object({}) { |t, h| h[t.name] = t }
-        expect {
-          described_class.validate_hybrid!(tables, by_name, dump_target, logger)
-        }.to raise_error(ArgumentError, /reachable neither.*widgets/m)
-      end
     end
   end
 end

@@ -1,10 +1,12 @@
 #!/bin/bash
 
-# Scope-column mode: filter every table by a shared `tenant_id` instead of a
-# single --target-table. `accounts` and `orders` carry the column directly,
-# `order_lines` is reached via belongs_to to `orders`, and `regions` is a
-# scope_exempt reference table exported in full. We seed two tenants and assert
-# only tenant 1's rows (plus all regions) come out.
+# Scope-column mode: filter every table by a shared `tenant_id` instead of
+# anchoring on one table's primary key. `accounts` and `orders` declare
+# `scope_column: tenant_id` in their config, so naming one of them as
+# --target-table runs in scope-column mode and --ids are tenant_id values (not
+# primary keys). `order_lines` is reached via belongs_to to `orders`, and
+# `regions` is a scope_exempt reference table exported in full. We seed two
+# tenants and assert only tenant 1's rows (plus all regions) come out.
 
 set -e
 
@@ -37,12 +39,14 @@ INSERT INTO regions (id, code) VALUES (1, 'JP'), (2, 'US');
 # Fresh DB: schema only.
 sqlite3 "$NEW_DB_PATH" "$SCHEMA_SQL"
 
-# Run exwiw in scope-column mode for tenant_id = 1.
+# Run exwiw in scope-column mode for tenant_id = 1. `accounts` declares
+# scope_column: tenant_id, so --ids are matched against tenant_id and accounts
+# is scoped like any other table rather than anchored by its primary key.
 bundle exec exe/exwiw \
   --adapter=sqlite \
   --database="${TARGET_DB_PATH}" \
   --schema-dir=e2e/scope-schema \
-  --scope-column=tenant_id \
+  --target-table=accounts \
   --ids=1 \
   --output-dir="$OUTPUT_DIR" \
   --log-level=debug

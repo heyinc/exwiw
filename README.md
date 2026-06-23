@@ -79,7 +79,7 @@ exwiw \
   --log-level=info
 ```
 
-By default `--ids` are matched against the target table's primary key. `--ids-column=COLUMN` matches them against a different column instead (e.g. `--target-table=users --ids=alice@example.com --ids-column=email`). Related tables are still extracted correctly: their foreign keys are resolved through the target via a subquery (`WHERE fk IN (SELECT pk FROM target WHERE COLUMN IN (...))`), so only the target table's filter column changes. This is the SQL-adapter counterpart of the mongodb `--ids-field`; the two are mutually exclusive and each is rejected by the other adapter family. Note: if `COLUMN` is itself masked, re-running `delete-*` against an already-imported (masked) dump won't match, so prefer a stable natural key.
+By default `--ids` are matched against the target table's primary key. If the target table declares a per-table `scope_column`, exwiw runs in [scope-column mode](#scope-column-mode) instead — `--ids` are then values of that shared column, and the table is scoped like any other rather than anchored by primary key.
 
 When `--target-table` and `--ids` are omitted, exwiw dumps all tables defined in `--schema-dir`:
 
@@ -129,18 +129,31 @@ exwiw explain \
 
 The `--output-dir`, `--output-format`, `--insert-only`, and `--after-insert-hook` options are dump-specific and rejected when used with `explain`.
 
-### Scope-column mode (`--scope-column`)
+### Scope-column mode
 
 The default `--target-table` extraction assumes the schema converges on a single
 root: every table is reached by walking `belongs_to` toward that one table. Some
 schemas are not shaped that way — many independent top-level tables each carry the
-*same* scope/tenant column (e.g. `tenant_id`, `account_uuid`) and there is no
-single root. Choosing one of them as `--target-table` would leave the others
-unrelated to it, and an unrelated table is dumped in full — a problem if it holds
-personal data.
+*same* scope/tenant column (e.g. `tenant_id`, `business_entity_id`), and a foreign
+key that **cannot be joined** (most importantly a cross-database `belongs_to`,
+whose join is impossible but whose FK column is still filterable) is not reached at
+all. Choosing one table as `--target-table` would leave the others unrelated to it,
+and an unrelated table is dumped in full — a problem if it holds personal data.
 
-`--scope-column` handles this shape: instead of one anchor table, **every table is
-filtered by a shared column** whose values are `--ids`.
+Scope-column mode handles this shape: instead of anchoring on one table's primary
+key, **every table is filtered by a shared column** whose values are `--ids`.
+Declare that column per table in the schema config with `scope_column:`:
+
+```json
+{
+  "name": "shops",
+  "primary_key": "id",
+  "scope_column": "business_entity_id",
+  "columns": [{ "name": "id" }, { "name": "name" }, { "name": "business_entity_id" }]
+}
+```
+
+Then name any scoped table as `--target-table` and pass the scope values as `--ids`:
 
 ```bash
 exwiw \
@@ -148,15 +161,21 @@ exwiw \
   --host=localhost --port=5432 --user=reader \
   --database=app_production \
   --schema-dir=exwiw/schema \
-  --scope-column=tenant_id \
-  --ids=42,43 \
+  --target-table=shops --ids=42,43 \
   --output-dir=dump
 ```
 
+Because `shops` declares a `scope_column`, exwiw switches to scope-column mode: the
+`--ids` (`42,43`) are **`business_entity_id` values, not shop primary keys**, and
+`shops` itself is scoped by `business_entity_id IN (42,43)` like every other scoped
+table — it is *not* used as a primary-key anchor. (A table that declares a
+`scope_column` therefore can no longer be single-extracted by primary key.)
+
 Each table is resolved as follows:
 
-- **Carries the scope column** → `WHERE scope_column IN (ids)`.
-- **Lacks it but `belongs_to` reaches a table that has it** → exwiw joins up to the
+- **Declares the scope column** (`scope_column:`, or carries the global column of
+  the deprecated `--scope-column` flag) → `WHERE scope_column IN (ids)`.
+- **Does not, but `belongs_to` reaches a table that does** → exwiw joins up to the
   nearest such table and applies the scope filter there (the same join machinery
   the single-target mode uses).
 - **`belongs_to` a parent that is itself scoped but carries no scope column of its
@@ -168,60 +187,22 @@ Each table is resolved as follows:
   a single forward hop and a single unambiguous scopable parent.
 - **Cannot be scoped at all** (no scope column and no path to one) → exwiw
   **aborts** and lists the offending tables, so an unscoped table is never silently
-  dumped in full. For each, either add a `belongs_to` path, set `ignore: true` to
-  skip it, or mark it `scope_exempt: true` (below) to export it in full.
+  dumped in full. For each, either declare a `scope_column`, add a `belongs_to`
+  path, set `ignore: true` to skip it, or mark it `scope_exempt: true` (below) to
+  export it in full.
 
-`--scope-column` is SQL-only (mysql / postgresql / sqlite) and mutually exclusive
-with `--target-collection`, `--ids-column`, and `--ids-field`. It may be combined
-with `--target-table` (hybrid mode, below). It works with `exwiw explain` too,
-which is the recommended way to preview the queries before exporting.
+Scope-column mode is SQL-only (mysql / postgresql / sqlite). It works with `exwiw
+explain` too, which is the recommended way to preview the queries before exporting.
 
-#### Hybrid mode (`--target-table` + `--scope-column`)
+#### Cross-database foreign keys
 
-Some schemas need *both* anchors at once. The motivating case is a foreign key
-that cannot be joined: when a `belongs_to` target lives in a different database
-(see the cross-database `belongs_to` note under the generator), that join is
-impossible, but the foreign-key *column* is still present and can be filtered
-directly. Passing `--target-table` and `--scope-column` together resolves **each
-table as the union (`OR`) of however it is reachable from the target anchor and
-however it is reachable by the shared scope column** — and the scope values are
-**derived from the target**, so a single `--ids` (in the target's id-space) is
-enough:
-
-```bash
-exwiw \
-  --adapter=postgresql \
-  --host=localhost --port=5432 --user=reader \
-  --database=app_production \
-  --schema-dir=exwiw/schema \
-  --target-table=shops --ids=1 \
-  --scope-column=business_entity_id \
-  --insert-only \
-  --output-dir=dump
-```
-
-Here `shops` is filtered to id 1 *and* broadened to its whole
-`business_entity_id` (`WHERE shop_id-reachable OR business_entity_id IN (SELECT
-business_entity_id FROM shops WHERE id IN (1))`); a `customers` table that carries
-`business_entity_id` but has no join path to `shops` is reached purely by the
-derived scope. A table reachable by only one anchor is filtered by just that one
-(no `OR`), so single-anchor tables are unchanged.
-
-- The target table must carry the scope column (that is where the scope values
-  are derived from).
-- Every table must still be reachable by *some* anchor; one reachable by neither
-  aborts the run (same guarantee as pure scope-column mode), so nothing is
-  silently dumped in full. Use a `belongs_to` path, `scope_exempt: true`, or
-  `ignore: true` as needed.
-- Hybrid mode is **insert-only**: `delete-*.sql` generation is not supported for
-  the `OR`-composed queries, so `--insert-only` is required.
-- Because each row is matched via `pk IN (<branch>)` subqueries there is no join
-  fan-out, so a row is never emitted twice. Referential closure of the union
-  holds in the common case (including the cross-database FK case above); an exotic
-  shape — a scope-broadened table whose `belongs_to` parent has several scoped
-  referencers and is only narrowly reached by the target — can still leave a
-  dangling foreign key, so preview with `exwiw explain` and add a `belongs_to` /
-  `scope_exempt` if needed.
+The motivating case for declaring a `scope_column` is a foreign key that cannot be
+joined: when a `belongs_to` target lives in a different database (see the
+cross-database `belongs_to` note under the generator), that join is impossible, but
+the foreign-key *column* is still present and can be filtered directly. Declaring
+`scope_column: "<that foreign key>"` on the owning table scopes it by the column
+value, with no join — `schema:generate` points this out in the ignored relation's
+`comment`.
 
 #### `scope_exempt` (intentional full dump)
 
@@ -240,11 +221,11 @@ opt out of the strict check and be exported in full:
 Rails-managed tables (`schema_migrations`, `ar_internal_metadata`) are treated as
 exempt automatically.
 
-#### Per-table `scope_column` override
+#### Per-table `scope_column` and the value space
 
-scope-column mode assumes a single shared **value** space — the same `--ids` apply
-to every scoped table. If a table stores that same value under a differently named
-column, override the column name for that table:
+Scope-column mode assumes a single shared **value** space — the same `--ids` apply
+to every scoped table. Each table names its own column, so a table that stores that
+same value under a differently named column simply declares that name:
 
 ```json
 {
@@ -258,10 +239,14 @@ column, override the column name for that table:
 Both `scope_exempt` and `scope_column` are user-maintained and preserved across
 `schema:generate` regeneration (the generators never emit them).
 
-A per-table `scope_column` is only consulted in scope-column mode. Running without
-`--scope-column` while any loaded config sets a per-table `scope_column` is an
-error (it would silently do nothing) — pass `--scope-column=COLUMN`, or remove the
-per-table override.
+#### Deprecated: the `--scope-column` flag
+
+Before per-table declarations, scope-column mode was selected with a global
+`--scope-column=COLUMN` flag (every table filtered by that one column, `--ids` its
+values, no `--target-table`). The flag still works — SQL-only and mutually
+exclusive with `--target-table` — but is **deprecated** and emits a warning; prefer
+declaring a per-table `scope_column` and running with `--target-table`. A per-table
+`scope_column` takes precedence over the flag for any table that sets both.
 
 ### Config file (`exwiw.yml`)
 
@@ -278,7 +263,7 @@ output_format: insert        # insert | copy
 insert_only: false
 after_insert_hook: hooks/seed.rb
 log_level: info              # debug | info
-# target_table / ids / ids_field / ids_column / scope_column may also be set here
+# target_table / ids / ids_field / scope_column may also be set here
 ```
 
 With the file above, only the connection details need to be supplied on the CLI:
@@ -350,7 +335,7 @@ exwiw/schema/
 
 Each database keeps its own Rails migration history, so a `schema_migrations` (and `ar_internal_metadata`) entry is emitted under every database that contains one — the example above shows `primary/schema_migrations.json` and would also produce `analytics/schema_migrations.json` when the analytics database has its own migration table. Single-database applications are unaffected and continue to write files flat into the output directory.
 
-A `belongs_to` whose target model lives in a *different* database (e.g. a `primary` model referencing an `analytics` one) cannot be joined: each database is exported on its own connection and into its own subdirectory, so the target table is absent from the directory this config is loaded with. `schema:generate` detects such a relation (by comparing the owning and target models' database config names) and emits it with `ignore: true` and `ignore_type: "cross_database"`, recording why in the `comment`; the relation is then dropped from extraction at load time, while the foreign-key column itself is still exported as a plain column. Polymorphic associations are handled per target, so only the targets that cross a database boundary are ignored. The task also prints a summary of every cross-database `belongs_to` it ignored. **To extract across such a boundary, the foreign-key column can be filtered directly via [hybrid mode](#hybrid-mode---target-table----scope-column) (`--scope-column=<foreign_key>`, optionally with `--target-table`)** — there is no join, so the cross-database boundary is not a problem there.
+A `belongs_to` whose target model lives in a *different* database (e.g. a `primary` model referencing an `analytics` one) cannot be joined: each database is exported on its own connection and into its own subdirectory, so the target table is absent from the directory this config is loaded with. `schema:generate` detects such a relation (by comparing the owning and target models' database config names) and emits it with `ignore: true` and `ignore_type: "cross_database"`, recording why in the `comment`; the relation is then dropped from extraction at load time, while the foreign-key column itself is still exported as a plain column. Polymorphic associations are handled per target, so only the targets that cross a database boundary are ignored. The task also prints a summary of every cross-database `belongs_to` it ignored. **To extract across such a boundary, declare `scope_column: "<foreign_key>"` on the owning table (see [scope-column mode](#scope-column-mode)) so its rows are filtered by the foreign-key value directly** — there is no join, so the cross-database boundary is not a problem there.
 
 **Limitations**
 
@@ -712,7 +697,7 @@ The MongoDB adapter is experimental. To use it:
 - The MongoDB adapter consumes a separate config type, `MongodbCollectionConfig`, with MongoDB-native naming. Use `fields` (instead of the SQL adapters' `columns`), and set `"primary_key": "_id"`. Foreign keys (`shop_id`, `user_id`, ...) stay as ordinary fields.
 - `--ids` values are coerced to the type actually stored in `_id` before filtering: integer-looking ids become `Integer`, 24-char hex ids become `BSON::ObjectId` (Mongoid's default `_id` type — a plain String would never match an ObjectId), and any other string is left as-is.
 - `--target-collection=COLLECTION` is a mongodb-only alias of `--target-table` (use whichever reads better for MongoDB). Specifying both, or using `--target-collection` with a non-mongodb adapter, is an error.
-- `--ids-field=FIELD` matches `--ids` against `FIELD` on the target collection instead of its primary key (e.g. `--target-collection=users --ids=a@example.com --ids-field=email`). Downstream foreign-key propagation still keys off the primary key, so only the target collection's filter changes. Unlike the primary-key path, the supplied ids are **not** type-coerced (the stored type of a custom field is unknown), so pass values matching the field's actual type. This flag is **mongodb-only**; the SQL adapters use `--ids-column` instead (see below).
+- `--ids-field=FIELD` matches `--ids` against `FIELD` on the target collection instead of its primary key (e.g. `--target-collection=users --ids=a@example.com --ids-field=email`). Downstream foreign-key propagation still keys off the primary key, so only the target collection's filter changes. Unlike the primary-key path, the supplied ids are **not** type-coerced (the stored type of a custom field is unknown), so pass values matching the field's actual type. This flag is **mongodb-only** (the SQL adapters have no equivalent).
 - Large or embedded-document-heavy dumps are streamed automatically: the adapter reads the collection through a lazy cursor (not `.to_a`) and writes JSONL in chunks, so peak memory is bounded by the chunk size rather than the collection size — no flag to set. Encoding each document to MongoDB Extended JSON is accelerated by an **optional native (C) extension** that compiles automatically on `gem install`; where it cannot compile, exwiw falls back to a byte-identical pure-Ruby encoder. See [`docs/optimization-notes.md`](docs/optimization-notes.md) for the performance investigation and [`docs/optimize-mongodb-export-with-native-ext.md`](docs/optimize-mongodb-export-with-native-ext.md) for the native encoder's design. Benchmark your own data with `script/bench_mongodb_dump.rb`.
 - Output is JSON Lines (`insert-{idx}-{collection}.jsonl`) using MongoDB Extended JSON (relaxed mode). Import with `mongoimport`:
   ```bash

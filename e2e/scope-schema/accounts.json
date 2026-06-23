@@ -1,6 +1,7 @@
 {
   "name": "accounts",
   "primary_key": "id",
+  "scope_column": "tenant_id",
   "belongs_tos": [],
   "columns": [{
     "name": "id"

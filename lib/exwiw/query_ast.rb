@@ -36,36 +36,19 @@ module Exwiw
       end
     end
 
-    # `operator` is one of:
-    #   :eq           — `column IN (values)` (or `= value` for a single value)
-    #   :in_subquery  — `column IN (<subquery>)`, `value` is a Subquery/SelectSubquery
-    #   :or           — `(c1 OR c2 OR ...)`, `value` is an Array of WhereClause and
-    #                   `column_name` is nil. Used to union several independent
-    #                   resolutions of one table (e.g. hybrid target + scope-column).
     WhereClause = Struct.new(:column_name, :operator, :value, keyword_init: true) do
       def to_h
         {
           column_name: column_name,
           operator: operator,
-          value: serialize_value,
+          value: value.is_a?(Subquery) || value.is_a?(SelectSubquery) ? value.to_h : value,
         }
-      end
-
-      private def serialize_value
-        case value
-        when Subquery, SelectSubquery
-          value.to_h
-        when Array
-          value.map { |v| v.respond_to?(:to_h) ? v.to_h : v }
-        else
-          value
-        end
       end
     end
 
     # Resolves a set of values on `where_column` to the rows' `select_column`
     # via a nested SELECT. Used as the `value` of a WhereClause whose operator
-    # is `:in_subquery`, so `--ids-column`/`--ids-field` can filter related
+    # is `:in_subquery`, so a non primary-key `ids_field` can filter related
     # tables through the target table's primary key:
     #
     #   <table>.<fk> IN (SELECT <table_name>.<select_column>

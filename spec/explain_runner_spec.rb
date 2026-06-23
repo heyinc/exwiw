@@ -110,31 +110,5 @@ module Exwiw
         expect { runner.run }.to raise_error(ArgumentError, /--target-table 'no_such_table' does not exist in the schema/)
       end
     end
-
-    describe '#run in hybrid mode (--target-table + --scope-column)' do
-      # Anchor on a specific user, and additionally scope by the shared shop_id
-      # derived from that user. `products` is unrelated to `users` by belongs_to
-      # but carries shop_id, so it is reached only by the scope column.
-      let(:dump_target) { DumpTarget.new(table_name: 'users', ids: ['1'], scope_column: 'shop_id') }
-
-      before do
-        %w[shops users products].each do |t|
-          FileUtils.cp("e2e/sqlite-schema/#{t}.json", File.join(schema_dir, "#{t}.json"))
-        end
-      end
-
-      it 'compiles, validates and EXPLAINs the OR-union without error' do
-        runner.run
-        out = io.string
-
-        # users is reachable by both anchors -> OR-union.
-        expect(out).to match(/FROM users WHERE \(.* OR .*\)/)
-        # products is reachable only by the derived scope column (single branch).
-        expect(out).to include(
-          'products.shop_id IN (SELECT users.shop_id FROM users WHERE users.id IN (\'1\'))'
-        )
-        expect(out.scan(/-- EXPLAIN:/).size).to eq(3)
-      end
-    end
   end
 end

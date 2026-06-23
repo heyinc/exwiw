@@ -335,8 +335,8 @@ module Exwiw
           expect(shops_belongs_to.ignore_type).to eq(SchemaGenerator::CROSS_DATABASE_IGNORE_TYPE)
         end
 
-        it "records why in the comment and points at --scope-column" do
-          expect(shops_belongs_to.comment).to include("analytics", "primary", "--scope-column=analytics_event_id")
+        it "records why in the comment and points at a per-table scope_column" do
+          expect(shops_belongs_to.comment).to include("analytics", "primary", 'scope_column: "analytics_event_id"')
         end
 
         it "keeps the foreign-key column exported even though the relation is ignored" do
