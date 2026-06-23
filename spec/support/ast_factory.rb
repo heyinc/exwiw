@@ -38,6 +38,28 @@ module AstFactory
     end
   end
 
+  # A select whose masked column (`nickname`) carries a `replace_with` template
+  # that references a DIFFERENT column (`{email}`). Used to assert the
+  # NULL-preserving guard keys off the masked column itself, not the referenced
+  # one. Adapter-agnostic (the config is built inline, not loaded per adapter).
+  def build_select_masked_reference_ast
+    table = Exwiw::TableConfig.from_symbol_keys(
+      name: "accounts",
+      primary_key: "id",
+      belongs_tos: [],
+      columns: [
+        { name: "id" },
+        { name: "nickname", replace_with: "user-{email}" },
+        { name: "email" },
+      ],
+    )
+
+    QueryAst::Select.new.tap do |ast|
+      ast.from(table.name)
+      ast.select(table.columns)
+    end
+  end
+
   def build_join_query_ast
     order_items_table = order_items_table(adapter_name)
 
