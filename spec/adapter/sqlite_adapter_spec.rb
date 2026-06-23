@@ -68,7 +68,7 @@ module Exwiw
           let(:sql) { adapter.compile_ast(build_select_users_ast) }
 
           it "builds sql" do
-            expect(sql).to eq("SELECT users.id, ('masked' || users.id), ('masked' || users.id || '@example.com'), users.shop_id, users.updated_at, users.created_at FROM users WHERE users.shop_id = 1")
+            expect(sql).to eq("SELECT users.id, ('masked' || users.id), CASE WHEN users.email IS NOT NULL THEN ('masked' || users.id || '@example.com') ELSE NULL END, users.shop_id, users.updated_at, users.created_at FROM users WHERE users.shop_id = 1")
           end
         end
 
@@ -76,7 +76,15 @@ module Exwiw
           let(:sql) { adapter.compile_ast(build_select_users_ast("users.id > 1")) }
 
           it "builds sql" do
-            expect(sql).to eq("SELECT users.id, ('masked' || users.id), ('masked' || users.id || '@example.com'), users.shop_id, users.updated_at, users.created_at FROM users WHERE users.shop_id = 1 AND users.id > 1")
+            expect(sql).to eq("SELECT users.id, ('masked' || users.id), CASE WHEN users.email IS NOT NULL THEN ('masked' || users.id || '@example.com') ELSE NULL END, users.shop_id, users.updated_at, users.created_at FROM users WHERE users.shop_id = 1 AND users.id > 1")
+          end
+        end
+
+        context "masking template referencing another column" do
+          let(:sql) { adapter.compile_ast(build_select_masked_reference_ast) }
+
+          it "guards on the masked column itself, not the referenced column" do
+            expect(sql).to eq("SELECT accounts.id, CASE WHEN accounts.nickname IS NOT NULL THEN ('user-' || accounts.email) ELSE NULL END, accounts.email FROM accounts")
           end
         end
 
@@ -248,6 +256,52 @@ module Exwiw
               [5, 1, 5, 2, "2025-01-01 00:00:00", "2025-01-01 00:00:00"],
             ])
           end
+        end
+      end
+
+      # End-to-end (against a real, isolated sqlite file) proof that masking
+      # preserves a NULL source value: a NULL row stays NULL, a non-NULL row is
+      # masked. Self-contained so it does not depend on the shared seeded DB
+      # (whose masked columns are all NOT NULL).
+      describe "NULL-preserving masking" do
+        let(:db_path) { Tempfile.new(["null_mask", ".sqlite3"]).path }
+        let(:null_connection_config) do
+          ConnectionConfig.new(
+            adapter: adapter_name,
+            database_name: db_path,
+            host: nil,
+            port: nil,
+            user: nil,
+            password: nil,
+          )
+        end
+        let(:null_adapter) { described_class.new(null_connection_config, logger) }
+        let(:masked_ast) do
+          table = Exwiw::TableConfig.from_symbol_keys(
+            name: "accounts",
+            primary_key: "id",
+            belongs_tos: [],
+            columns: [{ name: "id" }, { name: "nickname", replace_with: "masked-{id}" }],
+          )
+          QueryAst::Select.new.tap do |ast|
+            ast.from(table.name)
+            ast.select(table.columns)
+          end
+        end
+
+        before do
+          db = ::SQLite3::Database.new(db_path)
+          db.execute("CREATE TABLE accounts (id INTEGER PRIMARY KEY, nickname TEXT)")
+          db.execute("INSERT INTO accounts (id, nickname) VALUES (1, NULL)")
+          db.execute("INSERT INTO accounts (id, nickname) VALUES (2, 'Alice')")
+          db.close
+        end
+
+        it "keeps a NULL source value NULL and masks a non-NULL value" do
+          expect(null_adapter.execute(masked_ast).to_a).to eq([
+            [1, nil],
+            [2, "masked-2"],
+          ])
         end
       end
 

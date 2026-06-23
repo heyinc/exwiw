@@ -202,6 +202,17 @@ module Exwiw
       rescue => e
         "<unavailable: #{e.class}: #{e.message}>"
       end
+
+      # Wrap a masking expression so a NULL source value stays NULL instead of
+      # being clobbered into a non-NULL literal. The guard checks the masked
+      # column itself (`column.name`) — not any other column the template may
+      # reference — so only true NULL is preserved; an empty string is a real
+      # value and is still masked. The column reference uses the same
+      # `<from_table>.<col>` form as the Plain branch. Shared by the SQL
+      # adapters' #compile_column_name ReplaceWith handling.
+      private def null_preserving(ast, column, masked_expr)
+        "CASE WHEN #{ast.from_table_name}.#{column.name} IS NOT NULL THEN #{masked_expr} ELSE NULL END"
+      end
     end
 
     # @params [Exwiw::QueryAst] query_ast

@@ -73,7 +73,7 @@ module Exwiw
           let(:sql) { adapter.compile_ast(build_select_users_ast) }
 
           it "builds sql" do
-            expect(sql).to eq("SELECT users.id, CONCAT('masked', users.id), CONCAT('masked', users.id, '@example.com'), users.shop_id, users.updated_at, users.created_at, users.role FROM users WHERE users.shop_id = 1")
+            expect(sql).to eq("SELECT users.id, CONCAT('masked', users.id), CASE WHEN users.email IS NOT NULL THEN CONCAT('masked', users.id, '@example.com') ELSE NULL END, users.shop_id, users.updated_at, users.created_at, users.role FROM users WHERE users.shop_id = 1")
           end
         end
 
@@ -81,7 +81,15 @@ module Exwiw
           let(:sql) { adapter.compile_ast(build_select_users_ast("users.id > 1")) }
 
           it "builds sql" do
-            expect(sql).to eq("SELECT users.id, CONCAT('masked', users.id), CONCAT('masked', users.id, '@example.com'), users.shop_id, users.updated_at, users.created_at, users.role FROM users WHERE users.shop_id = 1 AND users.id > 1")
+            expect(sql).to eq("SELECT users.id, CONCAT('masked', users.id), CASE WHEN users.email IS NOT NULL THEN CONCAT('masked', users.id, '@example.com') ELSE NULL END, users.shop_id, users.updated_at, users.created_at, users.role FROM users WHERE users.shop_id = 1 AND users.id > 1")
+          end
+        end
+
+        context "masking template referencing another column" do
+          let(:sql) { adapter.compile_ast(build_select_masked_reference_ast) }
+
+          it "guards on the masked column itself, not the referenced column" do
+            expect(sql).to eq("SELECT accounts.id, CASE WHEN accounts.nickname IS NOT NULL THEN CONCAT('user-', accounts.email) ELSE NULL END, accounts.email FROM accounts")
           end
         end
 

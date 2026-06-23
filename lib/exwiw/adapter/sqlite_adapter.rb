@@ -298,7 +298,7 @@ module Exwiw
           end
 
           replaced = parts.join(" || ")
-          "(#{replaced})"
+          null_preserving(ast, column, "(#{replaced})")
         else
           raise "Unreachable case: #{column.inspect}"
         end
