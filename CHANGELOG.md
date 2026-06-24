@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-24
+
 ### Added
 
 - **Scope-column mode is now declared per table.** A table that should be filtered by a shared scope/tenant column declares `scope_column: <column>` in its schema config. Naming any such table as `--target-table` then runs in scope-column mode: `--ids` are values of that shared column (not primary keys), and every table is filtered by its own `scope_column` — tables that lack one are reached via `belongs_to`, `scope_exempt: true` tables are dumped in full, and a table reachable by none aborts the run (so nothing is silently dumped unscoped). This is the primary way to extract across a foreign key that cannot be joined — most importantly a cross-database `belongs_to` (its join is impossible, but the FK column is still filterable): declare `scope_column: "<that foreign key>"` on the owning table and it is filtered by the FK value directly, with no join. SQL adapters only.
