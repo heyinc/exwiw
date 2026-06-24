@@ -436,6 +436,32 @@ module Exwiw
           end
         end
 
+        context "compile_ast with a UnionSubquery and matching arm types" do
+          it "does not cast any arm" do
+            sql = adapter.compile_ast(build_reverse_scope_union_ast)
+            expect(sql).to eq(
+              "SELECT * FROM users WHERE users.id IN (" \
+              "SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 1 AND customers.user_id IS NOT NULL " \
+              "UNION " \
+              "SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 1 AND staff.user_id IS NOT NULL)"
+            )
+            expect(sql).not_to include("::text")
+          end
+        end
+
+        context "compile_ast with a UnionSubquery where a later arm's type differs" do
+          it "casts the outer key AND every arm to ::text (not just the first)" do
+            allow(adapter).to receive(:column_pg_type).with("users", "id").and_return('uuid')
+            allow(adapter).to receive(:column_pg_type).with("customers", "user_id").and_return('uuid')
+            allow(adapter).to receive(:column_pg_type).with("staff", "user_id").and_return('varchar')
+
+            sql = adapter.compile_ast(build_reverse_scope_union_ast)
+            expect(sql).to include("users.id::text IN (")
+            expect(sql).to include("SELECT customers.user_id::text FROM customers")
+            expect(sql).to include("SELECT staff.user_id::text FROM staff")
+          end
+        end
+
         context "column_pg_type returns nil (graceful fallback)" do
           it "does not cast and does not raise" do
             allow(adapter).to receive(:column_pg_type).and_return(nil)

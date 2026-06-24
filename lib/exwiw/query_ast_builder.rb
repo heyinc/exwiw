@@ -168,6 +168,15 @@ module Exwiw
     # such (single, unambiguous) referencer, leaving the caller to fall back to
     # the dump-all behavior.
     private def build_referenced_by_clause(table)
+      # Opt-in multi-referencer reverse scope (TableConfig#reverse_scope): when
+      # the schema author has enumerated the referencers explicitly, constrain
+      # the table to the UNION of those referencers' scoped queries instead of
+      # the single-referencer auto-detection below (which bails to a full dump
+      # once two or more tables reference the table).
+      if table.reverse_scope && table.reverse_scope.via.any?
+        return build_reverse_scope_via_clause(table)
+      end
+
       candidates = table_by_name.each_value.filter_map do |other|
         next if other.name == table.name
 
@@ -216,6 +225,64 @@ module Exwiw
         column_name: table.primary_key,
         operator: :in_subquery,
         value: QueryAst::SelectSubquery.new(query: projected)
+      )
+    end
+
+    # Multi-referencer reverse scope (TableConfig#reverse_scope). Builds a
+    # `pk IN (SELECT ref1.col1 FROM ref1 <scope> UNION SELECT ref2.col2 ...)`
+    # clause for a global-identity table referenced by many scoped tables. Each
+    # `via` arm reuses the referencer's own (already-scoped) extraction query —
+    # so a per-tenant run keeps only that tenant's ids — projected down to the
+    # foreign-key column that points at this table, with NULLs excluded.
+    #
+    # An arm whose referencer is unknown or comes out unconstrained is skipped
+    # with a warning rather than included: an unconstrained arm would project
+    # every row's id and union the whole table back, silently defeating the
+    # prune. Returns nil when no arm survives, leaving the caller to fall back to
+    # the dump-all behavior (which validate_scope! then rejects in scope mode).
+    private def build_reverse_scope_via_clause(table)
+      arms = table.reverse_scope.via.filter_map do |via|
+        referencer = table_by_name[via.table]
+        if referencer.nil?
+          @logger.warn("  #{table.name}.reverse_scope references unknown table '#{via.table}'; skipping arm.")
+          next
+        end
+
+        # Build the referencer's own scoped extraction query. allow_reverse /
+        # allow_forward are disabled to bound recursion exactly as the
+        # single-referencer path does (a referencer scopable only via its own
+        # reverse/forward rescue would loop or, worse, recurse back into this
+        # table).
+        ref_query = self.class.run(referencer.name, table_by_name, dump_target, @logger, allow_reverse: false, allow_forward: false)
+
+        unless ref_query.where_clauses.any? || ref_query.join_clauses.any?
+          @logger.warn(
+            "  #{table.name}.reverse_scope arm '#{via.table}.#{via.column}' is not scoped; " \
+            "skipping it (an unconstrained arm would union every row back). " \
+            "Make '#{via.table}' scopable or remove it from reverse_scope.via."
+          )
+          next
+        end
+
+        # Project the referencer's query to the foreign-key column that points
+        # at this table, excluding NULLs. Force a plain column so any masking /
+        # raw_sql configured on that column does not corrupt the id comparison.
+        fk_column = TableColumn.from_symbol_keys(name: via.column)
+        projected = QueryAst::Select.new
+        projected.from(ref_query.from_table_name)
+        projected.select([fk_column])
+        ref_query.join_clauses.each { |j| projected.join(j) }
+        ref_query.where_clauses.each { |w| projected.where(w) }
+        projected.where(QueryAst::WhereClause.new(column_name: via.column, operator: :not_null))
+        projected
+      end
+
+      return nil if arms.empty?
+
+      QueryAst::WhereClause.new(
+        column_name: table.primary_key,
+        operator: :in_subquery,
+        value: QueryAst::UnionSubquery.new(queries: arms)
       )
     end
 

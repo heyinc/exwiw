@@ -294,6 +294,16 @@ module Exwiw
           }.to raise_error(ArgumentError, /columns must not be defined/)
         end
 
+        it 'rejects reverse_scope' do
+          expect {
+            TableConfig.from_symbol_keys(
+              name: 'schema_migrations',
+              type: TableConfig::RAILS_MANAGED_SCHEMA_MIGRATIONS,
+              reverse_scope: { via: [{ table: 'customers', column: 'user_id' }] },
+            )
+          }.to raise_error(ArgumentError, /reverse_scope must not be defined/)
+        end
+
         it 'loads successfully with only name/type/comment' do
           expect {
             TableConfig.from_symbol_keys(
@@ -434,6 +444,51 @@ module Exwiw
         expect(merged.scope_exempt).to eq(true)
         expect(merged.scope_column).to eq('legacy_tenant')
         expect(merged.column_names).to eq(['id', 'legacy_tenant', 'added'])
+      end
+    end
+
+    describe 'reverse_scope' do
+      it 'round-trips the via list through JSON' do
+        config = TableConfig.from_symbol_keys(
+          name: 'users',
+          primary_key: 'id',
+          reverse_scope: {
+            via: [
+              { table: 'customers', column: 'user_id' },
+              { table: 'business_entity_customers', column: 'kantan_yoyaku_user_id' },
+            ],
+          },
+          columns: [{ name: 'id' }],
+        )
+        reloaded = TableConfig.from(JSON.parse(JSON.generate(config.to_hash)))
+        expect(reloaded.reverse_scope.via.map { |v| [v.table, v.column] }).to eq([
+          ['customers', 'user_id'],
+          ['business_entity_customers', 'kantan_yoyaku_user_id'],
+        ])
+      end
+
+      it 'omits the key when unset (generator default)' do
+        hash = TableConfig.from_symbol_keys(
+          name: 'orders', primary_key: 'id', columns: [{ name: 'id' }]
+        ).to_hash
+        expect(hash).not_to have_key('reverse_scope')
+      end
+
+      it 'preserves the user-set value across merge with a regenerated config' do
+        current = TableConfig.from_symbol_keys(
+          name: 'users', primary_key: 'id',
+          reverse_scope: { via: [{ table: 'customers', column: 'user_id' }] },
+          columns: [{ name: 'id' }],
+        )
+        regenerated = TableConfig.from_symbol_keys(
+          name: 'users', primary_key: 'id',
+          columns: [{ name: 'id' }, { name: 'added' }],
+        )
+        merged = current.merge(regenerated)
+        expect(merged.reverse_scope.via.map { |v| [v.table, v.column] }).to eq([
+          ['customers', 'user_id'],
+        ])
+        expect(merged.column_names).to eq(['id', 'added'])
       end
     end
   end

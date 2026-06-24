@@ -280,6 +280,8 @@ module Exwiw
           end
         elsif where_clause.operator == :in_subquery
           "#{key} IN (#{compile_subquery(where_clause.value)})"
+        elsif where_clause.operator == :not_null
+          "#{key} IS NOT NULL"
         else
           raise "Unsupported operator: #{where_clause.operator}"
         end
@@ -289,6 +291,12 @@ module Exwiw
         # A SelectSubquery wraps a full Select (the referencing table's
         # extraction query, projected to a foreign key); compile it as-is.
         return compile_ast(subquery.query) if subquery.is_a?(Exwiw::QueryAst::SelectSubquery)
+
+        # A UnionSubquery wraps several such Selects; UNION their compiled forms
+        # into a single id set.
+        if subquery.is_a?(Exwiw::QueryAst::UnionSubquery)
+          return subquery.queries.map { |q| compile_ast(q) }.join(' UNION ')
+        end
 
         inner_values = subquery.where_values.map { |v| escape_value(v) }
         "SELECT #{subquery.table_name}.#{subquery.select_column} " \
