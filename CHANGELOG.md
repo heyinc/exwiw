@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Multi-referencer reverse scoping (`reverse_scope`).** Reverse / "referenced_by" extraction previously narrowed only a table referenced by *exactly one* constrained child; a table referenced by two or more (most importantly a **global-identity table** like `users`, which carries no scope/tenant column and has no `belongs_to` of its own, yet many scoped tables point *at* it) fell back to dumping every row — dragging in every tenant's identities. A table can now opt into **multi-referencer** reverse scoping with a user-owned `reverse_scope: { via: [{ table, column }, …] }` key listing the referencers whose own (already scoped) extraction queries are `UNION`'d into the id set it is constrained to (`pk IN (SELECT ref1.col1 FROM ref1 <scope> UNION SELECT ref2.col2 FROM ref2 <scope> …)`). Each arm reuses that referencer's own scope, so a per-tenant run keeps only that tenant's ids; the named `column` is explicit, so a non-default foreign key (or a column with no declared `belongs_to`) is honored; NULLs are excluded per arm. Only **scoped** referencers belong in `via` — an unconstrained arm (e.g. a `scope_exempt` referencer) would union every row back, so it is skipped with a warning rather than silently widening the dump, and an unknown table is likewise skipped; if no arm survives, the table stays unscopable (so scope-column mode's `validate_scope!` still aborts rather than dumping it in full). Tables that `belongs_to` the reverse-scoped table tighten automatically through the existing cascade and need no config. `reverse_scope` is never emitted by `schema:generate` and is preserved across regeneration like `scope_exempt`/`scope_column`. SQL adapters only. See the [README](README.md#reverse-scope-for-multi-referencer-tables-reverse_scope).
+
 ## [0.8.1] - 2026-06-24
 
 ### Fixed

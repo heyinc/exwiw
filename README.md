@@ -579,6 +579,49 @@ ActiveStorage is handled automatically — no ActiveStorage-specific configurati
   `active_storage_variant_records` also references blobs, but since it has no path of its own to the dump target it doesn't constrain anything and is ignored as a referencer — blobs stays narrowed to the attachment-referenced ids. (A parent referenced by *multiple* constrained children currently falls back to dumping all of its rows.)
 - **`active_storage_variant_records`** holds derivative variant-tracking rows that ActiveStorage regenerates lazily, and it too has no path to the dump target — left alone it would land in the "no relation → dump all" branch and, worse, its `blob_id` could point at blobs outside the narrowed set above (a foreign-key violation on import). `exwiw:schema:generate` therefore emits it with **`ignore: true`** (and drops it from the attachments `record` polymorphic expansion so nothing carries a dangling reference to it), so its data is skipped while the DDL is still written. Remove `ignore` from the generated config if you really need to export it.
 
+### Reverse scope for multi-referencer tables (`reverse_scope`)
+
+The automatic reverse extraction above narrows a table referenced by **exactly one** constrained child. A table referenced by **two or more** constrained children falls back to dumping every row — fine for `active_storage_blobs`, but a problem for a **global-identity table** such as `users`: it carries no scope/tenant column and has no `belongs_to` of its own, yet dozens of scoped tables point *at* it. Dumping it (and everything that hangs off it) in full pulls in every tenant's identities.
+
+`reverse_scope` opts such a table into **multi-referencer** reverse scoping: you enumerate the referencers whose own (already scoped) extraction queries should be `UNION`'d into the id set the table is constrained to. It is a user-owned key (never emitted by `schema:generate`, preserved across regeneration like `scope_exempt`/`scope_column`):
+
+```json
+{
+  "name": "users",
+  "primary_key": "id",
+  "reverse_scope": {
+    "via": [
+      { "table": "customers", "column": "user_id" },
+      { "table": "staff", "column": "user_id" },
+      { "table": "business_entity_customers", "column": "kantan_yoyaku_user_id" }
+    ]
+  },
+  "columns": [{ "name": "id" }, { "name": "name" }]
+}
+```
+
+produces (each arm reuses that referencer's own scope, so a per-tenant run keeps only that tenant's ids):
+
+```sql
+SELECT users.* FROM users
+WHERE users.id IN (
+  SELECT customers.user_id FROM customers WHERE <customers' scope> AND customers.user_id IS NOT NULL
+  UNION
+  SELECT staff.user_id FROM staff WHERE <staff' scope> AND staff.user_id IS NOT NULL
+  UNION
+  SELECT business_entity_customers.kantan_yoyaku_user_id FROM business_entity_customers
+    WHERE <…' scope> AND business_entity_customers.kantan_yoyaku_user_id IS NOT NULL
+)
+```
+
+Notes:
+
+- **`column` is explicit**, so a *non-default* foreign key (e.g. `kantan_yoyaku_user_id`, or `organization_admins.id` which itself references `users.id`) is honored, and even a column with no declared `belongs_to` edge can be enumerated.
+- **Only scoped referencers belong in `via`.** Each arm's query must come out constrained; an unconstrained referencer (e.g. a `scope_exempt` table, or one with no path to a scope) would project *every* id and union the whole table back — so such an arm is **skipped with a warning** rather than silently widening the dump. An unknown table is likewise skipped with a warning. If no arm survives, the table stays unscopable and (in [scope-column mode](#scope-column-mode)) the run aborts via `validate_scope!`.
+- **NULLs are excluded** per arm (`IS NOT NULL`).
+- **Satellites need no config.** A table that `belongs_to` the reverse-scoped table (e.g. `end_users.id → users.id`, or `identities.user_id → users.id`) tightens to the kept ids automatically through the normal cascade — only the reverse-scoped table itself declares `reverse_scope`.
+- Works in both single-target and scope-column mode. Polymorphic foreign keys are not eligible as anchors (the named `column` is always a concrete column).
+
 ### Rails-managed tables (special `type` values)
 
 Some tables are owned by Rails itself rather than the application — they have no ActiveRecord model and Rails reserves the right to evolve their column shape between versions (e.g. `schema_migrations`, `ar_internal_metadata`). exwiw treats them as a distinct category via the `type` field on a table config:
