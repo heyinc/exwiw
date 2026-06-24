@@ -12,12 +12,26 @@ module Exwiw
       new(table_name, table_by_name, dump_target, logger).scope_category
     end
 
+    # Scope-column mode is active when EITHER the named `--target-table` declares a
+    # per-table `scope_column` (the preferred trigger: the target is then scoped
+    # like any other table — its `--ids` are scope-column values, not primary
+    # keys), OR the deprecated `--scope-column` flag is set (a global column with no
+    # target). In both cases every table is filtered by a shared column instead of
+    # being anchored on one named target's primary key.
+    def self.scope_mode?(table_by_name, dump_target)
+      return true unless dump_target.scope_column.nil?
+      return false if dump_target.table_name.nil?
+
+      target = table_by_name[dump_target.table_name]
+      !!(target && target.respond_to?(:scope_column) && target.scope_column)
+    end
+
     # Strict pre-flight for scope-column mode: abort if any extractable table
     # cannot be scoped, so an unscoped (potentially sensitive) table is never
     # silently dumped in full. No-op outside scope mode. `tables` is the set of
     # dumpable configs (ignore:true tables are skipped — they are not extracted).
     def self.validate_scope!(tables, table_by_name, dump_target, logger)
-      return if dump_target.scope_column.nil?
+      return unless scope_mode?(table_by_name, dump_target)
 
       unscopable =
         tables.reject(&:ignore).select do |table|
@@ -27,11 +41,10 @@ module Exwiw
 
       names = unscopable.map(&:name).sort.join(", ")
       raise ArgumentError,
-            "scope-column mode: #{unscopable.size} table(s) cannot be scoped by " \
-            "'#{dump_target.scope_column}': #{names}. For each, add `scope_exempt: true` " \
-            "to export it in full, set `ignore: true` to skip it, or add a belongs_to path " \
-            "to a table that carries the scope column (use a per-table `scope_column` if the " \
-            "column name differs on that table)."
+            "scope-column mode: #{unscopable.size} table(s) cannot be scoped: #{names}. " \
+            "For each, declare `scope_column: <column>` on the table to filter it directly, " \
+            "add a belongs_to path to a table that carries the scope column, mark it " \
+            "`scope_exempt: true` to export it in full, or set `ignore: true` to skip it."
     end
 
     attr_reader :table_name, :table_by_name, :dump_target
@@ -268,10 +281,10 @@ module Exwiw
       clauses = []
 
       if table.name == dump_target.table_name
-        # `--ids-column` (folded into dump_target.ids_field by the CLI) lets
-        # `--ids` match a non primary-key column on the target table; otherwise
-        # fall back to the primary key. Only the target table's filter changes —
-        # downstream foreign-key propagation still keys off the primary key.
+        # When `dump_target.ids_field` is set, `--ids` match a non primary-key
+        # column on the target table; otherwise fall back to the primary key.
+        # Only the target table's filter changes — downstream foreign-key
+        # propagation still keys off the primary key.
         clauses.push Exwiw::QueryAst::WhereClause.new(
           column_name: dump_target.ids_field || table.primary_key,
           operator: :eq,
@@ -306,9 +319,9 @@ module Exwiw
 
     # Builds the WHERE clause that constrains a `foreign_key` pointing at the
     # dump target. Normally `--ids` are the target's primary keys, so a plain
-    # `foreign_key IN (ids)` suffices. When `--ids-column`/`--ids-field` is set
-    # (dump_target.ids_field), `--ids` match a non primary-key column instead,
-    # so the foreign key must be resolved through the target table:
+    # `foreign_key IN (ids)` suffices. When `dump_target.ids_field` is set, `--ids`
+    # match a non primary-key column instead, so the foreign key must be resolved
+    # through the target table:
     # `foreign_key IN (SELECT pk FROM target WHERE ids_field IN (ids))`.
     # This keeps related-table extraction correct regardless of whether the
     # relation is direct, indirect, or polymorphic.
@@ -370,7 +383,7 @@ module Exwiw
     # ------------------------------------------------------------------
 
     private def scope_mode?
-      !dump_target.scope_column.nil?
+      self.class.scope_mode?(table_by_name, dump_target)
     end
 
     # Classifier used by validate_scope! and mirrored by build_scoped below.
@@ -449,8 +462,8 @@ module Exwiw
       ast
     end
 
-    # The shared column this table is filtered on: a per-table `scope_column`
-    # override when present, otherwise the global `--scope-column`.
+    # The shared column this table is filtered on: a per-table `scope_column` when
+    # declared, otherwise the deprecated global `--scope-column` flag.
     private def resolved_scope_column(table)
       table.scope_column || dump_target.scope_column
     end
@@ -557,10 +570,11 @@ module Exwiw
     end
 
     private def scope_unscopable_message(table)
-      "Table '#{table.name}' cannot be scoped in scope-column mode: it has no " \
-        "'#{dump_target.scope_column}' column (nor a per-table scope_column override) and no " \
-        "belongs_to path to a table that does. Add `scope_exempt: true` to export it in full, " \
-        "set `ignore: true` to skip it, or add the missing belongs_to."
+      "Table '#{table.name}' cannot be scoped in scope-column mode: it carries no scope " \
+        "column (no per-table `scope_column` is declared on it) and has no belongs_to path " \
+        "to a table that does. Declare `scope_column: <column>` on it, mark it " \
+        "`scope_exempt: true` to export it in full, set `ignore: true` to skip it, or add " \
+        "the missing belongs_to."
     end
   end
 end

@@ -808,6 +808,38 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
     end
 
+    # The preferred trigger: no --scope-column flag, but the named --target-table
+    # declares a per-table scope_column, so the run is scope-column mode and the
+    # target's --ids are scope values rather than primary keys.
+    context 'scope-column mode triggered by a target that declares scope_column' do
+      # legacy_orders declares scope_column: 'legacy_tenant'.
+      let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'legacy_orders', ids: ['t1']) }
+
+      it 'reports scope_mode? for the declaring target' do
+        expect(described_class.scope_mode?(table_by_name, dump_target)).to eq(true)
+      end
+
+      it 'scopes the target by its own scope_column, not by its primary key' do
+        ast = build('legacy_orders')
+        expect(ast.join_clauses).to eq([])
+        expect(ast.where_clauses.map(&:to_h)).to eq([
+          { column_name: 'legacy_tenant', operator: :eq, value: ['t1'] },
+        ])
+      end
+
+      it 'still triggers validate_scope! so an unscopable table aborts' do
+        expect {
+          described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+        }.to raise_error(ArgumentError, /widgets/)
+      end
+
+      it 'is plain target mode when the target declares no scope_column' do
+        # orders carries a tenant_id column but does not *declare* scope_column.
+        target_mode = Exwiw::DumpTarget.new(table_name: 'orders', ids: ['1'])
+        expect(described_class.scope_mode?(table_by_name, target_mode)).to eq(false)
+      end
+    end
+
     def sqlite_adapter
       Exwiw::Adapter::SqliteAdapter.new(
         Exwiw::ConnectionConfig.new(

@@ -91,44 +91,7 @@ module Exwiw
         argv = ['--adapter=sqlite', '--database=tmp/test.sqlite3', '--schema-dir=e2e/sqlite-schema',
                 '--target-table=users', '--ids=1', '--ids-field=email']
         expect { run_cli(argv) }.to raise_error(SystemExit)
-          .and output(/--ids-field is only supported by the mongodb adapter \(use --ids-column\)/).to_stderr
-      end
-    end
-
-    describe '--ids-column validation' do
-      def run_cli(argv)
-        CLI.new(argv).run
-      end
-
-      it 'folds --ids-column into the ids field for sql adapters' do
-        cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3',
-                       '--schema-dir=e2e/sqlite-schema', '--target-table=users',
-                       '--ids=a@example.com', '--ids-column=email'])
-        cli.send(:resolve_target_collection_alias!)
-        cli.send(:resolve_ids_column_alias!)
-        expect(cli.instance_variable_get(:@ids_field)).to eq('email')
-      end
-
-      it 'rejects --ids-column for the mongodb adapter' do
-        argv = ['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
-                '--schema-dir=e2e/mongodb-schema', '--target-table=users',
-                '--ids=1', '--ids-column=email']
-        expect { run_cli(argv) }.to raise_error(SystemExit)
-          .and output(/--ids-column is only supported by the sql adapters \(use --ids-field\)/).to_stderr
-      end
-
-      it 'rejects specifying both --ids-field and --ids-column' do
-        argv = ['--adapter=sqlite', '--database=tmp/test.sqlite3', '--schema-dir=e2e/sqlite-schema',
-                '--target-table=users', '--ids=1', '--ids-field=email', '--ids-column=email']
-        expect { run_cli(argv) }.to raise_error(SystemExit)
-          .and output(/Specify only one of --ids-field and --ids-column/).to_stderr
-      end
-
-      it 'rejects --ids-column without --target-table' do
-        argv = ['--adapter=sqlite', '--database=tmp/test.sqlite3', '--schema-dir=e2e/sqlite-schema',
-                '--ids-column=email']
-        expect { run_cli(argv) }.to raise_error(SystemExit)
-          .and output(/--target-table is required when --ids-column is specified/).to_stderr
+          .and output(/--ids-field is only supported by the mongodb adapter/).to_stderr
       end
     end
 
@@ -143,6 +106,12 @@ module Exwiw
         expect(cli.instance_variable_get(:@scope_column)).to eq('tenant_id')
       end
 
+      it 'warns that --scope-column is deprecated' do
+        cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3', '--schema-dir=e2e/sqlite-schema',
+                       '--scope-column=tenant_id', '--ids=1'])
+        expect { cli.send(:validate_options!) }.to output(/--scope-column is deprecated/).to_stderr
+      end
+
       it 'rejects combining --scope-column with --target-table' do
         argv = ['--adapter=sqlite', '--database=tmp/test.sqlite3', '--schema-dir=e2e/sqlite-schema',
                 '--scope-column=tenant_id', '--target-table=users', '--ids=1']
@@ -150,11 +119,11 @@ module Exwiw
           .and output(/--scope-column cannot be combined with --target-table/).to_stderr
       end
 
-      it 'rejects combining --scope-column with --ids-column' do
+      it 'rejects combining --scope-column with --ids-field' do
         argv = ['--adapter=sqlite', '--database=tmp/test.sqlite3', '--schema-dir=e2e/sqlite-schema',
-                '--scope-column=tenant_id', '--ids-column=email', '--ids=1']
+                '--scope-column=tenant_id', '--ids-field=email', '--ids=1']
         expect { run_cli(argv) }.to raise_error(SystemExit)
-          .and output(/--scope-column cannot be combined with --ids-column/).to_stderr
+          .and output(/--scope-column cannot be combined with --ids-field/).to_stderr
       end
 
       it 'rejects --scope-column for the mongodb adapter' do

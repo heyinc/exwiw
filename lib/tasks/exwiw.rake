@@ -17,9 +17,25 @@ namespace :exwiw do
     task generate: :environment do
       require "exwiw"
 
-      Exwiw::SchemaGenerator.from_rails_application(
+      groups = Exwiw::SchemaGenerator.from_rails_application(
         output_dir: resolve_schema_dir.call,
       ).generate!
+
+      # Surface cross-database belongs_tos the generator auto-ignored: these
+      # cannot be joined (each database is exported separately), so they were
+      # emitted with ignore:true and need a decision from the user.
+      cross = Exwiw::SchemaGenerator.cross_database_belongs_tos(groups)
+      unless cross.empty?
+        $stderr.puts "exwiw: detected #{cross.size} cross-database belongs_to(s), " \
+                     "each emitted with ignore:true (exwiw cannot join across databases). " \
+                     "The foreign-key column is still exported."
+        cross.each do |c|
+          $stderr.puts "  - #{c[:table]}.#{c[:foreign_key]} -> #{c[:target]} (in another database)"
+        end
+        $stderr.puts "  To extract across a boundary, declare `scope_column: <foreign_key>` on the " \
+                     "owning table's config (scope-column mode). Otherwise the relation stays ignored " \
+                     "and the foreign key is exported as a plain value."
+      end
     end
 
     desc "Remove tables/columns from the schema config that no longer exist in the application"

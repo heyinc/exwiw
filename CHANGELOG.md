@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Scope-column mode is now declared per table.** A table that should be filtered by a shared scope/tenant column declares `scope_column: <column>` in its schema config. Naming any such table as `--target-table` then runs in scope-column mode: `--ids` are values of that shared column (not primary keys), and every table is filtered by its own `scope_column` — tables that lack one are reached via `belongs_to`, `scope_exempt: true` tables are dumped in full, and a table reachable by none aborts the run (so nothing is silently dumped unscoped). This is the primary way to extract across a foreign key that cannot be joined — most importantly a cross-database `belongs_to` (its join is impossible, but the FK column is still filterable): declare `scope_column: "<that foreign key>"` on the owning table and it is filtered by the FK value directly, with no join. SQL adapters only.
+- **`schema:generate` detects a cross-database `belongs_to` and ignores just the relation — not the table, not the foreign-key column.** A `belongs_to` whose target model lives in a different database (Rails multi-database `connects_to`) cannot be joined — each database is exported separately — so the *belongs_to entry* is emitted with `ignore: true` and `ignore_type: "cross_database"` and a `comment` recording why and pointing at the per-table `scope_column` declaration for cross-boundary extraction. The owning table is still exported normally and its foreign-key column is still exported as a plain column; only the join/dependency edge is dropped at load (otherwise the dangling cross-database target would crash dependency resolution). Polymorphic associations are handled per target. The task prints a summary of every cross-database relation it ignored. (`ignore_type` is now also preserved across regeneration by `TableConfig#merge`.) Single-database applications are unaffected.
+
+### Changed (breaking)
+
+- **`--ids-column` is removed.** The SQL-adapter flag that matched `--ids` against a non primary-key column on the target table has no remaining use case; for a scoped table, the per-table `scope_column` is the column `--ids` filter against. (The mongodb-only `--ids-field` is unaffected.)
+- **`--scope-column` is deprecated.** The global flag still selects scope-column mode (SQL-only, mutually exclusive with `--target-table`) but now emits a deprecation warning. Prefer declaring a per-table `scope_column:` in the schema config and running with `--target-table`. A per-table `scope_column` takes precedence over the flag for any table that sets both.
+- **A scoped target's `--ids` now mean scope values, not primary keys.** When `--target-table` names a table that declares a `scope_column`, exwiw runs in scope-column mode and `--ids` are matched against that shared column; the target is scoped like any other table rather than anchored by primary key. A table that declares a `scope_column` can therefore no longer be single-extracted by primary key.
+
 ## [0.7.0] - 2026-06-23
 
 ### Changed
@@ -16,7 +27,7 @@
 
 ### Added
 
-- Optimize memory usage https://github.com/heyinc/exwiw/pull/118 
+- Optimize memory usage https://github.com/heyinc/exwiw/pull/118
 - **MongoDB: optional native (C) encoder for the Extended-JSON dump path** (no flag, byte-identical output, pure-Ruby fallback). Encoding each document to MongoDB Relaxed Extended JSON — previously `JSON.generate(doc.as_extended_json(mode: :relaxed))`, which rebuilds the whole document into an intermediate transformed Hash tree and then walks it again — was the dominant per-document CPU cost (~82% of serialization on embed-heavy data). A new C extension (`ext/exwiw/ext_json/`) emits the JSONL line in a single native tree-walk. It formats the structural bulk plus the leaves that dominate a dumped document — `Hash`, `Array`, `String`, fixnum `Integer`, `true`/`false`/`nil`, `BSON::ObjectId` (`_id`), and in-range `Time` (the Mongoid `created_at`/`updated_at` timestamps) — and delegates everything else (`Float`, out-of-int64 `Integer`, out-of-range `Time`, `Symbol`, `Decimal128`, …) back to the exact pure-Ruby path, so the output is provably byte-for-byte identical. On a 30-embedded-post timestamp-heavy document this serializes ~2.8× faster. With `gem install exwiw` the extension compiles automatically; hosts that cannot compile (JRuby/TruffleRuby, no toolchain) fall back to the pure-Ruby encoder, so exwiw stays installable as a pure-Ruby gem. See [`docs/optimize-mongodb-export-with-native-ext.md`](docs/optimize-mongodb-export-with-native-ext.md).
 
 ## [0.5.3] - 2026-06-19

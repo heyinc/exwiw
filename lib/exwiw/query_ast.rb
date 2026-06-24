@@ -48,7 +48,7 @@ module Exwiw
 
     # Resolves a set of values on `where_column` to the rows' `select_column`
     # via a nested SELECT. Used as the `value` of a WhereClause whose operator
-    # is `:in_subquery`, so `--ids-column`/`--ids-field` can filter related
+    # is `:in_subquery`, so a non primary-key `ids_field` can filter related
     # tables through the target table's primary key:
     #
     #   <table>.<fk> IN (SELECT <table_name>.<select_column>
