@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-06-24
+
 ### Fixed
 
 - **`schema:generate` skips a `belongs_to` whose target is not an ActiveRecord model instead of crashing.** A `belongs_to` can point at a non-ActiveRecord class — most commonly an ActiveHash/ActiveYaml master (`belongs_to :equipment, class_name: "SomeActiveYamlModel"`). active_hash registers these as ordinary `belongs_to` reflections, but the target class has no database table, so resolving its `table_name` raised and aborted generation. Such a relation is not a DB edge exwiw can join or extract across, so it is now dropped from the generated belongs_tos; the underlying foreign-key column is still emitted as a plain column. A bare `belongs_to` to a plain non-AR class — which makes ActiveRecord raise while resolving the target — is treated the same way. Polymorphic associations are unaffected.
