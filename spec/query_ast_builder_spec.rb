@@ -1022,6 +1022,61 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
     end
 
+    context 'when a via referencer is scoped through a JOIN (via_path)' do
+      # `reservations` carries no scope column; it reaches the scope through
+      # belongs_to shops, which does. The arm must carry that JOIN and apply the
+      # scope filter on the joined ancestor.
+      let(:reverse_scope_via) { [{ table: 'reservations', column: 'user_id' }] }
+      let(:reservations) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'reservations', primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'shops', foreign_key: 'shop_id' },
+            { table_name: 'users', foreign_key: 'user_id' },
+          ],
+          columns: [{ name: 'id' }, { name: 'shop_id' }, { name: 'user_id' }]
+        )
+      end
+      let(:shops) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'shops', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }, { name: 'business_entity_id' }]
+        )
+      end
+      let(:all_tables) { [users, reservations, shops, schema_migrations] }
+
+      it 'projects the arm with its JOIN to the scoped ancestor' do
+        expect(sqlite_adapter.compile_ast(build('users'))).to eq(
+          'SELECT users.id, users.name FROM users WHERE users.id IN (' \
+          'SELECT reservations.user_id FROM reservations ' \
+          "JOIN shops ON reservations.shop_id = shops.id AND shops.business_entity_id = 'be1' " \
+          'WHERE reservations.user_id IS NOT NULL)'
+        )
+      end
+    end
+
+    context 'when a via referencer carries a filter' do
+      # The referencer's own filter (e.g. a soft-delete guard) rides along in the
+      # arm, with the appended IS NOT NULL last.
+      let(:reverse_scope_via) { [{ table: 'customers', column: 'user_id' }] }
+      let(:customers) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'customers', primary_key: 'id', filter: 'customers.deleted_at IS NULL',
+          belongs_tos: [{ table_name: 'users', foreign_key: 'user_id' }],
+          columns: [{ name: 'id' }, { name: 'business_entity_id' }, { name: 'user_id' }]
+        )
+      end
+      let(:all_tables) { [users, customers, schema_migrations] }
+
+      it 'keeps the referencer filter, with IS NOT NULL appended last' do
+        expect(sqlite_adapter.compile_ast(build('users'))).to eq(
+          'SELECT users.id, users.name FROM users WHERE users.id IN (' \
+          "SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 'be1' " \
+          'AND customers.deleted_at IS NULL AND customers.user_id IS NOT NULL)'
+        )
+      end
+    end
+
     context 'in single-target mode' do
       # reverse_scope also works when anchoring on a named target rather than a
       # scope column: each arm reuses the referencer's target-scoped query.
