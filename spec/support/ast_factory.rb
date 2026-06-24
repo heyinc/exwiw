@@ -238,6 +238,10 @@ module AstFactory
   # global-identity shape that motivated materializing the id-set: the old
   # `id IN (… UNION …)` form degrades into a per-row correlated DEPENDENT
   # SUBQUERY on a large `users`, which the derived-table JOIN removes.
+  #
+  # Projects just the primary key (not `select_all!`), so the executed rows line
+  # up column-for-column with the `SELECT users.id` control SQL below and the
+  # equivalence/EXPLAIN assertions don't depend on `users.*`'s column order.
   def build_users_reverse_scope_over_seed_ast
     plain = ->(name) { Exwiw::TableColumn.from_symbol_keys(name: name) }
 
@@ -255,7 +259,7 @@ module AstFactory
 
     QueryAst::Select.new.tap do |ast|
       ast.from("users")
-      ast.select_all!
+      ast.select([plain.call("id")])
       ast.where(
         QueryAst::WhereClause.new(
           column_name: "id",

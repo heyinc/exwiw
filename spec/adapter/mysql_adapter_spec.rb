@@ -282,12 +282,16 @@ module Exwiw
           before_plan = adapter.send(:connection).query("EXPLAIN #{in_sql}").rows.flatten.join("\n").downcase
           after_plan = adapter.explain(ast).downcase
 
-          # Before: MySQL turns `IN (… UNION …)` into a per-row correlated
-          # subquery (DEPENDENT SUBQUERY / DEPENDENT UNION). Present in both the
-          # classic-tabular `select_type` and the tree-format wording.
+          # `IN (… UNION …)` makes MySQL re-evaluate the subquery per outer row.
+          # exwiw runs a plain `EXPLAIN` (no FORMAT=); its default rendering is
+          # server-version-dependent — tree-format on MySQL 8.3+/9 (this suite's
+          # server), classic-tabular on older — but the per-row plan is flagged
+          # "dependent" in both ("dependent" / "DEPENDENT SUBQUERY"), so the
+          # before/after on that substring is the format-robust signal.
           expect(before_plan).to include("dependent")
-          # After: the union is evaluated once (materialized) and users is reached
-          # by probing that id-set — no correlated subquery remains.
+          # After: the union is evaluated once and users is reached by probing
+          # that id-set — no correlated subquery remains. The tree-format plan
+          # this server returns also names the one-shot id-set ("Materialize").
           expect(after_plan).not_to include("dependent")
           expect(after_plan).to match(/materiali/)
         end

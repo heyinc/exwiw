@@ -246,7 +246,10 @@ module Exwiw
       # Split an outer query's WHERE clauses into the scope id-set clauses to
       # lift into a materialized derived-table JOIN (see each adapter's
       # #compile_scope_join) and the remaining plain clauses (kept in WHERE).
-      # Returns [scope_clauses, plain_clauses], preserving order.
+      # Returns [scope_clauses, plain_clauses]; #partition keeps each clause in
+      # its original order *within* its own group. The two groups are emitted in
+      # different SQL positions (a JOIN vs the WHERE), so their interleaving is
+      # irrelevant — only the order within each group matters, and that is kept.
       private def partition_scope_clauses(where_clauses)
         where_clauses.partition { |where_clause| scope_subquery_clause?(where_clause) }
       end
