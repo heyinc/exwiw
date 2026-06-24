@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Scope id-sets are materialized and probed by JOIN instead of `<col> IN (subquery)`, removing a correlated full-scan on large tables.** The three id-set scope shapes — the multi-referencer `reverse_scope` `UNION`, the single-referencer reverse/`referenced_by` extraction, and the multi-hop forward (`via_scoped_parent`) cascade — were emitted as `<col> IN (<subquery>)`. On a large global-identity table (e.g. `users`) MySQL cannot turn a `UNION` subquery into a materialized semi-join and falls back to its IN-to-`EXISTS` rewrite: a correlated `DEPENDENT SUBQUERY`/`DEPENDENT UNION` re-evaluated **per outer row**, so the driving table is full-scanned and the union re-run for every row (the plan that ran for minutes and timed out on a production-scale identity table, even for an empty tenant). These clauses are now lifted into a `JOIN` against a materialized derived table — `JOIN (SELECT DISTINCT src.<id> AS exwiw_scope_id FROM (<id-set subquery>) AS src) AS ids ON <table>.<col> = ids.exwiw_scope_id` — so the engine evaluates the id set **once** (the `DISTINCT` makes the derived table non-mergeable, hence materialized) and probes the outer table by primary key. The `DISTINCT` also dedups, so the result set is identical to the old `IN` form; the cascade nests the same way (each level materialized once); NULL exclusion, the forward-path cycle guard, single-parent/polymorphic skips, and PostgreSQL's `uuid`/`varchar` `::text` reconciliation are all preserved. All three SQL adapters (mysql / postgresql / sqlite). See the [README](README.md#why-a-join-not-in-subquery).
+
 ## [0.8.3] - 2026-06-24
 
 ### Fixed
