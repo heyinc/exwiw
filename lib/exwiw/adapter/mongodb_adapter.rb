@@ -70,6 +70,25 @@ module Exwiw
         @state = {}
       end
 
+      # Propagation @state accessor, used ONLY by MongodbParallelDumper to seed a
+      # forked worker with the slice of parent ids its collections reference and to
+      # harvest the ids downstream collections will `$in`-match against (handed
+      # between processes as Marshal sidecars). The serial Runner never touches
+      # these — it relies on the in-process capture during #execute.
+      attr_accessor :state
+
+      # Cheap, metadata-only document-count estimate for `collection_name`, used by
+      # the parallel dumper to weight collections for LPT bin-packing. This only
+      # influences which worker processes a collection (never the output bytes), so
+      # an imprecise estimate is harmless. Reads collection metadata rather than
+      # running a COLLSCAN; returns 0 on any error (e.g. a collection absent from
+      # this database just sorts to the lowest weight).
+      def estimated_count(collection_name)
+        db[collection_name].estimated_document_count
+      rescue StandardError
+        0
+      end
+
       def dumpable?(config)
         !config.embedded?
       end
