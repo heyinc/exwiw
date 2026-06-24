@@ -66,6 +66,7 @@ module Exwiw
       if rails_managed?
         hash.delete("belongs_tos")
         hash.delete("columns")
+        hash.delete("reverse_scope")
       end
       hash
     end
@@ -207,6 +208,10 @@ module Exwiw
         if !columns.empty?
           raise ArgumentError,
                 "Table '#{name}' has type=#{type}; columns must not be defined."
+        end
+        if reverse_scope
+          raise ArgumentError,
+                "Table '#{name}' has type=#{type}; reverse_scope must not be defined."
         end
       else
         # An ignore:true table is not extracted, so primary_key is not required

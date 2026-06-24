@@ -294,6 +294,16 @@ module Exwiw
           }.to raise_error(ArgumentError, /columns must not be defined/)
         end
 
+        it 'rejects reverse_scope' do
+          expect {
+            TableConfig.from_symbol_keys(
+              name: 'schema_migrations',
+              type: TableConfig::RAILS_MANAGED_SCHEMA_MIGRATIONS,
+              reverse_scope: { via: [{ table: 'customers', column: 'user_id' }] },
+            )
+          }.to raise_error(ArgumentError, /reverse_scope must not be defined/)
+        end
+
         it 'loads successfully with only name/type/comment' do
           expect {
             TableConfig.from_symbol_keys(
