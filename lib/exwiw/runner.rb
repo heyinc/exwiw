@@ -74,15 +74,16 @@ module Exwiw
         phase = "executing extraction query"
         begin
           results = adapter.execute(query_ast)
-          record_num = results.size
-
-          if record_num.zero?
-            @logger.info("  No records matched. skip this table.")
-            next
-          end
           insert_idx = (idx + 1).to_s.rjust(3, '0')
 
           if @output_format == 'copy'
+            # COPY mode (PostgreSQL only) builds the whole body up front rather
+            # than streaming, so it keeps the explicit count + early skip.
+            record_num = results.size
+            if record_num.zero?
+              @logger.info("  No records matched. skip this table.")
+              next
+            end
             phase = "generating COPY statement"
             @logger.debug("  Generate COPY statement...")
             copy_sql = adapter.to_copy_from_stdin(results, table)
@@ -108,17 +109,31 @@ module Exwiw
             # config does not set one (SQL adapters: nil -> one statement, but
             # streamed in bounded buffers; MongoDB: a positive default so the
             # JSONL is chunked). #write_inserts emits bytes identical to the
-            # previous inline chunk loop and returns the statement count.
+            # previous inline chunk loop and returns [statement_count, record_num].
+            #
+            # The row count comes from this single streaming pass, so empty
+            # tables are detected here (and the just-opened file removed) rather
+            # than via a separate upfront count query — eliminating a redundant
+            # second scan of the same filter (e.g. MongoDB count_documents / SQL
+            # SELECT COUNT(*)), which is a full COLLSCAN for an unindexed scope.
             chunk_size = table.bulk_insert_chunk_size || adapter.default_bulk_insert_chunk_size
 
+            insert_path = File.join(@output_dir, "insert-#{insert_idx}-#{table_name}.#{adapter.output_extension}")
             statement_count = 0
-            File.open(File.join(@output_dir, "insert-#{insert_idx}-#{table_name}.#{adapter.output_extension}"), 'w') do |file|
+            record_num = 0
+            File.open(insert_path, 'w') do |file|
               pre = adapter.pre_insert_sql(table)
               file.puts(pre) if pre
-              statement_count = adapter.write_inserts(file, results, table, chunk_size)
+              statement_count, record_num = adapter.write_inserts(file, results, table, chunk_size)
               file.print("\n")
               post = adapter.post_insert_sql(table)
               file.puts(post) if post
+            end
+
+            if record_num.zero?
+              File.delete(insert_path)
+              @logger.info("  No records matched. skip this table.")
+              next
             end
 
             @logger.info("  Generated INSERT statement for #{record_num} records (#{statement_count} statement(s)).")
