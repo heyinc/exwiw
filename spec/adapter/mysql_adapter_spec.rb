@@ -225,6 +225,19 @@ module Exwiw
             )
           end
         end
+
+        context "select query with a multi-referencer reverse-scope UNION subquery" do
+          let(:sql) { adapter.compile_ast(build_reverse_scope_union_ast) }
+
+          it "compiles to IN (… UNION …) of NULL-excluding projected selects" do
+            expect(sql).to eq(
+              "SELECT * FROM users WHERE users.id IN (" \
+              "SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 1 AND customers.user_id IS NOT NULL " \
+              "UNION " \
+              "SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 1 AND staff.user_id IS NOT NULL)"
+            )
+          end
+        end
       end
 
       describe "#execute" do

@@ -149,6 +149,33 @@ module AstFactory
     end
   end
 
+  # A multi-referencer reverse-scope query: `users` constrained to the UNION of
+  # two scoped referencers' projected foreign keys, each excluding NULLs. Built
+  # directly (not via the builder) so the adapter's UnionSubquery + :not_null
+  # compilation can be asserted in isolation. Adapter-agnostic.
+  def build_reverse_scope_union_ast
+    arm = lambda do |table_name|
+      QueryAst::Select.new.tap do |q|
+        q.from(table_name)
+        q.select([Exwiw::TableColumn.from_symbol_keys(name: "user_id")])
+        q.where(QueryAst::WhereClause.new(column_name: "business_entity_id", operator: :eq, value: [1]))
+        q.where(QueryAst::WhereClause.new(column_name: "user_id", operator: :not_null))
+      end
+    end
+
+    QueryAst::Select.new.tap do |ast|
+      ast.from("users")
+      ast.select_all!
+      ast.where(
+        QueryAst::WhereClause.new(
+          column_name: "id",
+          operator: :in_subquery,
+          value: QueryAst::UnionSubquery.new(queries: [arm.call("customers"), arm.call("staff")]),
+        )
+      )
+    end
+  end
+
   def build_order_items_ast(order_items_filter_opt = nil, orders_filter_opt = nil)
     order_items_table = order_items_table(adapter_name)
 

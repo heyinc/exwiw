@@ -364,6 +364,8 @@ module Exwiw
           cast_to = subquery_cast_to(where_clause.value, table_name, where_clause.column_name)
           outer_key = cast_to ? "#{key}::#{cast_to}" : key
           "#{outer_key} IN (#{subquery_sql})"
+        elsif where_clause.operator == :not_null
+          "#{key} IS NOT NULL"
         else
           raise "Unsupported operator: #{where_clause.operator}"
         end
@@ -374,6 +376,14 @@ module Exwiw
 
         if subquery.is_a?(Exwiw::QueryAst::SelectSubquery)
           return compile_ast(subquery.query, select_cast_to: cast_to)
+        end
+
+        # A UnionSubquery wraps several projected Selects; UNION their compiled
+        # forms. Each arm's projected column is cast the same way (cast_to is
+        # derived from the first arm vs the outer column — the arms all reference
+        # the same parent key, so their types are compatible).
+        if subquery.is_a?(Exwiw::QueryAst::UnionSubquery)
+          return subquery.queries.map { |q| compile_ast(q, select_cast_to: cast_to) }.join(' UNION ')
         end
 
         inner_values = subquery.where_values.map { |v| escape_value(v) }
@@ -389,6 +399,13 @@ module Exwiw
         when Exwiw::QueryAst::SelectSubquery
           q = subquery.query
           col = q.columns.first
+          col ? [q.from_table_name, col.name] : [nil, nil]
+        when Exwiw::QueryAst::UnionSubquery
+          # Represent the union by its first arm for cast determination; the arms
+          # all project a foreign key pointing at the same outer column, so their
+          # types are compatible.
+          q = subquery.queries.first
+          col = q&.columns&.first
           col ? [q.from_table_name, col.name] : [nil, nil]
         when Exwiw::QueryAst::Subquery
           [subquery.table_name, subquery.select_column]
