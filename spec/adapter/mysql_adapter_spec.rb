@@ -238,6 +238,19 @@ module Exwiw
             )
           end
         end
+
+        context "select query with a three-level nested IN subquery (multi-hop forward cascade)" do
+          let(:sql) { adapter.compile_ast(build_multi_hop_nested_in_ast) }
+
+          it "renders the subqueries recursively at every level" do
+            expect(sql).to eq(
+              "SELECT * FROM projects WHERE projects.team_id IN (" \
+              "SELECT teams.id FROM teams WHERE teams.company_id IN (" \
+              "SELECT companies.id FROM companies WHERE companies.id IN (" \
+              "SELECT memberships.company_id FROM memberships WHERE memberships.business_entity_id = 1 AND memberships.company_id IS NOT NULL)))"
+            )
+          end
+        end
       end
 
       describe "#execute" do

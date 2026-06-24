@@ -176,6 +176,61 @@ module AstFactory
     end
   end
 
+  # A multi-hop forward scope cascade: `projects` constrained to `teams`,
+  # `teams` to `companies`, and `companies` to a reverse_scope UNION. This is the
+  # shape the builder emits when a table sits two `belongs_to` hops below a
+  # reverse-scoped table, so it exercises a SelectSubquery nested inside a
+  # SelectSubquery nested inside a UnionSubquery — i.e. recursive subquery
+  # rendering at three levels. Built directly (not via the builder) so each
+  # adapter's nesting can be asserted in isolation. Adapter-agnostic.
+  def build_multi_hop_nested_in_ast
+    plain = ->(name) { Exwiw::TableColumn.from_symbol_keys(name: name) }
+
+    # Deepest level: the reverse_scope arm `companies` is constrained to.
+    union_arm = QueryAst::Select.new.tap do |q|
+      q.from("memberships")
+      q.select([plain.call("company_id")])
+      q.where(QueryAst::WhereClause.new(column_name: "business_entity_id", operator: :eq, value: [1]))
+      q.where(QueryAst::WhereClause.new(column_name: "company_id", operator: :not_null))
+    end
+
+    companies_query = QueryAst::Select.new.tap do |q|
+      q.from("companies")
+      q.select([plain.call("id")])
+      q.where(
+        QueryAst::WhereClause.new(
+          column_name: "id",
+          operator: :in_subquery,
+          value: QueryAst::UnionSubquery.new(queries: [union_arm]),
+        )
+      )
+    end
+
+    teams_query = QueryAst::Select.new.tap do |q|
+      q.from("teams")
+      q.select([plain.call("id")])
+      q.where(
+        QueryAst::WhereClause.new(
+          column_name: "company_id",
+          operator: :in_subquery,
+          value: QueryAst::SelectSubquery.new(query: companies_query),
+        )
+      )
+    end
+
+    QueryAst::Select.new.tap do |ast|
+      ast.from("projects")
+      ast.select_all!
+      ast.where(
+        QueryAst::WhereClause.new(
+          column_name: "team_id",
+          operator: :in_subquery,
+          value: QueryAst::SelectSubquery.new(query: teams_query),
+        )
+      )
+    end
+  end
+
   def build_order_items_ast(order_items_filter_opt = nil, orders_filter_opt = nil)
     order_items_table = order_items_table(adapter_name)
 
