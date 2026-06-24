@@ -464,7 +464,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
         ])
       end
 
-      it 'compiles to a nested IN-subquery SELECT for SQLite' do
+      it 'compiles to a materialized derived-table JOIN for SQLite' do
         adapter = Exwiw::Adapter::SqliteAdapter.new(
           Exwiw::ConnectionConfig.new(
             adapter: 'sqlite', database_name: 'tmp/test.sqlite3',
@@ -474,11 +474,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
         )
 
         expect(adapter.compile_ast(built_query_ast)).to eq(
-          'SELECT active_storage_blobs.id, active_storage_blobs.key, active_storage_blobs.filename ' \
-          'FROM active_storage_blobs ' \
-          'WHERE active_storage_blobs.id IN (' \
-          'SELECT active_storage_attachments.blob_id FROM active_storage_attachments ' \
-          "WHERE active_storage_attachments.record_id = 1 AND active_storage_attachments.record_type = 'AsUser')"
+          "SELECT active_storage_blobs.id, active_storage_blobs.key, active_storage_blobs.filename FROM active_storage_blobs JOIN (SELECT DISTINCT exwiw_scope_src_0.blob_id AS exwiw_scope_id FROM (SELECT active_storage_attachments.blob_id FROM active_storage_attachments WHERE active_storage_attachments.record_id = 1 AND active_storage_attachments.record_type = 'AsUser') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON active_storage_blobs.id = exwiw_scope_ids_0.exwiw_scope_id"
         )
       end
 
@@ -763,12 +759,9 @@ RSpec.describe Exwiw::QueryAstBuilder do
         ])
       end
 
-      it 'compiles to a nested IN-subquery (sqlite)' do
+      it 'compiles to nested materialized derived-table JOINs (sqlite)' do
         expect(sqlite_adapter.compile_ast(build('account_details'))).to eq(
-          'SELECT account_details.id, account_details.account_id, account_details.secret FROM account_details ' \
-          'WHERE account_details.account_id IN (' \
-          'SELECT accounts.id FROM accounts WHERE accounts.id IN (' \
-          "SELECT customers.account_id FROM customers WHERE customers.tenant_id = 't1'))"
+          "SELECT account_details.id, account_details.account_id, account_details.secret FROM account_details JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (SELECT accounts.id FROM accounts JOIN (SELECT DISTINCT exwiw_scope_src_0.account_id AS exwiw_scope_id FROM (SELECT customers.account_id FROM customers WHERE customers.tenant_id = 't1') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON accounts.id = exwiw_scope_ids_0.exwiw_scope_id) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON account_details.account_id = exwiw_scope_ids_0.exwiw_scope_id"
         )
       end
 
@@ -944,12 +937,9 @@ RSpec.describe Exwiw::QueryAstBuilder do
       ])
     end
 
-    it 'compiles users to IN (… UNION …) (sqlite)' do
+    it 'materializes the UNION id-set as a derived-table JOIN (sqlite)' do
       expect(sqlite_adapter.compile_ast(build('users'))).to eq(
-        'SELECT users.id, users.name FROM users WHERE users.id IN (' \
-        "SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 'be1' AND customers.user_id IS NOT NULL " \
-        'UNION ' \
-        "SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 'be1' AND staff.user_id IS NOT NULL)"
+        "SELECT users.id, users.name FROM users JOIN (SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id FROM (SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 'be1' AND customers.user_id IS NOT NULL UNION SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 'be1' AND staff.user_id IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON users.id = exwiw_scope_ids_0.exwiw_scope_id"
       )
     end
 
@@ -962,11 +952,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
 
     it 'cascades to a satellite that belongs_to users, with no config of its own' do
       expect(sqlite_adapter.compile_ast(build('end_users'))).to eq(
-        'SELECT end_users.id, end_users.nickname FROM end_users WHERE end_users.id IN (' \
-        'SELECT users.id FROM users WHERE users.id IN (' \
-        "SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 'be1' AND customers.user_id IS NOT NULL " \
-        'UNION ' \
-        "SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 'be1' AND staff.user_id IS NOT NULL))"
+        "SELECT end_users.id, end_users.nickname FROM end_users JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (SELECT users.id FROM users JOIN (SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id FROM (SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 'be1' AND customers.user_id IS NOT NULL UNION SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 'be1' AND staff.user_id IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON users.id = exwiw_scope_ids_0.exwiw_scope_id) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON end_users.id = exwiw_scope_ids_0.exwiw_scope_id"
       )
     end
 
@@ -980,8 +966,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
 
       it 'skips the unknown arm with a warning and unions the rest' do
         expect(sqlite_adapter.compile_ast(build('users'))).to eq(
-          'SELECT users.id, users.name FROM users WHERE users.id IN (' \
-          "SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 'be1' AND customers.user_id IS NOT NULL)"
+          "SELECT users.id, users.name FROM users JOIN (SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id FROM (SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 'be1' AND customers.user_id IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON users.id = exwiw_scope_ids_0.exwiw_scope_id"
         )
         expect(log_output.string).to include("references unknown table 'ghosts'")
       end
@@ -1007,8 +992,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
 
       it 'skips the unconstrained arm with a warning and unions the rest' do
         expect(sqlite_adapter.compile_ast(build('users'))).to eq(
-          'SELECT users.id, users.name FROM users WHERE users.id IN (' \
-          "SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 'be1' AND customers.user_id IS NOT NULL)"
+          "SELECT users.id, users.name FROM users JOIN (SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id FROM (SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 'be1' AND customers.user_id IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON users.id = exwiw_scope_ids_0.exwiw_scope_id"
         )
         expect(log_output.string).to include("arm 'audit_logs.user_id' is not scoped")
       end
@@ -1047,10 +1031,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
 
       it 'projects the arm with its JOIN to the scoped ancestor' do
         expect(sqlite_adapter.compile_ast(build('users'))).to eq(
-          'SELECT users.id, users.name FROM users WHERE users.id IN (' \
-          'SELECT reservations.user_id FROM reservations ' \
-          "JOIN shops ON reservations.shop_id = shops.id AND shops.business_entity_id = 'be1' " \
-          'WHERE reservations.user_id IS NOT NULL)'
+          "SELECT users.id, users.name FROM users JOIN (SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id FROM (SELECT reservations.user_id FROM reservations JOIN shops ON reservations.shop_id = shops.id AND shops.business_entity_id = 'be1' WHERE reservations.user_id IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON users.id = exwiw_scope_ids_0.exwiw_scope_id"
         )
       end
     end
@@ -1070,9 +1051,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
 
       it 'keeps the referencer filter, with IS NOT NULL appended last' do
         expect(sqlite_adapter.compile_ast(build('users'))).to eq(
-          'SELECT users.id, users.name FROM users WHERE users.id IN (' \
-          "SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 'be1' " \
-          'AND customers.deleted_at IS NULL AND customers.user_id IS NOT NULL)'
+          "SELECT users.id, users.name FROM users JOIN (SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id FROM (SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 'be1' AND customers.deleted_at IS NULL AND customers.user_id IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON users.id = exwiw_scope_ids_0.exwiw_scope_id"
         )
       end
     end
@@ -1111,10 +1090,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
 
       it 'unions each referencer constrained by the foreign key to the target' do
         expect(sqlite_adapter.compile_ast(build('users'))).to eq(
-          'SELECT users.id, users.name FROM users WHERE users.id IN (' \
-          'SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 1 AND customers.user_id IS NOT NULL ' \
-          'UNION ' \
-          'SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 1 AND staff.user_id IS NOT NULL)'
+          "SELECT users.id, users.name FROM users JOIN (SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id FROM (SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 1 AND customers.user_id IS NOT NULL UNION SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 1 AND staff.user_id IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON users.id = exwiw_scope_ids_0.exwiw_scope_id"
         )
       end
     end
@@ -1204,24 +1180,13 @@ RSpec.describe Exwiw::QueryAstBuilder do
 
     it 'nests the second hop one level below the reverse_scope UNION (sqlite)' do
       expect(sqlite_adapter.compile_ast(build('projects'))).to eq(
-        'SELECT projects.id, projects.team_id, projects.name FROM projects ' \
-        'WHERE projects.team_id IN (' \
-        'SELECT teams.id FROM teams WHERE teams.company_id IN (' \
-        'SELECT companies.id FROM companies WHERE companies.id IN (' \
-        "SELECT memberships.company_id FROM memberships WHERE memberships.tenant_id = 't1' " \
-        'AND memberships.company_id IS NOT NULL)))'
+        "SELECT projects.id, projects.team_id, projects.name FROM projects JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (SELECT teams.id FROM teams JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (SELECT companies.id FROM companies JOIN (SELECT DISTINCT exwiw_scope_src_0.company_id AS exwiw_scope_id FROM (SELECT memberships.company_id FROM memberships WHERE memberships.tenant_id = 't1' AND memberships.company_id IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON companies.id = exwiw_scope_ids_0.exwiw_scope_id) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON teams.company_id = exwiw_scope_ids_0.exwiw_scope_id) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON projects.team_id = exwiw_scope_ids_0.exwiw_scope_id"
       )
     end
 
     it 'nests every hop for the deepest table (sqlite)' do
       expect(sqlite_adapter.compile_ast(build('tasks'))).to eq(
-        'SELECT tasks.id, tasks.project_id, tasks.title FROM tasks ' \
-        'WHERE tasks.project_id IN (' \
-        'SELECT projects.id FROM projects WHERE projects.team_id IN (' \
-        'SELECT teams.id FROM teams WHERE teams.company_id IN (' \
-        'SELECT companies.id FROM companies WHERE companies.id IN (' \
-        "SELECT memberships.company_id FROM memberships WHERE memberships.tenant_id = 't1' " \
-        'AND memberships.company_id IS NOT NULL))))'
+        "SELECT tasks.id, tasks.project_id, tasks.title FROM tasks JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (SELECT projects.id FROM projects JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (SELECT teams.id FROM teams JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (SELECT companies.id FROM companies JOIN (SELECT DISTINCT exwiw_scope_src_0.company_id AS exwiw_scope_id FROM (SELECT memberships.company_id FROM memberships WHERE memberships.tenant_id = 't1' AND memberships.company_id IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON companies.id = exwiw_scope_ids_0.exwiw_scope_id) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON teams.company_id = exwiw_scope_ids_0.exwiw_scope_id) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON projects.team_id = exwiw_scope_ids_0.exwiw_scope_id) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON tasks.project_id = exwiw_scope_ids_0.exwiw_scope_id"
       )
     end
 

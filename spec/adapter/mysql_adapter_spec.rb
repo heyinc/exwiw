@@ -229,12 +229,14 @@ module Exwiw
         context "select query with a multi-referencer reverse-scope UNION subquery" do
           let(:sql) { adapter.compile_ast(build_reverse_scope_union_ast) }
 
-          it "compiles to IN (… UNION …) of NULL-excluding projected selects" do
+          it "materializes the UNION id-set as a derived-table JOIN of NULL-excluding projected selects" do
             expect(sql).to eq(
-              "SELECT * FROM users WHERE users.id IN (" \
+              "SELECT users.* FROM users JOIN (" \
+              "SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id FROM (" \
               "SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 1 AND customers.user_id IS NOT NULL " \
               "UNION " \
-              "SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 1 AND staff.user_id IS NOT NULL)"
+              "SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 1 AND staff.user_id IS NOT NULL" \
+              ") AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON users.id = exwiw_scope_ids_0.exwiw_scope_id"
             )
           end
         end
@@ -242,14 +244,52 @@ module Exwiw
         context "select query with a three-level nested IN subquery (multi-hop forward cascade)" do
           let(:sql) { adapter.compile_ast(build_multi_hop_nested_in_ast) }
 
-          it "renders the subqueries recursively at every level" do
+          it "nests a materialized derived-table JOIN at every level" do
             expect(sql).to eq(
-              "SELECT * FROM projects WHERE projects.team_id IN (" \
-              "SELECT teams.id FROM teams WHERE teams.company_id IN (" \
-              "SELECT companies.id FROM companies WHERE companies.id IN (" \
-              "SELECT memberships.company_id FROM memberships WHERE memberships.business_entity_id = 1 AND memberships.company_id IS NOT NULL)))"
+              "SELECT projects.* FROM projects JOIN (" \
+              "SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (" \
+              "SELECT teams.id FROM teams JOIN (" \
+              "SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (" \
+              "SELECT companies.id FROM companies JOIN (" \
+              "SELECT DISTINCT exwiw_scope_src_0.company_id AS exwiw_scope_id FROM (" \
+              "SELECT memberships.company_id FROM memberships WHERE memberships.business_entity_id = 1 AND memberships.company_id IS NOT NULL" \
+              ") AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON companies.id = exwiw_scope_ids_0.exwiw_scope_id" \
+              ") AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON teams.company_id = exwiw_scope_ids_0.exwiw_scope_id" \
+              ") AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON projects.team_id = exwiw_scope_ids_0.exwiw_scope_id"
             )
           end
+        end
+      end
+
+      # The reverse_scope / forward-cascade id-set is emitted as a JOIN to a
+      # materialized (SELECT DISTINCT) derived table rather than `<col> IN
+      # (subquery)`. These run against the real seed DB to prove the rewrite
+      # (a) returns the same rows and (b) no longer compiles to a correlated
+      # DEPENDENT SUBQUERY (the per-row re-evaluation that timed out in prod).
+      describe "scope id-set materialization (derived-table JOIN)" do
+        let(:ast) { build_users_reverse_scope_over_seed_ast }
+        let(:in_sql) { users_reverse_scope_over_seed_in_sql }
+
+        it "returns the same users as the equivalent IN-subquery (result-set equivalence)" do
+          new_ids = adapter.execute(ast).to_a.map { |row| row.first.to_s }.sort
+          old_ids = adapter.send(:connection).query(in_sql).rows.map { |row| row.first.to_s }.sort
+
+          expect(new_ids).not_to be_empty
+          expect(new_ids).to eq(old_ids)
+        end
+
+        it "EXPLAINs as a materialized id-set with no correlated DEPENDENT SUBQUERY" do
+          before_plan = adapter.send(:connection).query("EXPLAIN #{in_sql}").rows.flatten.join("\n").downcase
+          after_plan = adapter.explain(ast).downcase
+
+          # Before: MySQL turns `IN (… UNION …)` into a per-row correlated
+          # subquery (DEPENDENT SUBQUERY / DEPENDENT UNION). Present in both the
+          # classic-tabular `select_type` and the tree-format wording.
+          expect(before_plan).to include("dependent")
+          # After: the union is evaluated once (materialized) and users is reached
+          # by probing that id-set — no correlated subquery remains.
+          expect(after_plan).not_to include("dependent")
+          expect(after_plan).to match(/materiali/)
         end
       end
 
