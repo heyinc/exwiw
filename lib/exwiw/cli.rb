@@ -35,6 +35,7 @@ module Exwiw
       ids
       ids_field
       scope_column
+      parallel_workers
     ].freeze
 
     # Database connection settings are environment-specific (and sometimes
@@ -44,7 +45,7 @@ module Exwiw
 
     # Keys that only make sense for `export`. They are skipped when merging config
     # for `explain` so a shared config file does not trip validate_explain_only!.
-    EXPORT_ONLY_CONFIG_KEYS = %w[output_dir output_format insert_only after_insert_hook].freeze
+    EXPORT_ONLY_CONFIG_KEYS = %w[output_dir output_format insert_only after_insert_hook parallel_workers].freeze
 
     def self.start(argv)
       new(argv).run
@@ -80,6 +81,7 @@ module Exwiw
       @output_format = nil
       @insert_only = nil
       @after_insert_hook_path = nil
+      @parallel_workers = nil
       # nil (not :info) so we can tell "user passed --log-level" from the default,
       # letting a config-file value fill in; the :info default is applied later.
       @log_level = nil
@@ -125,6 +127,7 @@ module Exwiw
           output_format: @output_format,
           insert_only: @insert_only,
           after_insert_hook_path: @after_insert_hook_path,
+          parallel_workers: @parallel_workers,
           cli_options: build_cli_options_hash,
           logger: logger,
         ).run
@@ -165,6 +168,7 @@ module Exwiw
       resolve_scope_column!
       resolve_ids_field!
       resolve_uri_option!
+      resolve_parallel_workers!
 
       if @subcommand == "explain"
         validate_explain_only!
@@ -316,6 +320,7 @@ module Exwiw
       end
       @ids_field ||= config["ids_field"]
       @scope_column ||= config["scope_column"]
+      @parallel_workers ||= parse_parallel_workers(config["parallel_workers"]) if config.key?("parallel_workers")
     end
 
     # Strip a trailing slash (like the CLI's dir options) and expand relative to
@@ -409,6 +414,38 @@ module Exwiw
       end
     end
 
+    # `--parallel-workers` opts into the MongoDB fork-parallel dump schedule
+    # (docs/mongodb-dump-parallelism-2x-notes.md). It is mongodb-only (the SQL
+    # adapters shell out to their own dumpers) and must be a positive integer;
+    # N<2 is accepted but runs serially. Runs after the adapter name is normalized
+    # so the family check is reliable. `explain` rejection is handled separately
+    # by validate_explain_only!.
+    private def resolve_parallel_workers!
+      return if @parallel_workers.nil?
+
+      if @database_adapter != "mongodb"
+        $stderr.puts "--parallel-workers is only supported by the mongodb adapter"
+        exit 1
+      end
+
+      if @parallel_workers < 1
+        $stderr.puts "--parallel-workers must be a positive integer (got #{@parallel_workers})"
+        exit 1
+      end
+    end
+
+    # Coerce a config-file `parallel_workers` (YAML scalar) to Integer, matching
+    # the CLI flag's Integer coercion. A non-integer value is a config typo, so
+    # fail fast rather than silently dropping it.
+    private def parse_parallel_workers(value)
+      return nil if value.nil?
+
+      Integer(value)
+    rescue ArgumentError, TypeError
+      $stderr.puts "config 'parallel_workers' must be an integer (got #{value.inspect})"
+      exit 1
+    end
+
     private def validate_explain_only!
       if @database_adapter == "mongodb"
         $stderr.puts "mongodb adapter is not yet supported by 'explain' subcommand"
@@ -420,6 +457,7 @@ module Exwiw
       rejected << "--output-format" unless @output_format.nil?
       rejected << "--insert-only" unless @insert_only.nil?
       rejected << "--after-insert-hook" unless @after_insert_hook_path.nil?
+      rejected << "--parallel-workers" unless @parallel_workers.nil?
 
       unless rejected.empty?
         $stderr.puts "The following options are not applicable in 'explain' subcommand: #{rejected.join(', ')}"
@@ -526,6 +564,7 @@ module Exwiw
         opts.on("--after-insert-hook=PATH", "Path to a .rb or .sh post-processing hook executed after all insert/delete files are written (export subcommand only)") do |v|
           @after_insert_hook_path = File.expand_path(v)
         end
+        opts.on("--parallel-workers=N", Integer, "Fork N workers for the MongoDB dump's parallel schedule (mongodb + export only; N>=2 enables it, default is serial). Output is byte-identical to serial; falls back to serial where fork is unavailable.") { |v| @parallel_workers = v }
         opts.on("--log-level=LEVEL", "Log level (debug, info). default is info") { |v| @log_level = v.to_sym }
 
         opts.on("--help", "Print this help") do

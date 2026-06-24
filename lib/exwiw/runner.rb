@@ -13,6 +13,7 @@ module Exwiw
       output_format: 'insert',
       insert_only: false,
       after_insert_hook_path: nil,
+      parallel_workers: nil,
       cli_options: {}
     )
       @connection_config = connection_config
@@ -22,6 +23,7 @@ module Exwiw
       @output_format = output_format
       @insert_only = insert_only
       @after_insert_hook_path = after_insert_hook_path
+      @parallel_workers = parallel_workers
       @cli_options = cli_options
       @logger = logger
     end
@@ -48,6 +50,19 @@ module Exwiw
       ordered_table_names = DetermineTableProcessingOrder.run(dumpable_configs, logger: @logger)
 
       clean_output_dir!
+
+      # Opt-in MongoDB inter-collection fork parallelism (see
+      # docs/mongodb-dump-parallelism-2x-notes.md). It is byte-identical to the
+      # serial loop below — same filenames (the file index is taken over the same
+      # full processing order) and same per-collection bytes — so it is a drop-in
+      # replacement for the whole schema+inserts pass, after which the common
+      # after-insert hook still runs. Everything before this point (validation,
+      # scope check, ordering, output-dir clean) applies to both paths.
+      if use_mongodb_parallel?(adapter)
+        dump_mongodb_parallel(configs, table_by_name)
+        run_after_insert_hook(adapter, ordered_table_names.size)
+        return
+      end
 
       ordered_tables = ordered_table_names.map { |n| table_by_name.fetch(n) }
       schema_path = File.join(@output_dir, "insert-000-schema.#{adapter.schema_output_extension}")
@@ -161,17 +176,71 @@ module Exwiw
         end
       end
 
-      if @after_insert_hook_path
-        @logger.info("Running after-insert hook: #{@after_insert_hook_path}")
-        AfterInsertHook.run(
-          path: @after_insert_hook_path,
-          cli_options: @cli_options,
-          output_dir: @output_dir,
-          next_idx: total_size + 1,
-          output_extension: adapter.output_extension,
-          logger: @logger,
-        )
+      run_after_insert_hook(adapter, total_size)
+    end
+
+    # Run the post-processing hook (no-op when none configured). `total_size` is
+    # the count of processed tables/collections; the hook's first output file is
+    # numbered just past them. Shared by the serial and parallel dump paths.
+    private def run_after_insert_hook(adapter, total_size)
+      return unless @after_insert_hook_path
+
+      @logger.info("Running after-insert hook: #{@after_insert_hook_path}")
+      AfterInsertHook.run(
+        path: @after_insert_hook_path,
+        cli_options: @cli_options,
+        output_dir: @output_dir,
+        next_idx: total_size + 1,
+        output_extension: adapter.output_extension,
+        logger: @logger,
+      )
+    end
+
+    # True when the opt-in MongoDB fork-parallel dump should run instead of the
+    # serial loop: the mongodb adapter, a worker count > 1, a genuine-anchor dump
+    # target (the schedule is built around the scoped DAG), and a runtime that can
+    # fork. Anything else falls back to the serial path (warning when the user
+    # explicitly asked for parallelism but it cannot apply).
+    private def use_mongodb_parallel?(adapter)
+      return false unless adapter.is_a?(Adapter::MongodbAdapter)
+      return false unless @parallel_workers && @parallel_workers > 1
+
+      if @dump_target.table_name.nil?
+        @logger.warn("--parallel-workers ignored: MongoDB parallelism needs a --target-collection; running serially.")
+        return false
       end
+
+      unless MongodbParallelDumper.available?
+        @logger.warn("--parallel-workers ignored: fork is unavailable on this runtime; running serially.")
+        return false
+      end
+
+      true
+    end
+
+    # Build the static plan and hand the whole schema+inserts pass to the fork
+    # orchestrator. `configs` are the reject_ignored_members!'d configs (the plan
+    # rejects embedded and orders them itself, identically to the serial path).
+    private def dump_mongodb_parallel(configs, table_by_name)
+      plan = MongodbParallelPlan.new(
+        configs: configs,
+        target_table_name: @dump_target.table_name,
+        logger: @logger,
+      )
+      @logger.info(
+        "MongoDB parallel dump with #{@parallel_workers} worker(s): " \
+        "genuine=#{plan.genuine.size}, leaves=#{plan.leaves.size}, ref_bt=#{plan.ref_bt.size}."
+      )
+      stats = MongodbParallelDumper.new(
+        connection_config: @connection_config,
+        plan: plan,
+        dump_target: @dump_target,
+        table_by_name: table_by_name,
+        output_dir: @output_dir,
+        workers: @parallel_workers,
+        logger: @logger,
+      ).run
+      @logger.info("MongoDB parallel dump complete: #{stats.inspect}")
     end
 
     # Empty the output dir before writing so each export starts from a clean
