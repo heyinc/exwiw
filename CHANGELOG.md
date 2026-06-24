@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Forward scope (`via_scoped_parent`) now cascades across multiple `belongs_to` hops instead of dying after one.** A table with no scope column of its own is scoped by constraining it to its `belongs_to` parent's in-scope ids (`fk IN (SELECT parent.pk FROM <parent's scoped query>)`). Previously the parent was rebuilt with forward scoping turned off, so if the parent was *itself* scoped only through *its* parent (e.g. an identity-family table two or more hops below a `reverse_scope`/`referenced_by` table — `users ← end_users ← end_user_profiles`), the rebuilt parent came back unconstrained and the child was classified `:unscopable` — forcing a `scope_exempt` full dump and re-introducing the bloat the prune removes. The boolean single-hop bound is replaced by a forward-path guard: the rescue keeps forward scoping enabled while rebuilding the parent (appending the current table to the path), so the cascade recurses N levels and produces a correspondingly nested `IN (subquery)`; it terminates only on a genuine `belongs_to` cycle (a table already on the path is not revisited, falling through to `:unscopable`). The single-unambiguous-parent rule and the polymorphic-skip are unchanged, and the reverse arms still cannot loop back through the table being reverse-scoped. SQL adapters only.
+
 ## [0.8.2] - 2026-06-24
 
 ### Added

@@ -462,6 +462,19 @@ module Exwiw
           end
         end
 
+        context "compile_ast with a three-level nested IN subquery (multi-hop forward cascade)" do
+          it "renders the subqueries recursively at every level (matching types, no cast)" do
+            sql = adapter.compile_ast(build_multi_hop_nested_in_ast)
+            expect(sql).to eq(
+              "SELECT * FROM projects WHERE projects.team_id IN (" \
+              "SELECT teams.id FROM teams WHERE teams.company_id IN (" \
+              "SELECT companies.id FROM companies WHERE companies.id IN (" \
+              "SELECT memberships.company_id FROM memberships WHERE memberships.business_entity_id = 1 AND memberships.company_id IS NOT NULL)))"
+            )
+            expect(sql).not_to include("::text")
+          end
+        end
+
         context "column_pg_type returns nil (graceful fallback)" do
           it "does not cast and does not raise" do
             allow(adapter).to receive(:column_pg_type).and_return(nil)

@@ -183,8 +183,11 @@ Each table is resolved as follows:
   (`fk IN (SELECT parent.pk FROM <parent's scoped query>)`). This covers a *hub*
   table that has no scope column and is scoped only because an extractable child
   references it (see referenced-by below): the hub's other `belongs_to` children
-  ride along to just the in-scope rows instead of being dumped in full. Limited to
-  a single forward hop and a single unambiguous scopable parent.
+  ride along to just the in-scope rows instead of being dumped in full. The parent
+  itself may be scoped the same way, so this **cascades across multiple hops**
+  (each a single unambiguous scopable parent) and the subquery nests
+  correspondingly; the recursion terminates on a genuine `belongs_to` cycle (a
+  table already on the path is left `:unscopable` rather than looped on).
 - **Cannot be scoped at all** (no scope column and no path to one) → exwiw
   **aborts** and lists the offending tables, so an unscoped table is never silently
   dumped in full. For each, either declare a `scope_column`, add a `belongs_to`
@@ -619,7 +622,7 @@ Notes:
 - **`column` is explicit**, so a *non-default* foreign key (e.g. `kantan_yoyaku_user_id`, or `organization_admins.id` which itself references `users.id`) is honored, and even a column with no declared `belongs_to` edge can be enumerated.
 - **Only scoped referencers belong in `via`.** Each arm's query must come out constrained; an unconstrained referencer (e.g. a `scope_exempt` table, or one with no path to a scope) would project *every* id and union the whole table back — so such an arm is **skipped with a warning** rather than silently widening the dump. An unknown table is likewise skipped with a warning. If no arm survives, the table stays unscopable and (in [scope-column mode](#scope-column-mode)) the run aborts via `validate_scope!`.
 - **NULLs are excluded** per arm (`IS NOT NULL`).
-- **Satellites need no config.** A table that `belongs_to` the reverse-scoped table (e.g. `end_users.id → users.id`, or `identities.user_id → users.id`) tightens to the kept ids automatically through the normal cascade — only the reverse-scoped table itself declares `reverse_scope`.
+- **Satellites need no config.** A table that `belongs_to` the reverse-scoped table (e.g. `end_users.id → users.id`, or `identities.user_id → users.id`) tightens to the kept ids automatically through the normal cascade — only the reverse-scoped table itself declares `reverse_scope`. The cascade is **multi-hop**, so a table several `belongs_to` hops below the reverse-scoped table (e.g. `end_user_profiles → end_users → users`) also tightens automatically, with no config of its own.
 - Works in both single-target and scope-column mode. Polymorphic foreign keys are not eligible as anchors (the named `column` is always a concrete column).
 
 ### Rails-managed tables (special `type` values)
