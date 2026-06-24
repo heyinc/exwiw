@@ -179,15 +179,18 @@ Each table is resolved as follows:
   nearest such table and applies the scope filter there (the same join machinery
   the single-target mode uses).
 - **`belongs_to` a parent that is itself scoped but carries no scope column of its
-  own** → exwiw constrains this table to the parent's in-scope ids via a subquery
-  (`fk IN (SELECT parent.pk FROM <parent's scoped query>)`). This covers a *hub*
-  table that has no scope column and is scoped only because an extractable child
-  references it (see referenced-by below): the hub's other `belongs_to` children
-  ride along to just the in-scope rows instead of being dumped in full. The parent
-  itself may be scoped the same way, so this **cascades across multiple hops**
-  (each a single unambiguous scopable parent) and the subquery nests
-  correspondingly; the recursion terminates on a genuine `belongs_to` cycle (a
-  table already on the path is left `:unscopable` rather than looped on).
+  own** → exwiw constrains this table to the parent's in-scope ids by joining it to
+  the parent's scoped query, materialized as a derived table
+  (`JOIN (SELECT DISTINCT parent.pk … FROM <parent's scoped query>) … ON fk = …`).
+  This covers a *hub* table that has no scope column and is scoped only because an
+  extractable child references it (see referenced-by below): the hub's other
+  `belongs_to` children ride along to just the in-scope rows instead of being dumped
+  in full. The parent itself may be scoped the same way, so this **cascades across
+  multiple hops** (each a single unambiguous scopable parent) and the derived-table
+  JOINs nest correspondingly; the recursion terminates on a genuine `belongs_to`
+  cycle (a table already on the path is left `:unscopable` rather than looped on).
+  (See [Why a JOIN, not `IN (subquery)`](#why-a-join-not-in-subquery) for the
+  materialization rationale.)
 - **Cannot be scoped at all** (no scope column and no path to one) → exwiw
   **aborts** and lists the offending tables, so an unscoped table is never silently
   dumped in full. For each, either declare a `scope_column`, add a `belongs_to`
@@ -568,15 +571,19 @@ The same type filter is applied on the join path — and in the matching `delete
 ActiveStorage is handled automatically — no ActiveStorage-specific configuration is required. The `has_one_attached` / `has_many_attached` macros don't add a column to the owning model; they generate ordinary associations that exwiw already understands:
 
 - **`active_storage_attachments`** is the polymorphic join row (`belongs_to :record, polymorphic: true` + `belongs_to :blob`). `exwiw:schema:generate` expands the polymorphic `record` into one `belongs_to` per model that declared `has_*_attached` (found via the generated `has_* ..., as: :record` reflections), exactly like any other [polymorphic `belongs_to`](#polymorphic-belongs_to). So only the attachments whose owner is among the dumped rows are extracted.
-- **`active_storage_blobs`** has no `belongs_to` of its own (attachments point *at* it), so it has no path to the dump target. exwiw narrows it via **reverse / "referenced_by" extraction**: a parent table referenced by exactly one constrained, non-polymorphic child is constrained to just the referenced ids instead of dumping every row:
+- **`active_storage_blobs`** has no `belongs_to` of its own (attachments point *at* it), so it has no path to the dump target. exwiw narrows it via **reverse / "referenced_by" extraction**: a parent table referenced by exactly one constrained, non-polymorphic child is constrained to just the referenced ids instead of dumping every row. The id set is materialized once and joined back (see [Why a JOIN, not `IN (subquery)`](#why-a-join-not-in-subquery)):
 
   ```sql
   SELECT active_storage_blobs.* FROM active_storage_blobs
-  WHERE active_storage_blobs.id IN (
-    SELECT active_storage_attachments.blob_id FROM active_storage_attachments
-    WHERE active_storage_attachments.record_id IN (/* owner subquery */)
-      AND active_storage_attachments.record_type = '...'
-  )
+  JOIN (
+    SELECT DISTINCT exwiw_scope_src_0.blob_id AS exwiw_scope_id
+    FROM (
+      SELECT active_storage_attachments.blob_id FROM active_storage_attachments
+      WHERE active_storage_attachments.record_id IN (/* owner subquery */)
+        AND active_storage_attachments.record_type = '...'
+    ) AS exwiw_scope_src_0
+  ) AS exwiw_scope_ids_0
+    ON active_storage_blobs.id = exwiw_scope_ids_0.exwiw_scope_id
   ```
 
   `active_storage_variant_records` also references blobs, but since it has no path of its own to the dump target it doesn't constrain anything and is ignored as a referencer — blobs stays narrowed to the attachment-referenced ids. (A parent referenced by *multiple* constrained children currently falls back to dumping all of its rows.)
@@ -603,18 +610,22 @@ The automatic reverse extraction above narrows a table referenced by **exactly o
 }
 ```
 
-produces (each arm reuses that referencer's own scope, so a per-tenant run keeps only that tenant's ids):
+produces (each arm reuses that referencer's own scope, so a per-tenant run keeps only that tenant's ids; the `UNION` id set is materialized once and joined back — see [Why a JOIN, not `IN (subquery)`](#why-a-join-not-in-subquery)):
 
 ```sql
 SELECT users.* FROM users
-WHERE users.id IN (
-  SELECT customers.user_id FROM customers WHERE <customers' scope> AND customers.user_id IS NOT NULL
-  UNION
-  SELECT staff.user_id FROM staff WHERE <staff' scope> AND staff.user_id IS NOT NULL
-  UNION
-  SELECT business_entity_customers.kantan_yoyaku_user_id FROM business_entity_customers
-    WHERE <…' scope> AND business_entity_customers.kantan_yoyaku_user_id IS NOT NULL
-)
+JOIN (
+  SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id
+  FROM (
+    SELECT customers.user_id FROM customers WHERE <customers' scope> AND customers.user_id IS NOT NULL
+    UNION
+    SELECT staff.user_id FROM staff WHERE <staff' scope> AND staff.user_id IS NOT NULL
+    UNION
+    SELECT business_entity_customers.kantan_yoyaku_user_id FROM business_entity_customers
+      WHERE <…' scope> AND business_entity_customers.kantan_yoyaku_user_id IS NOT NULL
+  ) AS exwiw_scope_src_0
+) AS exwiw_scope_ids_0
+  ON users.id = exwiw_scope_ids_0.exwiw_scope_id
 ```
 
 Notes:
@@ -624,6 +635,19 @@ Notes:
 - **NULLs are excluded** per arm (`IS NOT NULL`).
 - **Satellites need no config.** A table that `belongs_to` the reverse-scoped table (e.g. `end_users.id → users.id`, or `identities.user_id → users.id`) tightens to the kept ids automatically through the normal cascade — only the reverse-scoped table itself declares `reverse_scope`. The cascade is **multi-hop**, so a table several `belongs_to` hops below the reverse-scoped table (e.g. `end_user_profiles → end_users → users`) also tightens automatically, with no config of its own.
 - Works in both single-target and scope-column mode. Polymorphic foreign keys are not eligible as anchors (the named `column` is always a concrete column).
+
+### Why a JOIN, not `IN (subquery)`
+
+Every scope id-set above — the multi-referencer `reverse_scope` `UNION`, the single-referencer reverse extraction, and the multi-hop forward cascade — is emitted as a `JOIN` to a `SELECT DISTINCT` derived table rather than `<col> IN (<subquery>)`:
+
+```sql
+… JOIN (SELECT DISTINCT src.<id> AS exwiw_scope_id FROM (<id-set subquery>) AS src) AS ids
+    ON <table>.<col> = ids.exwiw_scope_id
+```
+
+Both forms select the **same rows** — the `DISTINCT` dedups, so the join never fans out — but the query plans differ sharply on a large table. As `<col> IN (… UNION …)`, MySQL cannot turn a `UNION` subquery into a materialized semi-join and falls back to its IN-to-`EXISTS` rewrite: a **correlated `DEPENDENT SUBQUERY`** re-evaluated for every outer row, i.e. a full scan of the (potentially huge) outer table multiplied by the cost of the union. The derived-table form forces the engine to evaluate the id set **once** (the `DISTINCT` makes the derived table non-mergeable, hence materialized) and then probe the outer table by its primary key. On a global-identity table such as `users` this is the difference between a full table scan and an index lookup; the cascade nests the same way, so each level is materialized once instead of being re-evaluated by the level above.
+
+All three SQL adapters (mysql / postgresql / sqlite) emit this shape. PostgreSQL additionally reconciles a `uuid`/`varchar` type mismatch by casting the join key and the projected id to `text`, exactly as the old `IN` form did.
 
 ### Rails-managed tables (special `type` values)
 

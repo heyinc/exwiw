@@ -242,6 +242,43 @@ module Exwiw
       private def null_preserving(ast, column, masked_expr)
         "CASE WHEN #{ast.from_table_name}.#{column.name} IS NOT NULL THEN #{masked_expr} ELSE NULL END"
       end
+
+      # Split an outer query's WHERE clauses into the scope id-set clauses to
+      # lift into a materialized derived-table JOIN (see each adapter's
+      # #compile_scope_join) and the remaining plain clauses (kept in WHERE).
+      # Returns [scope_clauses, plain_clauses]; #partition keeps each clause in
+      # its original order *within* its own group. The two groups are emitted in
+      # different SQL positions (a JOIN vs the WHERE), so their interleaving is
+      # irrelevant — only the order within each group matters, and that is kept.
+      private def partition_scope_clauses(where_clauses)
+        where_clauses.partition { |where_clause| scope_subquery_clause?(where_clause) }
+      end
+
+      # Whether a WHERE clause is a scope id-set probe that should be lifted into
+      # a JOIN against a materialized derived table. Only the SelectSubquery /
+      # UnionSubquery shapes (reverse_scope UNION, forward cascade, single
+      # referenced_by) qualify: they project over potentially huge tables and, as
+      # `<col> IN (subquery)`, can degrade into a correlated DEPENDENT SUBQUERY
+      # re-evaluated per outer row. The flat ids_field `Subquery` is deliberately
+      # left as a plain IN — it is a small, bounded, uncorrelated probe.
+      private def scope_subquery_clause?(where_clause)
+        where_clause.is_a?(Exwiw::QueryAst::WhereClause) &&
+          where_clause.operator == :in_subquery &&
+          (where_clause.value.is_a?(Exwiw::QueryAst::SelectSubquery) ||
+            where_clause.value.is_a?(Exwiw::QueryAst::UnionSubquery))
+      end
+
+      # The bare name of the single column a scope subquery projects, used to
+      # reference it inside the materialized derived table. For a UNION the
+      # output column name comes from the first arm.
+      private def subquery_projection_name(subquery)
+        case subquery
+        when Exwiw::QueryAst::SelectSubquery
+          subquery.query.columns.first.name
+        when Exwiw::QueryAst::UnionSubquery
+          subquery.queries.first.columns.first.name
+        end
+      end
     end
 
     # @params [Exwiw::QueryAst] query_ast

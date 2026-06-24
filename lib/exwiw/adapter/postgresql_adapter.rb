@@ -301,9 +301,16 @@ module Exwiw
       def compile_ast(query_ast, select_cast_to: nil)
         raise NotImplementedError unless query_ast.is_a?(Exwiw::QueryAst::Select)
 
+        # Lift scope id-set clauses (reverse_scope UNION / forward cascade /
+        # single referenced_by) out of `WHERE <col> IN (subquery)` and into a
+        # JOIN against a materialized derived table. See #compile_scope_join.
+        scope_clauses, plain_where_clauses = partition_scope_clauses(query_ast.where_clauses)
+
         sql = "SELECT "
         sql += if query_ast.select_all
-                 "*"
+                 # A lifted scope JOIN brings a derived table into FROM, so a bare
+                 # `*` would also project its column. Qualify to this table's own.
+                 scope_clauses.any? ? "#{query_ast.from_table_name}.*" : "*"
                else
                  cols = query_ast.columns.map { |col| compile_column_name(query_ast, col) }
                  cols = cols.map { |c| "#{c}::#{select_cast_to}" } if select_cast_to
@@ -337,12 +344,43 @@ module Exwiw
           end
         end
 
-        if query_ast.where_clauses.any?
+        scope_clauses.each_with_index do |where_clause, idx|
+          sql += " #{compile_scope_join(query_ast.from_table_name, where_clause, idx)}"
+        end
+
+        if plain_where_clauses.any?
           sql += " WHERE "
-          sql += query_ast.where_clauses.map { |where| compile_where_condition(where, query_ast.from_table_name) }.join(' AND ')
+          sql += plain_where_clauses.map { |where| compile_where_condition(where, query_ast.from_table_name) }.join(' AND ')
         end
 
         sql
+      end
+
+      # Render a scope id-set clause as a JOIN to a materialized derived table
+      # (see MysqlAdapter#compile_scope_join for the full rationale). The DISTINCT
+      # forces the engine to materialize the id-set once and probe this table by
+      # it, instead of full-scanning and re-evaluating a correlated subquery per
+      # row; it also dedups, so the join is row-for-row identical to
+      # `<col> IN (subquery)`.
+      #
+      # Type reconciliation mirrors the old IN form: when the outer column and
+      # the projected id clash (e.g. uuid vs varchar), #compile_subquery already
+      # casts every arm to text, so the derived `exwiw_scope_id` is text and the
+      # outer key is cast to match.
+      private def compile_scope_join(from_table_name, where_clause, idx)
+        subquery = where_clause.value
+        projection = subquery_projection_name(subquery)
+        src_alias = "exwiw_scope_src_#{idx}"
+        ids_alias = "exwiw_scope_ids_#{idx}"
+
+        inner_sql = compile_subquery(subquery, outer_table: from_table_name, outer_column: where_clause.column_name)
+        cast_to = subquery_cast_to(subquery, from_table_name, where_clause.column_name)
+        outer_key = "#{from_table_name}.#{where_clause.column_name}"
+        outer_key = "#{outer_key}::#{cast_to}" if cast_to
+
+        "JOIN (SELECT DISTINCT #{src_alias}.#{projection} AS exwiw_scope_id " \
+          "FROM (#{inner_sql}) AS #{src_alias}) AS #{ids_alias} " \
+          "ON #{outer_key} = #{ids_alias}.exwiw_scope_id"
       end
 
       private def compile_where_condition(where_clause, table_name)

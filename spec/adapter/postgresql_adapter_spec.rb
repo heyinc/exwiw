@@ -144,6 +144,20 @@ module Exwiw
         end
       end
 
+      # The reverse_scope id-set is emitted as a JOIN to a materialized
+      # (SELECT DISTINCT) derived table; run against the real seed DB to prove
+      # it returns the same rows as the pre-fix `<col> IN (subquery)` form.
+      describe "scope id-set materialization (derived-table JOIN)" do
+        it "returns the same users as the equivalent IN-subquery (result-set equivalence)" do
+          ast = build_users_reverse_scope_over_seed_ast
+          new_ids = adapter.execute(ast).to_a.map { |row| row.first.to_s }.sort
+          old_ids = adapter.send(:connection).exec(users_reverse_scope_over_seed_in_sql).values.map { |row| row.first.to_s }.sort
+
+          expect(new_ids).not_to be_empty
+          expect(new_ids).to eq(old_ids)
+        end
+      end
+
       describe "#execute" do
         context "simple select query" do
           # #execute now returns a streaming Enumerable (single-row mode), so
@@ -391,8 +405,8 @@ module Exwiw
           end
         end
 
-        context "compile_where_condition with :in_subquery (SelectSubquery) and uuid mismatch" do
-          it "casts outer key and inner select column" do
+        context "compile_ast with :in_subquery (SelectSubquery) and uuid mismatch" do
+          it "casts the outer join key and the inner projected column" do
             allow(adapter).to receive(:column_pg_type).with("shops", "id").and_return('uuid')
             allow(adapter).to receive(:column_pg_type).with("users", "shop_id").and_return('varchar')
 
@@ -422,7 +436,8 @@ module Exwiw
             end
 
             sql = adapter.compile_ast(ast)
-            expect(sql).to include("shops.id::text IN (SELECT users.shop_id::text FROM users")
+            expect(sql).to include("SELECT users.shop_id::text FROM users")
+            expect(sql).to include("ON shops.id::text = exwiw_scope_ids_0.exwiw_scope_id")
           end
         end
 
@@ -437,39 +452,47 @@ module Exwiw
         end
 
         context "compile_ast with a UnionSubquery and matching arm types" do
-          it "does not cast any arm" do
+          it "materializes the UNION as a derived-table JOIN, casting nothing" do
             sql = adapter.compile_ast(build_reverse_scope_union_ast)
             expect(sql).to eq(
-              "SELECT * FROM users WHERE users.id IN (" \
+              "SELECT users.* FROM users JOIN (" \
+              "SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id FROM (" \
               "SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 1 AND customers.user_id IS NOT NULL " \
               "UNION " \
-              "SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 1 AND staff.user_id IS NOT NULL)"
+              "SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 1 AND staff.user_id IS NOT NULL" \
+              ") AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON users.id = exwiw_scope_ids_0.exwiw_scope_id"
             )
             expect(sql).not_to include("::text")
           end
         end
 
         context "compile_ast with a UnionSubquery where a later arm's type differs" do
-          it "casts the outer key AND every arm to ::text (not just the first)" do
+          it "casts the outer join key AND every arm to ::text (not just the first)" do
             allow(adapter).to receive(:column_pg_type).with("users", "id").and_return('uuid')
             allow(adapter).to receive(:column_pg_type).with("customers", "user_id").and_return('uuid')
             allow(adapter).to receive(:column_pg_type).with("staff", "user_id").and_return('varchar')
 
             sql = adapter.compile_ast(build_reverse_scope_union_ast)
-            expect(sql).to include("users.id::text IN (")
+            expect(sql).to include("ON users.id::text = exwiw_scope_ids_0.exwiw_scope_id")
             expect(sql).to include("SELECT customers.user_id::text FROM customers")
             expect(sql).to include("SELECT staff.user_id::text FROM staff")
           end
         end
 
         context "compile_ast with a three-level nested IN subquery (multi-hop forward cascade)" do
-          it "renders the subqueries recursively at every level (matching types, no cast)" do
+          it "nests a materialized derived-table JOIN at every level (matching types, no cast)" do
             sql = adapter.compile_ast(build_multi_hop_nested_in_ast)
             expect(sql).to eq(
-              "SELECT * FROM projects WHERE projects.team_id IN (" \
-              "SELECT teams.id FROM teams WHERE teams.company_id IN (" \
-              "SELECT companies.id FROM companies WHERE companies.id IN (" \
-              "SELECT memberships.company_id FROM memberships WHERE memberships.business_entity_id = 1 AND memberships.company_id IS NOT NULL)))"
+              "SELECT projects.* FROM projects JOIN (" \
+              "SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (" \
+              "SELECT teams.id FROM teams JOIN (" \
+              "SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (" \
+              "SELECT companies.id FROM companies JOIN (" \
+              "SELECT DISTINCT exwiw_scope_src_0.company_id AS exwiw_scope_id FROM (" \
+              "SELECT memberships.company_id FROM memberships WHERE memberships.business_entity_id = 1 AND memberships.company_id IS NOT NULL" \
+              ") AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON companies.id = exwiw_scope_ids_0.exwiw_scope_id" \
+              ") AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON teams.company_id = exwiw_scope_ids_0.exwiw_scope_id" \
+              ") AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON projects.team_id = exwiw_scope_ids_0.exwiw_scope_id"
             )
             expect(sql).not_to include("::text")
           end

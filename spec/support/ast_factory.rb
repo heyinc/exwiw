@@ -231,6 +231,56 @@ module AstFactory
     end
   end
 
+  # A reverse-scope UNION over tables that actually exist in the seed, so it can
+  # be executed and EXPLAINed against the real databases (the customers/staff
+  # fixtures above are compile-only). `users` is constrained to the union of two
+  # real referencers — orders (scoped to shop 1) and reviews — mirroring the
+  # global-identity shape that motivated materializing the id-set: the old
+  # `id IN (… UNION …)` form degrades into a per-row correlated DEPENDENT
+  # SUBQUERY on a large `users`, which the derived-table JOIN removes.
+  #
+  # Projects just the primary key (not `select_all!`), so the executed rows line
+  # up column-for-column with the `SELECT users.id` control SQL below and the
+  # equivalence/EXPLAIN assertions don't depend on `users.*`'s column order.
+  def build_users_reverse_scope_over_seed_ast
+    plain = ->(name) { Exwiw::TableColumn.from_symbol_keys(name: name) }
+
+    orders_arm = QueryAst::Select.new.tap do |q|
+      q.from("orders")
+      q.select([plain.call("user_id")])
+      q.where(QueryAst::WhereClause.new(column_name: "shop_id", operator: :eq, value: [1]))
+      q.where(QueryAst::WhereClause.new(column_name: "user_id", operator: :not_null))
+    end
+    reviews_arm = QueryAst::Select.new.tap do |q|
+      q.from("reviews")
+      q.select([plain.call("user_id")])
+      q.where(QueryAst::WhereClause.new(column_name: "user_id", operator: :not_null))
+    end
+
+    QueryAst::Select.new.tap do |ast|
+      ast.from("users")
+      ast.select([plain.call("id")])
+      ast.where(
+        QueryAst::WhereClause.new(
+          column_name: "id",
+          operator: :in_subquery,
+          value: QueryAst::UnionSubquery.new(queries: [orders_arm, reviews_arm]),
+        )
+      )
+    end
+  end
+
+  # The pre-fix `<col> IN (… UNION …)` shape of #build_users_reverse_scope_over_seed_ast,
+  # projected to just the id. Used as the control in result-set equivalence and
+  # EXPLAIN before/after assertions — the derived-table JOIN must return the same
+  # rows while no longer compiling to a correlated subquery.
+  def users_reverse_scope_over_seed_in_sql
+    "SELECT users.id FROM users WHERE users.id IN (" \
+      "SELECT orders.user_id FROM orders WHERE orders.shop_id = 1 AND orders.user_id IS NOT NULL " \
+      "UNION " \
+      "SELECT reviews.user_id FROM reviews WHERE reviews.user_id IS NOT NULL)"
+  end
+
   def build_order_items_ast(order_items_filter_opt = nil, orders_filter_opt = nil)
     order_items_table = order_items_table(adapter_name)
 

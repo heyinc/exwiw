@@ -229,11 +229,18 @@ module Exwiw
       def compile_ast(query_ast, count_only: false)
         raise NotImplementedError unless query_ast.is_a?(Exwiw::QueryAst::Select)
 
+        # Lift scope id-set clauses (reverse_scope UNION / forward cascade /
+        # single referenced_by) out of `WHERE <col> IN (subquery)` and into a
+        # JOIN against a materialized derived table. See #compile_scope_join.
+        scope_clauses, plain_where_clauses = partition_scope_clauses(query_ast.where_clauses)
+
         sql = "SELECT "
         sql += if count_only
                  "COUNT(*)"
                elsif query_ast.select_all
-                 "*"
+                 # A lifted scope JOIN brings a derived table into FROM, so a bare
+                 # `*` would also project its column. Qualify to this table's own.
+                 scope_clauses.any? ? "#{query_ast.from_table_name}.*" : "*"
                else
                  query_ast.columns.map { |col| compile_column_name(query_ast, col) }.join(', ')
                end
@@ -256,12 +263,41 @@ module Exwiw
           end
         end
 
-        if query_ast.where_clauses.any?
+        scope_clauses.each_with_index do |where_clause, idx|
+          sql += " #{compile_scope_join(query_ast.from_table_name, where_clause, idx)}"
+        end
+
+        if plain_where_clauses.any?
           sql += " WHERE "
-          sql += query_ast.where_clauses.map { |where| compile_where_condition(where, query_ast.from_table_name) }.join(' AND ')
+          sql += plain_where_clauses.map { |where| compile_where_condition(where, query_ast.from_table_name) }.join(' AND ')
         end
 
         sql
+      end
+
+      # Render a scope id-set clause as a JOIN to a materialized derived table:
+      #
+      #   JOIN (SELECT DISTINCT src.<proj> AS exwiw_scope_id
+      #         FROM (<subquery>) AS src) AS ids
+      #     ON <table>.<col> = ids.exwiw_scope_id
+      #
+      # The DISTINCT makes the derived table non-mergeable, so MySQL materializes
+      # the id-set once and probes this table by it (PK/index lookup) — instead
+      # of full-scanning this table and re-evaluating a correlated
+      # `IN (… UNION …)` per row (the DEPENDENT SUBQUERY / IN-to-EXISTS fallback,
+      # which a UNION subquery cannot be turned into a materialized semi-join).
+      # DISTINCT also dedups, so the join never fans out: the row set is identical
+      # to `<col> IN (subquery)`.
+      private def compile_scope_join(from_table_name, where_clause, idx)
+        subquery = where_clause.value
+        projection = subquery_projection_name(subquery)
+        src_alias = "exwiw_scope_src_#{idx}"
+        ids_alias = "exwiw_scope_ids_#{idx}"
+        outer_key = "#{from_table_name}.#{where_clause.column_name}"
+
+        "JOIN (SELECT DISTINCT #{src_alias}.#{projection} AS exwiw_scope_id " \
+          "FROM (#{compile_subquery(subquery)}) AS #{src_alias}) AS #{ids_alias} " \
+          "ON #{outer_key} = #{ids_alias}.exwiw_scope_id"
       end
 
       private def compile_where_condition(where_clause, table_name)
