@@ -1129,4 +1129,186 @@ RSpec.describe Exwiw::QueryAstBuilder do
       )
     end
   end
+
+  describe 'multi-hop forward scope cascade (via_scoped_parent)' do
+    # `companies` carries no scope column and has no belongs_to of its own; it is
+    # scoped via reverse_scope (the scoped `memberships` point at it). Three
+    # tables then hang off it through a chain of belongs_to hops:
+    #
+    #   companies (reverse_scope) <- teams <- projects <- tasks
+    #
+    # Each link is scoped by constraining it to its parent's in-scope ids, and
+    # the parent is itself scoped the same way — so the rescue must recurse the
+    # whole chain rather than dying after a single forward hop.
+    let(:logger) { Logger.new(nil) }
+    let(:dump_target) { Exwiw::DumpTarget.new(ids: ['t1'], scope_column: 'tenant_id') }
+
+    let(:companies) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'companies', primary_key: 'id', belongs_tos: [],
+        reverse_scope: { via: [{ table: 'memberships', column: 'company_id' }] },
+        columns: [{ name: 'id' }, { name: 'name' }]
+      )
+    end
+    let(:memberships) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'memberships', primary_key: 'id',
+        belongs_tos: [{ table_name: 'companies', foreign_key: 'company_id' }],
+        columns: [{ name: 'id' }, { name: 'company_id' }, { name: 'tenant_id' }]
+      )
+    end
+    let(:teams) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'teams', primary_key: 'id',
+        belongs_tos: [{ table_name: 'companies', foreign_key: 'company_id' }],
+        columns: [{ name: 'id' }, { name: 'company_id' }, { name: 'label' }]
+      )
+    end
+    let(:projects) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'projects', primary_key: 'id',
+        belongs_tos: [{ table_name: 'teams', foreign_key: 'team_id' }],
+        columns: [{ name: 'id' }, { name: 'team_id' }, { name: 'name' }]
+      )
+    end
+    let(:tasks) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'tasks', primary_key: 'id',
+        belongs_tos: [{ table_name: 'projects', foreign_key: 'project_id' }],
+        columns: [{ name: 'id' }, { name: 'project_id' }, { name: 'title' }]
+      )
+    end
+    let(:schema_migrations) do
+      Exwiw::TableConfig.from_symbol_keys(name: 'schema_migrations', type: 'rails_managed_schema_migrations')
+    end
+
+    let(:all_tables) { [companies, memberships, teams, projects, tasks, schema_migrations] }
+    let(:table_by_name) { all_tables.each_with_object({}) { |t, h| h[t.name] = t } }
+
+    def build(name)
+      described_class.run(name, table_by_name, dump_target, logger)
+    end
+
+    it 'classifies every hop below the reverse-scoped table as :via_scoped_parent' do
+      expect(described_class.scope_category('companies', table_by_name, dump_target, logger)).to eq(:referenced_by)
+      expect(described_class.scope_category('teams', table_by_name, dump_target, logger)).to eq(:via_scoped_parent)
+      expect(described_class.scope_category('projects', table_by_name, dump_target, logger)).to eq(:via_scoped_parent)
+      expect(described_class.scope_category('tasks', table_by_name, dump_target, logger)).to eq(:via_scoped_parent)
+    end
+
+    it 'no longer leaves the deep hops unscopable, so validate_scope! passes' do
+      expect {
+        described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+      }.not_to raise_error
+    end
+
+    it 'nests the second hop one level below the reverse_scope UNION (sqlite)' do
+      expect(sqlite_adapter.compile_ast(build('projects'))).to eq(
+        'SELECT projects.id, projects.team_id, projects.name FROM projects ' \
+        'WHERE projects.team_id IN (' \
+        'SELECT teams.id FROM teams WHERE teams.company_id IN (' \
+        'SELECT companies.id FROM companies WHERE companies.id IN (' \
+        "SELECT memberships.company_id FROM memberships WHERE memberships.tenant_id = 't1' " \
+        'AND memberships.company_id IS NOT NULL)))'
+      )
+    end
+
+    it 'nests every hop for the deepest table (sqlite)' do
+      expect(sqlite_adapter.compile_ast(build('tasks'))).to eq(
+        'SELECT tasks.id, tasks.project_id, tasks.title FROM tasks ' \
+        'WHERE tasks.project_id IN (' \
+        'SELECT projects.id FROM projects WHERE projects.team_id IN (' \
+        'SELECT teams.id FROM teams WHERE teams.company_id IN (' \
+        'SELECT companies.id FROM companies WHERE companies.id IN (' \
+        "SELECT memberships.company_id FROM memberships WHERE memberships.tenant_id = 't1' " \
+        'AND memberships.company_id IS NOT NULL))))'
+      )
+    end
+
+    context 'a belongs_to cycle (a -> b -> a) with no other scope' do
+      # Neither table carries a scope column, reverse_scope, or a path to one;
+      # they only point at each other. The cascade must terminate on the cycle
+      # rather than recursing forever.
+      let(:node_x) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'node_x', primary_key: 'id',
+          belongs_tos: [{ table_name: 'node_y', foreign_key: 'y_id' }],
+          columns: [{ name: 'id' }, { name: 'y_id' }]
+        )
+      end
+      let(:node_y) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'node_y', primary_key: 'id',
+          belongs_tos: [{ table_name: 'node_x', foreign_key: 'x_id' }],
+          columns: [{ name: 'id' }, { name: 'x_id' }]
+        )
+      end
+      let(:all_tables) { [node_x, node_y, schema_migrations] }
+
+      it 'classifies both members :unscopable without looping' do
+        expect(described_class.scope_category('node_x', table_by_name, dump_target, logger)).to eq(:unscopable)
+        expect(described_class.scope_category('node_y', table_by_name, dump_target, logger)).to eq(:unscopable)
+      end
+    end
+
+    context 'a table with two scopable belongs_to parents' do
+      # Each hub is scoped via its own reverse_scope (so neither is directly
+      # scoped and via_path cannot terminate on it), and `child` belongs_to both.
+      # The forward rescue only supports a single unambiguous parent, so it bails
+      # rather than guessing which parent's ids to constrain on.
+      let(:hub_a) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'hub_a', primary_key: 'id', belongs_tos: [],
+          reverse_scope: { via: [{ table: 'ref_a', column: 'hub_a_id' }] },
+          columns: [{ name: 'id' }]
+        )
+      end
+      let(:ref_a) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'ref_a', primary_key: 'id',
+          belongs_tos: [{ table_name: 'hub_a', foreign_key: 'hub_a_id' }],
+          columns: [{ name: 'id' }, { name: 'hub_a_id' }, { name: 'tenant_id' }]
+        )
+      end
+      let(:hub_b) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'hub_b', primary_key: 'id', belongs_tos: [],
+          reverse_scope: { via: [{ table: 'ref_b', column: 'hub_b_id' }] },
+          columns: [{ name: 'id' }]
+        )
+      end
+      let(:ref_b) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'ref_b', primary_key: 'id',
+          belongs_tos: [{ table_name: 'hub_b', foreign_key: 'hub_b_id' }],
+          columns: [{ name: 'id' }, { name: 'hub_b_id' }, { name: 'tenant_id' }]
+        )
+      end
+      let(:child) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'child', primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'hub_a', foreign_key: 'hub_a_id' },
+            { table_name: 'hub_b', foreign_key: 'hub_b_id' },
+          ],
+          columns: [{ name: 'id' }, { name: 'hub_a_id' }, { name: 'hub_b_id' }]
+        )
+      end
+      let(:all_tables) { [hub_a, ref_a, hub_b, ref_b, child, schema_migrations] }
+
+      it 'stays :unscopable rather than picking an ambiguous parent' do
+        expect(described_class.scope_category('child', table_by_name, dump_target, logger)).to eq(:unscopable)
+      end
+    end
+
+    def sqlite_adapter
+      Exwiw::Adapter::SqliteAdapter.new(
+        Exwiw::ConnectionConfig.new(
+          adapter: 'sqlite', database_name: 'tmp/test.sqlite3',
+          host: nil, port: nil, user: nil, password: nil
+        ),
+        logger,
+      )
+    end
+  end
 end
