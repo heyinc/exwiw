@@ -850,4 +850,228 @@ RSpec.describe Exwiw::QueryAstBuilder do
       )
     end
   end
+
+  describe 'multi-referencer reverse scope (reverse_scope.via)' do
+    # A global-identity table (`users`) that carries no scope column and has no
+    # belongs_to of its own is referenced by several scoped tables. With two or
+    # more referencers the automatic single-referencer reverse extraction bails
+    # to a full dump; `reverse_scope.via` instead UNIONs each referencer's
+    # scoped query into the id set `users` is constrained to.
+    let(:log_output) { StringIO.new }
+    let(:logger) { Logger.new(log_output) }
+    let(:dump_target) { Exwiw::DumpTarget.new(ids: ['be1'], scope_column: 'business_entity_id') }
+
+    let(:users) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'users', primary_key: 'id', belongs_tos: [],
+        reverse_scope: { via: reverse_scope_via },
+        columns: [{ name: 'id' }, { name: 'name' }]
+      )
+    end
+    let(:reverse_scope_via) do
+      [
+        { table: 'customers', column: 'user_id' },
+        { table: 'staff', column: 'user_id' },
+      ]
+    end
+    # Two directly-scoped referencers that point at users via a non-default and
+    # a default foreign key respectively.
+    let(:customers) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'customers', primary_key: 'id',
+        belongs_tos: [{ table_name: 'users', foreign_key: 'user_id' }],
+        columns: [{ name: 'id' }, { name: 'business_entity_id' }, { name: 'user_id' }]
+      )
+    end
+    let(:staff) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'staff', primary_key: 'id',
+        belongs_tos: [{ table_name: 'users', foreign_key: 'user_id' }],
+        columns: [{ name: 'id' }, { name: 'business_entity_id' }, { name: 'user_id' }]
+      )
+    end
+    # A satellite whose own primary key references users.id (end_users.id ==
+    # users.id): it carries no scope column and needs NO reverse_scope of its
+    # own — it tightens to the kept users via the via_scoped_parent cascade.
+    let(:end_users) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'end_users', primary_key: 'id',
+        belongs_tos: [{ table_name: 'users', foreign_key: 'id' }],
+        columns: [{ name: 'id' }, { name: 'nickname' }]
+      )
+    end
+    let(:schema_migrations) do
+      Exwiw::TableConfig.from_symbol_keys(name: 'schema_migrations', type: 'rails_managed_schema_migrations')
+    end
+    let(:all_tables) { [users, customers, staff, end_users, schema_migrations] }
+    let(:table_by_name) { all_tables.each_with_object({}) { |t, h| h[t.name] = t } }
+
+    def build(name)
+      described_class.run(name, table_by_name, dump_target, logger)
+    end
+
+    it 'constrains users to the UNION of every via referencer, excluding NULLs' do
+      ast = build('users')
+      expect(ast.from_table_name).to eq('users')
+      expect(ast.join_clauses).to eq([])
+      expect(ast.where_clauses.map(&:to_h)).to eq([
+        {
+          column_name: 'id',
+          operator: :in_subquery,
+          value: {
+            union: [
+              {
+                from: 'customers',
+                columns: [{ name: 'user_id', value: 'user_id' }],
+                joins: [],
+                where: [
+                  { column_name: 'business_entity_id', operator: :eq, value: ['be1'] },
+                  { column_name: 'user_id', operator: :not_null, value: nil },
+                ],
+              },
+              {
+                from: 'staff',
+                columns: [{ name: 'user_id', value: 'user_id' }],
+                joins: [],
+                where: [
+                  { column_name: 'business_entity_id', operator: :eq, value: ['be1'] },
+                  { column_name: 'user_id', operator: :not_null, value: nil },
+                ],
+              },
+            ],
+          },
+        },
+      ])
+    end
+
+    it 'compiles users to IN (… UNION …) (sqlite)' do
+      expect(sqlite_adapter.compile_ast(build('users'))).to eq(
+        'SELECT users.id, users.name FROM users WHERE users.id IN (' \
+        "SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 'be1' AND customers.user_id IS NOT NULL " \
+        'UNION ' \
+        "SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 'be1' AND staff.user_id IS NOT NULL)"
+      )
+    end
+
+    it 'classifies users as :referenced_by and passes validate_scope!' do
+      expect(described_class.scope_category('users', table_by_name, dump_target, logger)).to eq(:referenced_by)
+      expect {
+        described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+      }.not_to raise_error
+    end
+
+    it 'cascades to a satellite that belongs_to users, with no config of its own' do
+      expect(sqlite_adapter.compile_ast(build('end_users'))).to eq(
+        'SELECT end_users.id, end_users.nickname FROM end_users WHERE end_users.id IN (' \
+        'SELECT users.id FROM users WHERE users.id IN (' \
+        "SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 'be1' AND customers.user_id IS NOT NULL " \
+        'UNION ' \
+        "SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 'be1' AND staff.user_id IS NOT NULL))"
+      )
+    end
+
+    context 'when a via arm references an unknown table' do
+      let(:reverse_scope_via) do
+        [
+          { table: 'customers', column: 'user_id' },
+          { table: 'ghosts', column: 'user_id' },
+        ]
+      end
+
+      it 'skips the unknown arm with a warning and unions the rest' do
+        expect(sqlite_adapter.compile_ast(build('users'))).to eq(
+          'SELECT users.id, users.name FROM users WHERE users.id IN (' \
+          "SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 'be1' AND customers.user_id IS NOT NULL)"
+        )
+        expect(log_output.string).to include("references unknown table 'ghosts'")
+      end
+    end
+
+    context 'when a via arm references a table that is not scoped (would union all rows back)' do
+      # `audit_logs` is scope_exempt (intentional full dump), so its scoped query
+      # is unconstrained — including it would project every user_id and defeat
+      # the prune. The arm must be dropped, not silently widen the dump.
+      let(:audit_logs) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'audit_logs', primary_key: 'id', scope_exempt: true, belongs_tos: [],
+          columns: [{ name: 'id' }, { name: 'user_id' }]
+        )
+      end
+      let(:all_tables) { [users, customers, staff, end_users, audit_logs, schema_migrations] }
+      let(:reverse_scope_via) do
+        [
+          { table: 'customers', column: 'user_id' },
+          { table: 'audit_logs', column: 'user_id' },
+        ]
+      end
+
+      it 'skips the unconstrained arm with a warning and unions the rest' do
+        expect(sqlite_adapter.compile_ast(build('users'))).to eq(
+          'SELECT users.id, users.name FROM users WHERE users.id IN (' \
+          "SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 'be1' AND customers.user_id IS NOT NULL)"
+        )
+        expect(log_output.string).to include("arm 'audit_logs.user_id' is not scoped")
+      end
+    end
+
+    context 'when every via arm is dropped' do
+      let(:reverse_scope_via) { [{ table: 'ghosts', column: 'user_id' }] }
+
+      it 'leaves users unscopable so the top-level build raises' do
+        expect { build('users') }.to raise_error(ArgumentError, /cannot be scoped/)
+      end
+    end
+
+    context 'in single-target mode' do
+      # reverse_scope also works when anchoring on a named target rather than a
+      # scope column: each arm reuses the referencer's target-scoped query.
+      let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'business_entities', ids: [1]) }
+      let(:customers) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'customers', primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'users', foreign_key: 'user_id' },
+            { table_name: 'business_entities', foreign_key: 'business_entity_id' },
+          ],
+          columns: [{ name: 'id' }, { name: 'business_entity_id' }, { name: 'user_id' }]
+        )
+      end
+      let(:staff) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'staff', primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'users', foreign_key: 'user_id' },
+            { table_name: 'business_entities', foreign_key: 'business_entity_id' },
+          ],
+          columns: [{ name: 'id' }, { name: 'business_entity_id' }, { name: 'user_id' }]
+        )
+      end
+      let(:business_entities) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'business_entities', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }, { name: 'name' }]
+        )
+      end
+      let(:all_tables) { [users, customers, staff, business_entities] }
+
+      it 'unions each referencer constrained by the foreign key to the target' do
+        expect(sqlite_adapter.compile_ast(build('users'))).to eq(
+          'SELECT users.id, users.name FROM users WHERE users.id IN (' \
+          'SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 1 AND customers.user_id IS NOT NULL ' \
+          'UNION ' \
+          'SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 1 AND staff.user_id IS NOT NULL)'
+        )
+      end
+    end
+
+    def sqlite_adapter
+      Exwiw::Adapter::SqliteAdapter.new(
+        Exwiw::ConnectionConfig.new(
+          adapter: 'sqlite', database_name: 'tmp/test.sqlite3',
+          host: nil, port: nil, user: nil, password: nil
+        ),
+        logger,
+      )
+    end
+  end
 end
