@@ -379,9 +379,10 @@ module Exwiw
         end
 
         # A UnionSubquery wraps several projected Selects; UNION their compiled
-        # forms. Each arm's projected column is cast the same way (cast_to is
-        # derived from the first arm vs the outer column — the arms all reference
-        # the same parent key, so their types are compatible).
+        # forms. cast_to is the union-wide decision (see union_cast_to): when any
+        # arm's column type would clash with the outer column or another arm,
+        # every arm's projected column and the outer key are cast to text so the
+        # UNION and the enclosing IN comparison resolve to one type.
         if subquery.is_a?(Exwiw::QueryAst::UnionSubquery)
           return subquery.queries.map { |q| compile_ast(q, select_cast_to: cast_to) }.join(' UNION ')
         end
@@ -400,13 +401,6 @@ module Exwiw
           q = subquery.query
           col = q.columns.first
           col ? [q.from_table_name, col.name] : [nil, nil]
-        when Exwiw::QueryAst::UnionSubquery
-          # Represent the union by its first arm for cast determination; the arms
-          # all project a foreign key pointing at the same outer column, so their
-          # types are compatible.
-          q = subquery.queries.first
-          col = q&.columns&.first
-          col ? [q.from_table_name, col.name] : [nil, nil]
         when Exwiw::QueryAst::Subquery
           [subquery.table_name, subquery.select_column]
         else
@@ -417,12 +411,34 @@ module Exwiw
       private def subquery_cast_to(subquery, outer_table, outer_column)
         return nil if outer_table.nil? || outer_column.nil?
 
+        # A UNION's arms (and the enclosing IN comparison) must all resolve to
+        # one type, so the cast decision must weigh every arm — not just one, as
+        # a flat Subquery would.
+        return union_cast_to(subquery, outer_table, outer_column) if subquery.is_a?(Exwiw::QueryAst::UnionSubquery)
+
         inner_table, inner_column = subquery_select_target(subquery)
         return nil if inner_table.nil?
 
         outer_type = column_pg_type(outer_table, outer_column)
         inner_type = column_pg_type(inner_table, inner_column)
         types_need_cast?(outer_type, inner_type) ? 'text' : nil
+      end
+
+      # Postgres rejects a UNION (or an `IN`) that mixes incompatible types
+      # (e.g. uuid and varchar). Examining only the first arm is not enough: a
+      # heterogeneous later arm would go uncast and break at execution. So
+      # consider the outer column together with every arm's projected column and,
+      # if ANY pair needs reconciliation, cast them all to text.
+      private def union_cast_to(union, outer_table, outer_column)
+        types = [column_pg_type(outer_table, outer_column)]
+        union.queries.each do |q|
+          col = q.columns.first
+          types << column_pg_type(q.from_table_name, col.name) if col
+        end
+        types.compact!
+
+        needs_cast = types.combination(2).any? { |a, b| types_need_cast?(a, b) }
+        needs_cast ? 'text' : nil
       end
 
       private def escape_value(value)
