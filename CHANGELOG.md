@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **The MongoDB fork-parallel dump (`--parallel-workers`) logs a per-collection extracted-record summary on completion.** The serial path already logs each collection's row count inline, but the parallel path previously emitted only an aggregate (`genuine`/`leaves`/`ref_bt` counts). The leaf and `ref_bt` collections are extracted in forked workers whose counts never reached the parent, so the per-collection numbers were unavailable. Each worker now hands its counts back through the same Marshal-sidecar IPC the consumed-leaf `@state` already uses; the parent merges them with the genuine counts it holds and logs one `name: count` line per collection in processing order (matching the `insert-NNN-` file numbering), plus a `total_records` field on the returned stats. This is purely additive metadata — it does not touch the output files, so the byte-identity guarantee is unchanged.
+
 ## [0.8.5] - 2026-06-25
 
 - **`--parallel-workers=N` parallelizes the MongoDB dump across forked processes (opt-in, byte-identical).** When set with `N≥2` on the mongodb adapter's `export`, exwiw runs an inter-collection fork schedule that decodes whole collections in parallel while preserving each collection's natural row order, so the output files are byte-identical to a serial run (same filenames, same content). Collections are classified into three dependency groups — reference data dumped in full (no `belongs_to`), the scoped DAG reachable to the dump target, and non-reachable reference data — which lets the heavy full-dump collections run concurrently with the scoped pass; only a handful of small `@state` hand-offs cross process boundaries. The win needs real cores: it clears ~2× from 4 workers and saturates there. Requires a dump target and a `fork`-capable runtime (CRuby on POSIX); it falls back to the serial path on JRuby/TruffleRuby/Windows or when no target is given. Also settable as `parallel_workers:` in the config file. The default remains the serial dump.

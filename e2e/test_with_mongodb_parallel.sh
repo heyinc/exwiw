@@ -68,6 +68,19 @@ if ! grep -q "MongoDB parallel dump with ${WORKERS} worker(s): genuine=2, leaves
 fi
 echo "✓ fork schedule ran with work in all three phases (genuine=2, leaves=2, ref_bt=2)"
 
+# 3b) Assert the per-collection extracted-record summary was logged with the
+# counts collected back from EVERY phase (genuine in the parent, the leaf pool
+# fork, and the ref_bt component fork). The seed is deterministic, so the counts
+# are fixed: shops/products are genuine, brands/regions are leaves, and
+# region_settings/region_locales are the Phase-3 ref_bt component.
+for expected in "shops: 1" "products: 2" "brands: 3" "regions: 2" "region_settings: 2" "region_locales: 3"; do
+  if ! grep -qF "$expected" <<<"$PARALLEL_LOG"; then
+    echo "✗ per-collection summary missing or wrong: expected a '$expected' line"
+    exit 1
+  fi
+done
+echo "✓ per-collection extracted-record summary logged with counts from all phases"
+
 # 4) Byte-identity: the core guarantee of --parallel-workers.
 if diff -r "$SERIAL_DIR" "$PARALLEL_DIR"; then
   echo "✓ parallel output is byte-identical to serial"
