@@ -195,6 +195,43 @@ module Exwiw
       end
     end
 
+    describe '--parallel-workers validation' do
+      def run_cli(argv)
+        CLI.new(argv).run
+      end
+
+      it 'parses --parallel-workers into the ivar for the mongodb adapter' do
+        cli = CLI.new(['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                       '--schema-dir=e2e/mongodb-schema', '--target-collection=users', '--ids=1',
+                       '--parallel-workers=4'])
+        cli.send(:validate_options!)
+        expect(cli.instance_variable_get(:@parallel_workers)).to eq(4)
+      end
+
+      it 'rejects --parallel-workers for non-mongodb adapters' do
+        argv = ['--adapter=sqlite', '--database=tmp/test.sqlite3', '--schema-dir=e2e/sqlite-schema',
+                '--target-table=users', '--ids=1', '--parallel-workers=4']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--parallel-workers is only supported by the mongodb adapter/).to_stderr
+      end
+
+      it 'rejects a non-positive --parallel-workers' do
+        argv = ['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                '--schema-dir=e2e/mongodb-schema', '--target-collection=users', '--ids=1',
+                '--parallel-workers=0']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--parallel-workers must be a positive integer/).to_stderr
+      end
+
+      it 'rejects --parallel-workers in the explain subcommand' do
+        argv = ['explain', '--adapter=sqlite', '--database=tmp/test.sqlite3',
+                '--schema-dir=e2e/sqlite-schema', '--target-table=users', '--ids=1',
+                '--parallel-workers=4']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--parallel-workers is only supported by the mongodb adapter/).to_stderr
+      end
+    end
+
     describe 'output dir clear confirmation' do
       around do |example|
         Dir.mktmpdir do |dir|

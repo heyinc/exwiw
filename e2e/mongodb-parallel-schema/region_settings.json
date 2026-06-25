@@ -1,0 +1,15 @@
+{
+  "name": "region_settings",
+  "primary_key": "_id",
+  "belongs_tos": [{
+    "table_name": "regions",
+    "foreign_key": "region_id"
+  }],
+  "fields": [{
+    "name": "_id"
+  }, {
+    "name": "region_id"
+  }, {
+    "name": "currency"
+  }]
+}

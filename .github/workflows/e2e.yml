@@ -185,3 +185,6 @@ jobs:
 
       - name: Run exwiw (--ids-field target)
         run: e2e/test_with_mongodb_ids_field.sh
+
+      - name: Run exwiw (--parallel-workers, 3-phase, byte-identical to serial)
+        run: e2e/test_with_mongodb_parallel.sh

@@ -1,0 +1,20 @@
+{
+  "name": "products",
+  "primary_key": "_id",
+  "belongs_tos": [{
+    "table_name": "shops",
+    "foreign_key": "shop_id"
+  }, {
+    "table_name": "brands",
+    "foreign_key": "brand_id"
+  }],
+  "fields": [{
+    "name": "_id"
+  }, {
+    "name": "shop_id"
+  }, {
+    "name": "brand_id"
+  }, {
+    "name": "name"
+  }]
+}

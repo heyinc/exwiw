@@ -134,13 +134,24 @@ bounded by chunk size, and `N×` that stays well under the 7 GiB container limit
 
 ## Status
 
-This is a **measured, byte-identical proof** (bench prototype, not yet integrated
-into the Runner/CLI). Integrating it means re-introducing process orchestration
-and `@state` sidecar IPC — the machinery `optimization-notes.md` deliberately
-removed as over-engineered for a flag. It is recorded here because, unlike that
-removed work, this schedule is (a) byte-identical by construction, (b) measured
-past the 2× target on a real extraction, and (c) the lever the task explicitly
-invited (scale the task to go faster). A production version would gate it behind a
-worker-count option, fall back to serial where `fork` is unavailable
-(Windows/JRuby), and reuse the existing genuine-anchor classification to derive
-the three groups.
+**Integrated and shipped behind an opt-in flag.** The schedule lives in
+`Exwiw::MongodbParallelPlan` (the static, DB-free classification) and
+`Exwiw::MongodbParallelDumper` (the fork orchestrator: per-group pools, LPT
+bin-packing, the `@state` Marshal-sidecar IPC, and the Phase-2 cascade). The
+`Runner` delegates the whole schema+inserts pass to the dumper when the mongodb
+adapter is used with `--parallel-workers=N` (N≥2), a genuine-anchor dump target is
+present, and the runtime can `fork`; otherwise it runs the serial loop unchanged.
+The CLI exposes `--parallel-workers` / config-file `parallel_workers` (mongodb +
+`export` only). The after-insert hook runs identically on both paths.
+
+End-to-end verification through the real `exwiw export` CLI on the same staging
+restore: **189/189 output files byte-identical** to the serial CLI run (same
+filenames, 0 content mismatches), at **2.19× wall-clock** (serial 7.13 s → N=4
+3.25 s; N=2 3.99 s = 1.81×; N=6 saturates at 3.25 s). Per the curve above the win
+materializes from ~4 real cores.
+
+This was the machinery `optimization-notes.md` deliberately removed as
+over-engineered for a flag — re-introduced here because, unlike that removed work,
+this schedule is byte-identical by construction, measured past the 2× target on a
+real extraction, and the lever the task explicitly invited (scale the task to go
+faster). It is **strictly opt-in**: the default remains the serial path.

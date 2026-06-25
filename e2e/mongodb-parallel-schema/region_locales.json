@@ -1,0 +1,15 @@
+{
+  "name": "region_locales",
+  "primary_key": "_id",
+  "belongs_tos": [{
+    "table_name": "region_settings",
+    "foreign_key": "region_setting_id"
+  }],
+  "fields": [{
+    "name": "_id"
+  }, {
+    "name": "region_setting_id"
+  }, {
+    "name": "locale"
+  }]
+}

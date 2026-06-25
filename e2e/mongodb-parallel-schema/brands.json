@@ -1,0 +1,10 @@
+{
+  "name": "brands",
+  "primary_key": "_id",
+  "belongs_tos": [],
+  "fields": [{
+    "name": "_id"
+  }, {
+    "name": "name"
+  }]
+}
