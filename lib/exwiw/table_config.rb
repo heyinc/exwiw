@@ -39,6 +39,14 @@ module Exwiw
     attribute :scope_exempt, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
     attribute :scope_column, optional(String), skip_serializing_if_nil: true
 
+    # `reverse_scope` opts a table into multi-referencer reverse scoping (see
+    # Exwiw::ReverseScope and QueryAstBuilder#build_referenced_by_clause): a
+    # global-identity table (e.g. `users`) referenced by many scoped tables is
+    # constrained to the UNION of those referencers' projected foreign keys
+    # instead of being dumped in full. User-configured and never emitted by the
+    # schema generators.
+    attribute :reverse_scope, Serdes::OptionalType.new(ReverseScope), skip_serializing_if_nil: true
+
     def self.from(hash)
       config = super
       config.send(:validate_after_load!)
@@ -58,6 +66,7 @@ module Exwiw
       if rails_managed?
         hash.delete("belongs_tos")
         hash.delete("columns")
+        hash.delete("reverse_scope")
       end
       hash
     end
@@ -152,6 +161,7 @@ module Exwiw
         # User-owned, never regenerated: carry over from the existing config.
         merged_table.scope_exempt = scope_exempt
         merged_table.scope_column = scope_column
+        merged_table.reverse_scope = reverse_scope
 
         # Structural facts of each belongs_to come from the freshly generated
         # config, but the user-owned `comment`/`ignore`/`ignore_type`/`references`
@@ -198,6 +208,10 @@ module Exwiw
         if !columns.empty?
           raise ArgumentError,
                 "Table '#{name}' has type=#{type}; columns must not be defined."
+        end
+        if reverse_scope
+          raise ArgumentError,
+                "Table '#{name}' has type=#{type}; reverse_scope must not be defined."
         end
       else
         # An ignore:true table is not extracted, so primary_key is not required

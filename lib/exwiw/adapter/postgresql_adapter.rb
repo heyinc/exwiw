@@ -301,9 +301,16 @@ module Exwiw
       def compile_ast(query_ast, select_cast_to: nil)
         raise NotImplementedError unless query_ast.is_a?(Exwiw::QueryAst::Select)
 
+        # Lift scope id-set clauses (reverse_scope UNION / forward cascade /
+        # single referenced_by) out of `WHERE <col> IN (subquery)` and into a
+        # JOIN against a materialized derived table. See #compile_scope_join.
+        scope_clauses, plain_where_clauses = partition_scope_clauses(query_ast.where_clauses)
+
         sql = "SELECT "
         sql += if query_ast.select_all
-                 "*"
+                 # A lifted scope JOIN brings a derived table into FROM, so a bare
+                 # `*` would also project its column. Qualify to this table's own.
+                 scope_clauses.any? ? "#{query_ast.from_table_name}.*" : "*"
                else
                  cols = query_ast.columns.map { |col| compile_column_name(query_ast, col) }
                  cols = cols.map { |c| "#{c}::#{select_cast_to}" } if select_cast_to
@@ -337,12 +344,43 @@ module Exwiw
           end
         end
 
-        if query_ast.where_clauses.any?
+        scope_clauses.each_with_index do |where_clause, idx|
+          sql += " #{compile_scope_join(query_ast.from_table_name, where_clause, idx)}"
+        end
+
+        if plain_where_clauses.any?
           sql += " WHERE "
-          sql += query_ast.where_clauses.map { |where| compile_where_condition(where, query_ast.from_table_name) }.join(' AND ')
+          sql += plain_where_clauses.map { |where| compile_where_condition(where, query_ast.from_table_name) }.join(' AND ')
         end
 
         sql
+      end
+
+      # Render a scope id-set clause as a JOIN to a materialized derived table
+      # (see MysqlAdapter#compile_scope_join for the full rationale). The DISTINCT
+      # forces the engine to materialize the id-set once and probe this table by
+      # it, instead of full-scanning and re-evaluating a correlated subquery per
+      # row; it also dedups, so the join is row-for-row identical to
+      # `<col> IN (subquery)`.
+      #
+      # Type reconciliation mirrors the old IN form: when the outer column and
+      # the projected id clash (e.g. uuid vs varchar), #compile_subquery already
+      # casts every arm to text, so the derived `exwiw_scope_id` is text and the
+      # outer key is cast to match.
+      private def compile_scope_join(from_table_name, where_clause, idx)
+        subquery = where_clause.value
+        projection = subquery_projection_name(subquery)
+        src_alias = "exwiw_scope_src_#{idx}"
+        ids_alias = "exwiw_scope_ids_#{idx}"
+
+        inner_sql = compile_subquery(subquery, outer_table: from_table_name, outer_column: where_clause.column_name)
+        cast_to = subquery_cast_to(subquery, from_table_name, where_clause.column_name)
+        outer_key = "#{from_table_name}.#{where_clause.column_name}"
+        outer_key = "#{outer_key}::#{cast_to}" if cast_to
+
+        "JOIN (SELECT DISTINCT #{src_alias}.#{projection} AS exwiw_scope_id " \
+          "FROM (#{inner_sql}) AS #{src_alias}) AS #{ids_alias} " \
+          "ON #{outer_key} = #{ids_alias}.exwiw_scope_id"
       end
 
       private def compile_where_condition(where_clause, table_name)
@@ -364,6 +402,8 @@ module Exwiw
           cast_to = subquery_cast_to(where_clause.value, table_name, where_clause.column_name)
           outer_key = cast_to ? "#{key}::#{cast_to}" : key
           "#{outer_key} IN (#{subquery_sql})"
+        elsif where_clause.operator == :not_null
+          "#{key} IS NOT NULL"
         else
           raise "Unsupported operator: #{where_clause.operator}"
         end
@@ -374,6 +414,15 @@ module Exwiw
 
         if subquery.is_a?(Exwiw::QueryAst::SelectSubquery)
           return compile_ast(subquery.query, select_cast_to: cast_to)
+        end
+
+        # A UnionSubquery wraps several projected Selects; UNION their compiled
+        # forms. cast_to is the union-wide decision (see union_cast_to): when any
+        # arm's column type would clash with the outer column or another arm,
+        # every arm's projected column and the outer key are cast to text so the
+        # UNION and the enclosing IN comparison resolve to one type.
+        if subquery.is_a?(Exwiw::QueryAst::UnionSubquery)
+          return subquery.queries.map { |q| compile_ast(q, select_cast_to: cast_to) }.join(' UNION ')
         end
 
         inner_values = subquery.where_values.map { |v| escape_value(v) }
@@ -400,12 +449,34 @@ module Exwiw
       private def subquery_cast_to(subquery, outer_table, outer_column)
         return nil if outer_table.nil? || outer_column.nil?
 
+        # A UNION's arms (and the enclosing IN comparison) must all resolve to
+        # one type, so the cast decision must weigh every arm — not just one, as
+        # a flat Subquery would.
+        return union_cast_to(subquery, outer_table, outer_column) if subquery.is_a?(Exwiw::QueryAst::UnionSubquery)
+
         inner_table, inner_column = subquery_select_target(subquery)
         return nil if inner_table.nil?
 
         outer_type = column_pg_type(outer_table, outer_column)
         inner_type = column_pg_type(inner_table, inner_column)
         types_need_cast?(outer_type, inner_type) ? 'text' : nil
+      end
+
+      # Postgres rejects a UNION (or an `IN`) that mixes incompatible types
+      # (e.g. uuid and varchar). Examining only the first arm is not enough: a
+      # heterogeneous later arm would go uncast and break at execution. So
+      # consider the outer column together with every arm's projected column and,
+      # if ANY pair needs reconciliation, cast them all to text.
+      private def union_cast_to(union, outer_table, outer_column)
+        types = [column_pg_type(outer_table, outer_column)]
+        union.queries.each do |q|
+          col = q.columns.first
+          types << column_pg_type(q.from_table_name, col.name) if col
+        end
+        types.compact!
+
+        needs_cast = types.combination(2).any? { |a, b| types_need_cast?(a, b) }
+        needs_cast ? 'text' : nil
       end
 
       private def escape_value(value)

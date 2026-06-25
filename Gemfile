@@ -18,4 +18,8 @@ gem "mongoid"
 
 gem "activerecord"
 
+# Exercises the non-ActiveRecord belongs_to target path (a master with no DB
+# table) in schema_generator_non_active_record_belongs_to_spec.
+gem "active_hash", group: :test
+
 gem "trilogy", group: :test

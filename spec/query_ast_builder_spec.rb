@@ -464,7 +464,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
         ])
       end
 
-      it 'compiles to a nested IN-subquery SELECT for SQLite' do
+      it 'compiles to a materialized derived-table JOIN for SQLite' do
         adapter = Exwiw::Adapter::SqliteAdapter.new(
           Exwiw::ConnectionConfig.new(
             adapter: 'sqlite', database_name: 'tmp/test.sqlite3',
@@ -474,11 +474,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
         )
 
         expect(adapter.compile_ast(built_query_ast)).to eq(
-          'SELECT active_storage_blobs.id, active_storage_blobs.key, active_storage_blobs.filename ' \
-          'FROM active_storage_blobs ' \
-          'WHERE active_storage_blobs.id IN (' \
-          'SELECT active_storage_attachments.blob_id FROM active_storage_attachments ' \
-          "WHERE active_storage_attachments.record_id = 1 AND active_storage_attachments.record_type = 'AsUser')"
+          "SELECT active_storage_blobs.id, active_storage_blobs.key, active_storage_blobs.filename FROM active_storage_blobs JOIN (SELECT DISTINCT exwiw_scope_src_0.blob_id AS exwiw_scope_id FROM (SELECT active_storage_attachments.blob_id FROM active_storage_attachments WHERE active_storage_attachments.record_id = 1 AND active_storage_attachments.record_type = 'AsUser') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON active_storage_blobs.id = exwiw_scope_ids_0.exwiw_scope_id"
         )
       end
 
@@ -763,12 +759,9 @@ RSpec.describe Exwiw::QueryAstBuilder do
         ])
       end
 
-      it 'compiles to a nested IN-subquery (sqlite)' do
+      it 'compiles to nested materialized derived-table JOINs (sqlite)' do
         expect(sqlite_adapter.compile_ast(build('account_details'))).to eq(
-          'SELECT account_details.id, account_details.account_id, account_details.secret FROM account_details ' \
-          'WHERE account_details.account_id IN (' \
-          'SELECT accounts.id FROM accounts WHERE accounts.id IN (' \
-          "SELECT customers.account_id FROM customers WHERE customers.tenant_id = 't1'))"
+          "SELECT account_details.id, account_details.account_id, account_details.secret FROM account_details JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (SELECT accounts.id FROM accounts JOIN (SELECT DISTINCT exwiw_scope_src_0.account_id AS exwiw_scope_id FROM (SELECT customers.account_id FROM customers WHERE customers.tenant_id = 't1') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON accounts.id = exwiw_scope_ids_0.exwiw_scope_id) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON account_details.account_id = exwiw_scope_ids_0.exwiw_scope_id"
         )
       end
 
@@ -837,6 +830,439 @@ RSpec.describe Exwiw::QueryAstBuilder do
         # orders carries a tenant_id column but does not *declare* scope_column.
         target_mode = Exwiw::DumpTarget.new(table_name: 'orders', ids: ['1'])
         expect(described_class.scope_mode?(table_by_name, target_mode)).to eq(false)
+      end
+    end
+
+    def sqlite_adapter
+      Exwiw::Adapter::SqliteAdapter.new(
+        Exwiw::ConnectionConfig.new(
+          adapter: 'sqlite', database_name: 'tmp/test.sqlite3',
+          host: nil, port: nil, user: nil, password: nil
+        ),
+        logger,
+      )
+    end
+  end
+
+  describe 'multi-referencer reverse scope (reverse_scope.via)' do
+    # A global-identity table (`users`) that carries no scope column and has no
+    # belongs_to of its own is referenced by several scoped tables. With two or
+    # more referencers the automatic single-referencer reverse extraction bails
+    # to a full dump; `reverse_scope.via` instead UNIONs each referencer's
+    # scoped query into the id set `users` is constrained to.
+    let(:log_output) { StringIO.new }
+    let(:logger) { Logger.new(log_output) }
+    let(:dump_target) { Exwiw::DumpTarget.new(ids: ['be1'], scope_column: 'business_entity_id') }
+
+    let(:users) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'users', primary_key: 'id', belongs_tos: [],
+        reverse_scope: { via: reverse_scope_via },
+        columns: [{ name: 'id' }, { name: 'name' }]
+      )
+    end
+    let(:reverse_scope_via) do
+      [
+        { table: 'customers', column: 'user_id' },
+        { table: 'staff', column: 'user_id' },
+      ]
+    end
+    # Two directly-scoped referencers that point at users via a non-default and
+    # a default foreign key respectively.
+    let(:customers) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'customers', primary_key: 'id',
+        belongs_tos: [{ table_name: 'users', foreign_key: 'user_id' }],
+        columns: [{ name: 'id' }, { name: 'business_entity_id' }, { name: 'user_id' }]
+      )
+    end
+    let(:staff) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'staff', primary_key: 'id',
+        belongs_tos: [{ table_name: 'users', foreign_key: 'user_id' }],
+        columns: [{ name: 'id' }, { name: 'business_entity_id' }, { name: 'user_id' }]
+      )
+    end
+    # A satellite whose own primary key references users.id (end_users.id ==
+    # users.id): it carries no scope column and needs NO reverse_scope of its
+    # own — it tightens to the kept users via the via_scoped_parent cascade.
+    let(:end_users) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'end_users', primary_key: 'id',
+        belongs_tos: [{ table_name: 'users', foreign_key: 'id' }],
+        columns: [{ name: 'id' }, { name: 'nickname' }]
+      )
+    end
+    let(:schema_migrations) do
+      Exwiw::TableConfig.from_symbol_keys(name: 'schema_migrations', type: 'rails_managed_schema_migrations')
+    end
+    let(:all_tables) { [users, customers, staff, end_users, schema_migrations] }
+    let(:table_by_name) { all_tables.each_with_object({}) { |t, h| h[t.name] = t } }
+
+    def build(name)
+      described_class.run(name, table_by_name, dump_target, logger)
+    end
+
+    it 'constrains users to the UNION of every via referencer, excluding NULLs' do
+      ast = build('users')
+      expect(ast.from_table_name).to eq('users')
+      expect(ast.join_clauses).to eq([])
+      expect(ast.where_clauses.map(&:to_h)).to eq([
+        {
+          column_name: 'id',
+          operator: :in_subquery,
+          value: {
+            union: [
+              {
+                from: 'customers',
+                columns: [{ name: 'user_id', value: 'user_id' }],
+                joins: [],
+                where: [
+                  { column_name: 'business_entity_id', operator: :eq, value: ['be1'] },
+                  { column_name: 'user_id', operator: :not_null, value: nil },
+                ],
+              },
+              {
+                from: 'staff',
+                columns: [{ name: 'user_id', value: 'user_id' }],
+                joins: [],
+                where: [
+                  { column_name: 'business_entity_id', operator: :eq, value: ['be1'] },
+                  { column_name: 'user_id', operator: :not_null, value: nil },
+                ],
+              },
+            ],
+          },
+        },
+      ])
+    end
+
+    it 'materializes the UNION id-set as a derived-table JOIN (sqlite)' do
+      expect(sqlite_adapter.compile_ast(build('users'))).to eq(
+        "SELECT users.id, users.name FROM users JOIN (SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id FROM (SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 'be1' AND customers.user_id IS NOT NULL UNION SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 'be1' AND staff.user_id IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON users.id = exwiw_scope_ids_0.exwiw_scope_id"
+      )
+    end
+
+    it 'classifies users as :referenced_by and passes validate_scope!' do
+      expect(described_class.scope_category('users', table_by_name, dump_target, logger)).to eq(:referenced_by)
+      expect {
+        described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+      }.not_to raise_error
+    end
+
+    it 'cascades to a satellite that belongs_to users, with no config of its own' do
+      expect(sqlite_adapter.compile_ast(build('end_users'))).to eq(
+        "SELECT end_users.id, end_users.nickname FROM end_users JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (SELECT users.id FROM users JOIN (SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id FROM (SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 'be1' AND customers.user_id IS NOT NULL UNION SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 'be1' AND staff.user_id IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON users.id = exwiw_scope_ids_0.exwiw_scope_id) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON end_users.id = exwiw_scope_ids_0.exwiw_scope_id"
+      )
+    end
+
+    context 'when a via arm references an unknown table' do
+      let(:reverse_scope_via) do
+        [
+          { table: 'customers', column: 'user_id' },
+          { table: 'ghosts', column: 'user_id' },
+        ]
+      end
+
+      it 'skips the unknown arm with a warning and unions the rest' do
+        expect(sqlite_adapter.compile_ast(build('users'))).to eq(
+          "SELECT users.id, users.name FROM users JOIN (SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id FROM (SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 'be1' AND customers.user_id IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON users.id = exwiw_scope_ids_0.exwiw_scope_id"
+        )
+        expect(log_output.string).to include("references unknown table 'ghosts'")
+      end
+    end
+
+    context 'when a via arm references a table that is not scoped (would union all rows back)' do
+      # `audit_logs` is scope_exempt (intentional full dump), so its scoped query
+      # is unconstrained — including it would project every user_id and defeat
+      # the prune. The arm must be dropped, not silently widen the dump.
+      let(:audit_logs) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'audit_logs', primary_key: 'id', scope_exempt: true, belongs_tos: [],
+          columns: [{ name: 'id' }, { name: 'user_id' }]
+        )
+      end
+      let(:all_tables) { [users, customers, staff, end_users, audit_logs, schema_migrations] }
+      let(:reverse_scope_via) do
+        [
+          { table: 'customers', column: 'user_id' },
+          { table: 'audit_logs', column: 'user_id' },
+        ]
+      end
+
+      it 'skips the unconstrained arm with a warning and unions the rest' do
+        expect(sqlite_adapter.compile_ast(build('users'))).to eq(
+          "SELECT users.id, users.name FROM users JOIN (SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id FROM (SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 'be1' AND customers.user_id IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON users.id = exwiw_scope_ids_0.exwiw_scope_id"
+        )
+        expect(log_output.string).to include("arm 'audit_logs.user_id' is not scoped")
+      end
+    end
+
+    context 'when every via arm is dropped' do
+      let(:reverse_scope_via) { [{ table: 'ghosts', column: 'user_id' }] }
+
+      it 'leaves users unscopable so the top-level build raises' do
+        expect { build('users') }.to raise_error(ArgumentError, /cannot be scoped/)
+      end
+    end
+
+    context 'when a via referencer is scoped through a JOIN (via_path)' do
+      # `reservations` carries no scope column; it reaches the scope through
+      # belongs_to shops, which does. The arm must carry that JOIN and apply the
+      # scope filter on the joined ancestor.
+      let(:reverse_scope_via) { [{ table: 'reservations', column: 'user_id' }] }
+      let(:reservations) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'reservations', primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'shops', foreign_key: 'shop_id' },
+            { table_name: 'users', foreign_key: 'user_id' },
+          ],
+          columns: [{ name: 'id' }, { name: 'shop_id' }, { name: 'user_id' }]
+        )
+      end
+      let(:shops) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'shops', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }, { name: 'business_entity_id' }]
+        )
+      end
+      let(:all_tables) { [users, reservations, shops, schema_migrations] }
+
+      it 'projects the arm with its JOIN to the scoped ancestor' do
+        expect(sqlite_adapter.compile_ast(build('users'))).to eq(
+          "SELECT users.id, users.name FROM users JOIN (SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id FROM (SELECT reservations.user_id FROM reservations JOIN shops ON reservations.shop_id = shops.id AND shops.business_entity_id = 'be1' WHERE reservations.user_id IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON users.id = exwiw_scope_ids_0.exwiw_scope_id"
+        )
+      end
+    end
+
+    context 'when a via referencer carries a filter' do
+      # The referencer's own filter (e.g. a soft-delete guard) rides along in the
+      # arm, with the appended IS NOT NULL last.
+      let(:reverse_scope_via) { [{ table: 'customers', column: 'user_id' }] }
+      let(:customers) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'customers', primary_key: 'id', filter: 'customers.deleted_at IS NULL',
+          belongs_tos: [{ table_name: 'users', foreign_key: 'user_id' }],
+          columns: [{ name: 'id' }, { name: 'business_entity_id' }, { name: 'user_id' }]
+        )
+      end
+      let(:all_tables) { [users, customers, schema_migrations] }
+
+      it 'keeps the referencer filter, with IS NOT NULL appended last' do
+        expect(sqlite_adapter.compile_ast(build('users'))).to eq(
+          "SELECT users.id, users.name FROM users JOIN (SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id FROM (SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 'be1' AND customers.deleted_at IS NULL AND customers.user_id IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON users.id = exwiw_scope_ids_0.exwiw_scope_id"
+        )
+      end
+    end
+
+    context 'in single-target mode' do
+      # reverse_scope also works when anchoring on a named target rather than a
+      # scope column: each arm reuses the referencer's target-scoped query.
+      let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'business_entities', ids: [1]) }
+      let(:customers) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'customers', primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'users', foreign_key: 'user_id' },
+            { table_name: 'business_entities', foreign_key: 'business_entity_id' },
+          ],
+          columns: [{ name: 'id' }, { name: 'business_entity_id' }, { name: 'user_id' }]
+        )
+      end
+      let(:staff) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'staff', primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'users', foreign_key: 'user_id' },
+            { table_name: 'business_entities', foreign_key: 'business_entity_id' },
+          ],
+          columns: [{ name: 'id' }, { name: 'business_entity_id' }, { name: 'user_id' }]
+        )
+      end
+      let(:business_entities) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'business_entities', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }, { name: 'name' }]
+        )
+      end
+      let(:all_tables) { [users, customers, staff, business_entities] }
+
+      it 'unions each referencer constrained by the foreign key to the target' do
+        expect(sqlite_adapter.compile_ast(build('users'))).to eq(
+          "SELECT users.id, users.name FROM users JOIN (SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id FROM (SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 1 AND customers.user_id IS NOT NULL UNION SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 1 AND staff.user_id IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON users.id = exwiw_scope_ids_0.exwiw_scope_id"
+        )
+      end
+    end
+
+    def sqlite_adapter
+      Exwiw::Adapter::SqliteAdapter.new(
+        Exwiw::ConnectionConfig.new(
+          adapter: 'sqlite', database_name: 'tmp/test.sqlite3',
+          host: nil, port: nil, user: nil, password: nil
+        ),
+        logger,
+      )
+    end
+  end
+
+  describe 'multi-hop forward scope cascade (via_scoped_parent)' do
+    # `companies` carries no scope column and has no belongs_to of its own; it is
+    # scoped via reverse_scope (the scoped `memberships` point at it). Three
+    # tables then hang off it through a chain of belongs_to hops:
+    #
+    #   companies (reverse_scope) <- teams <- projects <- tasks
+    #
+    # Each link is scoped by constraining it to its parent's in-scope ids, and
+    # the parent is itself scoped the same way — so the rescue must recurse the
+    # whole chain rather than dying after a single forward hop.
+    let(:logger) { Logger.new(nil) }
+    let(:dump_target) { Exwiw::DumpTarget.new(ids: ['t1'], scope_column: 'tenant_id') }
+
+    let(:companies) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'companies', primary_key: 'id', belongs_tos: [],
+        reverse_scope: { via: [{ table: 'memberships', column: 'company_id' }] },
+        columns: [{ name: 'id' }, { name: 'name' }]
+      )
+    end
+    let(:memberships) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'memberships', primary_key: 'id',
+        belongs_tos: [{ table_name: 'companies', foreign_key: 'company_id' }],
+        columns: [{ name: 'id' }, { name: 'company_id' }, { name: 'tenant_id' }]
+      )
+    end
+    let(:teams) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'teams', primary_key: 'id',
+        belongs_tos: [{ table_name: 'companies', foreign_key: 'company_id' }],
+        columns: [{ name: 'id' }, { name: 'company_id' }, { name: 'label' }]
+      )
+    end
+    let(:projects) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'projects', primary_key: 'id',
+        belongs_tos: [{ table_name: 'teams', foreign_key: 'team_id' }],
+        columns: [{ name: 'id' }, { name: 'team_id' }, { name: 'name' }]
+      )
+    end
+    let(:tasks) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'tasks', primary_key: 'id',
+        belongs_tos: [{ table_name: 'projects', foreign_key: 'project_id' }],
+        columns: [{ name: 'id' }, { name: 'project_id' }, { name: 'title' }]
+      )
+    end
+    let(:schema_migrations) do
+      Exwiw::TableConfig.from_symbol_keys(name: 'schema_migrations', type: 'rails_managed_schema_migrations')
+    end
+
+    let(:all_tables) { [companies, memberships, teams, projects, tasks, schema_migrations] }
+    let(:table_by_name) { all_tables.each_with_object({}) { |t, h| h[t.name] = t } }
+
+    def build(name)
+      described_class.run(name, table_by_name, dump_target, logger)
+    end
+
+    it 'classifies every hop below the reverse-scoped table as :via_scoped_parent' do
+      expect(described_class.scope_category('companies', table_by_name, dump_target, logger)).to eq(:referenced_by)
+      expect(described_class.scope_category('teams', table_by_name, dump_target, logger)).to eq(:via_scoped_parent)
+      expect(described_class.scope_category('projects', table_by_name, dump_target, logger)).to eq(:via_scoped_parent)
+      expect(described_class.scope_category('tasks', table_by_name, dump_target, logger)).to eq(:via_scoped_parent)
+    end
+
+    it 'no longer leaves the deep hops unscopable, so validate_scope! passes' do
+      expect {
+        described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+      }.not_to raise_error
+    end
+
+    it 'nests the second hop one level below the reverse_scope UNION (sqlite)' do
+      expect(sqlite_adapter.compile_ast(build('projects'))).to eq(
+        "SELECT projects.id, projects.team_id, projects.name FROM projects JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (SELECT teams.id FROM teams JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (SELECT companies.id FROM companies JOIN (SELECT DISTINCT exwiw_scope_src_0.company_id AS exwiw_scope_id FROM (SELECT memberships.company_id FROM memberships WHERE memberships.tenant_id = 't1' AND memberships.company_id IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON companies.id = exwiw_scope_ids_0.exwiw_scope_id) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON teams.company_id = exwiw_scope_ids_0.exwiw_scope_id) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON projects.team_id = exwiw_scope_ids_0.exwiw_scope_id"
+      )
+    end
+
+    it 'nests every hop for the deepest table (sqlite)' do
+      expect(sqlite_adapter.compile_ast(build('tasks'))).to eq(
+        "SELECT tasks.id, tasks.project_id, tasks.title FROM tasks JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (SELECT projects.id FROM projects JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (SELECT teams.id FROM teams JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (SELECT companies.id FROM companies JOIN (SELECT DISTINCT exwiw_scope_src_0.company_id AS exwiw_scope_id FROM (SELECT memberships.company_id FROM memberships WHERE memberships.tenant_id = 't1' AND memberships.company_id IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON companies.id = exwiw_scope_ids_0.exwiw_scope_id) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON teams.company_id = exwiw_scope_ids_0.exwiw_scope_id) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON projects.team_id = exwiw_scope_ids_0.exwiw_scope_id) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON tasks.project_id = exwiw_scope_ids_0.exwiw_scope_id"
+      )
+    end
+
+    context 'a belongs_to cycle (a -> b -> a) with no other scope' do
+      # Neither table carries a scope column, reverse_scope, or a path to one;
+      # they only point at each other. The cascade must terminate on the cycle
+      # rather than recursing forever.
+      let(:node_x) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'node_x', primary_key: 'id',
+          belongs_tos: [{ table_name: 'node_y', foreign_key: 'y_id' }],
+          columns: [{ name: 'id' }, { name: 'y_id' }]
+        )
+      end
+      let(:node_y) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'node_y', primary_key: 'id',
+          belongs_tos: [{ table_name: 'node_x', foreign_key: 'x_id' }],
+          columns: [{ name: 'id' }, { name: 'x_id' }]
+        )
+      end
+      let(:all_tables) { [node_x, node_y, schema_migrations] }
+
+      it 'classifies both members :unscopable without looping' do
+        expect(described_class.scope_category('node_x', table_by_name, dump_target, logger)).to eq(:unscopable)
+        expect(described_class.scope_category('node_y', table_by_name, dump_target, logger)).to eq(:unscopable)
+      end
+    end
+
+    context 'a table with two scopable belongs_to parents' do
+      # Each hub is scoped via its own reverse_scope (so neither is directly
+      # scoped and via_path cannot terminate on it), and `child` belongs_to both.
+      # The forward rescue only supports a single unambiguous parent, so it bails
+      # rather than guessing which parent's ids to constrain on.
+      let(:hub_a) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'hub_a', primary_key: 'id', belongs_tos: [],
+          reverse_scope: { via: [{ table: 'ref_a', column: 'hub_a_id' }] },
+          columns: [{ name: 'id' }]
+        )
+      end
+      let(:ref_a) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'ref_a', primary_key: 'id',
+          belongs_tos: [{ table_name: 'hub_a', foreign_key: 'hub_a_id' }],
+          columns: [{ name: 'id' }, { name: 'hub_a_id' }, { name: 'tenant_id' }]
+        )
+      end
+      let(:hub_b) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'hub_b', primary_key: 'id', belongs_tos: [],
+          reverse_scope: { via: [{ table: 'ref_b', column: 'hub_b_id' }] },
+          columns: [{ name: 'id' }]
+        )
+      end
+      let(:ref_b) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'ref_b', primary_key: 'id',
+          belongs_tos: [{ table_name: 'hub_b', foreign_key: 'hub_b_id' }],
+          columns: [{ name: 'id' }, { name: 'hub_b_id' }, { name: 'tenant_id' }]
+        )
+      end
+      let(:child) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'child', primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'hub_a', foreign_key: 'hub_a_id' },
+            { table_name: 'hub_b', foreign_key: 'hub_b_id' },
+          ],
+          columns: [{ name: 'id' }, { name: 'hub_a_id' }, { name: 'hub_b_id' }]
+        )
+      end
+      let(:all_tables) { [hub_a, ref_a, hub_b, ref_b, child, schema_migrations] }
+
+      it 'stays :unscopable rather than picking an ambiguous parent' do
+        expect(described_class.scope_category('child', table_by_name, dump_target, logger)).to eq(:unscopable)
       end
     end
 

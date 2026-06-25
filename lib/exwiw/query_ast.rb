@@ -41,7 +41,7 @@ module Exwiw
         {
           column_name: column_name,
           operator: operator,
-          value: value.is_a?(Subquery) || value.is_a?(SelectSubquery) ? value.to_h : value,
+          value: value.is_a?(Subquery) || value.is_a?(SelectSubquery) || value.is_a?(UnionSubquery) ? value.to_h : value,
         }
       end
     end
@@ -80,6 +80,25 @@ module Exwiw
     SelectSubquery = Struct.new(:query, keyword_init: true) do
       def to_h
         { query: query.to_h }
+      end
+    end
+
+    # A subquery that UNIONs several single-column `Select`s into one id set.
+    # Used by *multi-referencer* reverse / "referenced_by" extraction
+    # (TableConfig#reverse_scope): a parent table referenced by many scoped
+    # tables is constrained to the union of every referencer's projected foreign
+    # key, rather than falling back to dumping every row:
+    #
+    #   <parent>.<pk> IN (
+    #     SELECT <ref1>.<col1> FROM <ref1> WHERE <ref1 scope> AND <col1> IS NOT NULL
+    #     UNION SELECT <ref2>.<col2> FROM <ref2> WHERE <ref2 scope> AND <col2> IS NOT NULL
+    #   )
+    #
+    # Each `queries` element is a `Select` already projected to the foreign-key
+    # column that points at the parent (with a NULL-excluding filter).
+    UnionSubquery = Struct.new(:queries, keyword_init: true) do
+      def to_h
+        { union: queries.map(&:to_h) }
       end
     end
 

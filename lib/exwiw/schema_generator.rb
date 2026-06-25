@@ -291,7 +291,9 @@ module Exwiw
     end
 
     private def aggregate_belongs_tos(models)
-      belongs_to_assocs = models.flat_map { |m| belongs_to_associations_for(m) }
+      belongs_to_assocs = models
+        .flat_map { |m| belongs_to_associations_for(m) }
+        .select { |assoc| assoc.polymorphic? || active_record_target?(assoc) }
       owner_db = database_name_for(models.first)
 
       non_polymorphic = belongs_to_assocs
@@ -374,6 +376,31 @@ module Exwiw
 
       left = model.left_reflection
       assocs.reject { |assoc| assoc.equal?(left) }
+    end
+
+    # Whether a (non-polymorphic) belongs_to points at an ActiveRecord model.
+    #
+    # A belongs_to can target a non-ActiveRecord class — most commonly an
+    # ActiveHash/ActiveYaml master (`belongs_to :equipment, class_name:
+    # "SomeActiveYamlModel"`). active_hash registers these as ordinary
+    # `belongs_to` reflections, yet the target class has no database table, so
+    # `assoc.table_name` (which delegates to `klass.table_name`) raises. Such a
+    # relation is not a DB edge exwiw can join or extract across, so it is
+    # dropped from the generated belongs_tos; the underlying foreign-key column
+    # is still emitted as a plain column. Polymorphic associations cannot be
+    # `klass`-resolved, so callers must screen those out before calling this.
+    #
+    # Resolving the target class behaves differently per non-AR shape: an
+    # ActiveHash reflection returns the class fine (the crash is later, at
+    # `table_name`), while a bare `belongs_to` to a plain class makes AR raise
+    # ArgumentError ("... is not an ActiveRecord::Base subclass") right here when
+    # the klass is computed. Both mean "not a DB relation", so rescue the lookup
+    # and treat either as a non-AR target to skip.
+    private def active_record_target?(assoc)
+      klass = assoc.klass
+      klass.is_a?(Class) && klass < ActiveRecord::Base ? true : false
+    rescue StandardError
+      false
     end
 
     # Enumerate the concrete models that can be targets of the polymorphic
