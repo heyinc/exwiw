@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-06-25
+
 - **`--parallel-workers=N` parallelizes the MongoDB dump across forked processes (opt-in, byte-identical).** When set with `N≥2` on the mongodb adapter's `export`, exwiw runs an inter-collection fork schedule that decodes whole collections in parallel while preserving each collection's natural row order, so the output files are byte-identical to a serial run (same filenames, same content). Collections are classified into three dependency groups — reference data dumped in full (no `belongs_to`), the scoped DAG reachable to the dump target, and non-reachable reference data — which lets the heavy full-dump collections run concurrently with the scoped pass; only a handful of small `@state` hand-offs cross process boundaries. The win needs real cores: it clears ~2× from 4 workers and saturates there. Requires a dump target and a `fork`-capable runtime (CRuby on POSIX); it falls back to the serial path on JRuby/TruffleRuby/Windows or when no target is given. Also settable as `parallel_workers:` in the config file. The default remains the serial dump.
 
 ## [0.8.4] - 2026-06-24
