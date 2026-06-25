@@ -41,6 +41,12 @@ module Exwiw
   # fork is required; callers must check {.available?} and fall back to the serial
   # Runner on JRuby/TruffleRuby/Windows.
   class MongodbParallelDumper
+    # Filename prefix for the per-worker record-count sidecars. Distinct from the
+    # consumed-leaf @state sidecars (`<name>.marshal`) so the two never collide in
+    # the shared sidecar dir and the counts can be globbed back independently.
+    COUNTS_SIDECAR_PREFIX = "__exwiw_counts__"
+    private_constant :COUNTS_SIDECAR_PREFIX
+
     # True when the runtime can `fork` (CRuby on a POSIX OS). On JRuby/TruffleRuby
     # and Windows it cannot — the caller must run the serial Runner instead.
     def self.available?
@@ -99,12 +105,16 @@ module Exwiw
 
       FileUtils.mkdir_p(@output_dir)
       parent = build_adapter
+      @counts = {}
 
       Dir.mktmpdir("exwiw-mongo-parallel-") do |sidecar_dir|
         phase1_leaf_and_genuine(parent, sidecar_dir)
         phase2_cascade(parent, sidecar_dir)
         phase3_ref_components(parent, sidecar_dir)
+        collect_counts(sidecar_dir)
       end
+
+      log_count_summary
 
       {
         workers: @workers,
@@ -112,6 +122,7 @@ module Exwiw
         leaves: @plan.leaves.size,
         ref_bt: @plan.ref_bt.size,
         components: @plan.reference_components.map(&:size).sort.reverse,
+        total_records: @counts.values.sum,
       }
     end
 
@@ -175,7 +186,7 @@ module Exwiw
       pids = groups.reject(&:empty?).map do |group|
         members = group.flatten
         seed = leaf_state.slice(*parents_of(members))
-        fork { run_component_worker(group, seed) }
+        fork { run_component_worker(group, seed, sidecar_dir) }
       end
       ok = pids.map { |pid| Process.wait(pid); $?.exitstatus&.zero? }.all?
       raise "exwiw parallel ref_bt pool failed" unless ok
@@ -204,25 +215,29 @@ module Exwiw
 
     def run_leaf_worker(group, sidecar_dir)
       adapter = build_adapter
-      group.each { |name| process_collection(adapter, name) }
+      counts = {}
+      group.each { |name| counts[name] = process_collection(adapter, name) }
       group.each do |name|
         next unless @plan.consumed_leaves.include?(name)
         next unless adapter.state.key?(name)
 
         File.binwrite(File.join(sidecar_dir, "#{name}.marshal"), Marshal.dump(adapter.state[name]))
       end
+      write_counts_sidecar(sidecar_dir, group.first, counts)
       exit!(0)
     rescue StandardError => e
       @logger.error("exwiw parallel leaf worker error (#{group.first}..): #{e.class}: #{e.message}")
       exit!(1)
     end
 
-    def run_component_worker(group, seed)
+    def run_component_worker(group, seed, sidecar_dir)
       adapter = build_adapter
       adapter.state = seed unless seed.empty?
       # Each component is already topologically ordered (parent before child) and
       # dependency-closed over intra-ref_bt edges, so a plain serial walk suffices.
-      group.each { |component| component.each { |name| process_collection(adapter, name) } }
+      counts = {}
+      group.each { |component| component.each { |name| counts[name] = process_collection(adapter, name) } }
+      write_counts_sidecar(sidecar_dir, group.first.first, counts)
       exit!(0)
     rescue StandardError => e
       @logger.error("exwiw parallel ref_bt worker error (#{group.first&.first}..): #{e.class}: #{e.message}")
@@ -266,6 +281,34 @@ module Exwiw
         path = File.join(sidecar_dir, "#{name}.marshal")
         state[name] = Marshal.load(File.binread(path)) if File.exist?(path)
       end
+    end
+
+    # Gather every collection's extracted record count back into the parent for the
+    # completion summary. genuine counts are already in @row_counts (parent-local,
+    # post-cascade); the leaf and ref_bt collections were extracted in forked
+    # workers, so each worker wrote a small Marshal counts sidecar (the same IPC
+    # pattern the consumed-leaf @state uses) that we merge here before the tmpdir is
+    # removed.
+    def collect_counts(sidecar_dir)
+      @counts.merge!(@row_counts)
+      Dir.glob(File.join(sidecar_dir, "#{COUNTS_SIDECAR_PREFIX}*.marshal")).each do |path|
+        @counts.merge!(Marshal.load(File.binread(path)))
+      end
+    end
+
+    def write_counts_sidecar(sidecar_dir, tag, counts)
+      File.binwrite(File.join(sidecar_dir, "#{COUNTS_SIDECAR_PREFIX}#{tag}.marshal"), Marshal.dump(counts))
+    end
+
+    # Log one line per extractable collection in the dump's processing order (the
+    # same order the insert-NNN- files are numbered), so the counts cross-reference
+    # directly with the output files. A collection that matched no rows shows 0
+    # (its output file was deleted).
+    def log_count_summary
+      total = @counts.values.sum
+      nonzero = @counts.count { |_, count| count.positive? }
+      @logger.info("Per-collection extracted record counts (#{total} record(s) across #{nonzero} collection(s)):")
+      @plan.extractable.each { |name| @logger.info("  #{name}: #{@counts.fetch(name, 0)}") }
     end
 
     # The distinct belongs_to parent names of `names`, used to slice the leaf @state
