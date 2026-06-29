@@ -86,6 +86,18 @@ module Exwiw
         where_clauses.push(reverse_clause) if reverse_clause
       end
 
+      # Forward cascade. A satellite of a reverse_scope'd (or referenced-by-scoped)
+      # hub has no belongs_to path to the dump target, so the clauses above stay
+      # empty and it would dump every row. When its belongs_to parent is itself
+      # scoped, constrain this table to the parent's in-scope ids — the same
+      # multi-hop cascade scope-column mode performs in build_scoped.
+      if table.name != dump_target.table_name &&
+         where_clauses.empty? && join_clauses.empty? &&
+         forward_scope_allowed?(table)
+        parent_clause = build_belongs_to_scoped_clause(table)
+        where_clauses.push(parent_clause) if parent_clause
+      end
+
       QueryAst::Select.new.tap do |ast|
         ast.from(table.name)
         if table.rails_managed?

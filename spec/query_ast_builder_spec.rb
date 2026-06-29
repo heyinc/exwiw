@@ -1086,11 +1086,19 @@ RSpec.describe Exwiw::QueryAstBuilder do
           columns: [{ name: 'id' }, { name: 'name' }]
         )
       end
-      let(:all_tables) { [users, customers, staff, business_entities] }
+      let(:all_tables) { [users, customers, staff, end_users, business_entities] }
 
       it 'unions each referencer constrained by the foreign key to the target' do
         expect(sqlite_adapter.compile_ast(build('users'))).to eq(
           "SELECT users.id, users.name FROM users JOIN (SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id FROM (SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 1 AND customers.user_id IS NOT NULL UNION SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 1 AND staff.user_id IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON users.id = exwiw_scope_ids_0.exwiw_scope_id"
+        )
+      end
+
+      it 'cascades to a satellite that belongs_to the reverse-scoped hub' do
+        ast = build('end_users')
+        expect(ast.where_clauses).not_to eq([])
+        expect(sqlite_adapter.compile_ast(ast)).to eq(
+          "SELECT end_users.id, end_users.nickname FROM end_users JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (SELECT users.id FROM users JOIN (SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id FROM (SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 1 AND customers.user_id IS NOT NULL UNION SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 1 AND staff.user_id IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON users.id = exwiw_scope_ids_0.exwiw_scope_id) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON end_users.id = exwiw_scope_ids_0.exwiw_scope_id"
         )
       end
     end
