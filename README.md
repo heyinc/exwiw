@@ -197,6 +197,13 @@ Each table is resolved as follows:
   path, set `ignore: true` to skip it, or mark it `scope_exempt: true` (below) to
   export it in full.
 
+> **Note — referenced-by is preferred over the hub cascade.** A table that is
+> *both* `belongs_to` a scoped hub *and* referenced-by a constrained child is
+> scoped to the (narrower) referenced-by id-set, not the hub cascade, so the hub's
+> other children the child does not reference are dropped (under-scoping). To force
+> the broader hub cascade, set `ignore: true` on the child's `belongs_to` edge that
+> points at this table.
+
 Scope-column mode is SQL-only (mysql / postgresql / sqlite). It works with `exwiw
 explain` too, which is the recommended way to preview the queries before exporting.
 
@@ -634,7 +641,7 @@ Notes:
 - **Only scoped referencers belong in `via`.** Each arm's query must come out constrained; an unconstrained referencer (e.g. a `scope_exempt` table, or one with no path to a scope) would project *every* id and union the whole table back — so such an arm is **skipped with a warning** rather than silently widening the dump. An unknown table is likewise skipped with a warning. If no arm survives, the table stays unscopable and (in [scope-column mode](#scope-column-mode)) the run aborts via `validate_scope!`.
 - **NULLs are excluded** per arm (`IS NOT NULL`).
 - **Satellites need no config.** A table that `belongs_to` the reverse-scoped table (e.g. `end_users.id → users.id`, or `identities.user_id → users.id`) tightens to the kept ids automatically through the normal cascade — only the reverse-scoped table itself declares `reverse_scope`. The cascade is **multi-hop**, so a table several `belongs_to` hops below the reverse-scoped table (e.g. `end_user_profiles → end_users → users`) also tightens automatically, with no config of its own.
-- Works in both single-target and scope-column mode. Polymorphic foreign keys are not eligible as anchors (the named `column` is always a concrete column).
+- Works in both single-target and scope-column mode. In single-target mode there is no scope-column pre-flight (`validate_scope!`), so a satellite the cascade cannot resolve to a single scopable parent (e.g. it `belongs_to` two scopable hubs) is dumped in full with a warning rather than aborting. Polymorphic foreign keys are not eligible as anchors (the named `column` is always a concrete column).
 
 ### Why a JOIN, not `IN (subquery)`
 
