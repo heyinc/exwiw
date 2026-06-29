@@ -95,7 +95,16 @@ module Exwiw
          where_clauses.empty? && join_clauses.empty? &&
          forward_scope_allowed?(table)
         parent_clause = build_belongs_to_scoped_clause(table)
-        where_clauses.push(parent_clause) if parent_clause
+        if parent_clause
+          where_clauses.push(parent_clause)
+        elsif @allow_reverse && @forward_path.empty? && !scope_exempt?(table) &&
+              scopable_parent_candidates(table).size > 1
+          @logger.warn(
+            "  #{table.name} belongs_to multiple scopable parents; the cascade cannot " \
+            "pick one unambiguously, so it is dumped in full. Declare a scope_column on " \
+            "it, or scope it through a single parent, to avoid a cross-tenant full dump."
+          )
+        end
       end
 
       QueryAst::Select.new.tap do |ast|
@@ -302,48 +311,18 @@ module Exwiw
       )
     end
 
-    # Scope-column mode. Builds a `fk IN (SELECT parent.pk FROM <parent
-    # extraction query>)` clause for a table whose belongs_to parent is itself
-    # scopable but carries no scope column of its own — so find_path_to_scoped
-    # cannot terminate on it (via_path fails) and nothing references this table
-    # (referenced_by fails). The classic shape is a hub scoped only via
-    # referenced_by (e.g. CDP `customer_accounts`, scoped by the `customers` that
-    # reference it) with sibling detail tables (`customer_account_details`, ...)
-    # hanging off it. Constraining those siblings to the hub's in-scope ids keeps
-    # them out of a full dump. Returns nil when there is no single, unambiguous
-    # scopable parent, leaving the caller on the unscopable path.
+    # Builds a `fk IN (SELECT parent.pk FROM <parent extraction query>)` clause
+    # for a table whose belongs_to parent is itself scopable but carries no scope
+    # column of its own — so find_path_to_scoped cannot terminate on it (via_path
+    # fails) and nothing references this table (referenced_by fails). The classic
+    # shape is a hub scoped only via referenced_by (e.g. CDP `customer_accounts`,
+    # scoped by the `customers` that reference it) with sibling detail tables
+    # (`customer_account_details`, ...) hanging off it. Constraining those
+    # siblings to the hub's in-scope ids keeps them out of a full dump. Returns
+    # nil when there is no single, unambiguous scopable parent, leaving the caller
+    # on the unscopable path. Used by both scope-column and single-target mode.
     private def build_belongs_to_scoped_clause(table)
-      # This table plus every ancestor currently being forward-resolved. A
-      # candidate parent already on this path would close a belongs_to cycle, so
-      # it is skipped; threading the grown path into the parent build lets the
-      # cascade recurse N hops (users -> end_users -> end_user_profiles -> ...)
-      # and terminate only when a table reappears.
-      forward_path = @forward_path + [table.name]
-
-      candidates = table.belongs_tos.filter_map do |relation|
-        # A polymorphic belongs_to points at several parent tables through one
-        # column, so it cannot project to a single parent id set; skip it.
-        next if relation.polymorphic?
-
-        parent = table_by_name[relation.table_name]
-        next if parent.nil?
-
-        # Cycle guard: descending into a parent already on the forward path would
-        # loop (a -> b -> a). Stop, leaving this table on the :unscopable path.
-        next if forward_path.include?(parent.name)
-
-        # Build the parent's own scoped query. allow_reverse stays true so the
-        # parent may be scoped via referenced_by, and forward scoping stays
-        # enabled so a parent that is itself scoped via *its* parent resolves
-        # too — this is what makes the cascade multi-hop.
-        parent_query = self.class.run(parent.name, table_by_name, dump_target, @logger, allow_reverse: true, forward_path: forward_path)
-
-        # Only a constrained parent narrows anything; an unconstrained parent
-        # would select every pk (i.e. dump all) and not help.
-        next unless parent_query.where_clauses.any? || parent_query.join_clauses.any?
-
-        [relation, parent, parent_query]
-      end
+      candidates = scopable_parent_candidates(table)
 
       # Only the unambiguous single-parent case. Multiple scopable parents would
       # need their subqueries combined (not supported); fall back to unscopable.
@@ -370,6 +349,40 @@ module Exwiw
         operator: :in_subquery,
         value: QueryAst::SelectSubquery.new(query: projected)
       )
+    end
+
+    # The scopable belongs_to parents of `table`: each non-polymorphic parent
+    # whose own extraction query comes out constrained, paired with the relation
+    # and that query. Shared by build_belongs_to_scoped_clause (which requires
+    # exactly one) and the single-target full-dump warning (which flags two or
+    # more, since the cascade then cannot disambiguate).
+    private def scopable_parent_candidates(table)
+      # This table plus every ancestor currently being forward-resolved; a
+      # candidate parent already on this path would close a belongs_to cycle, so
+      # it is skipped. Threading the grown path into the parent build lets the
+      # cascade recurse N hops and terminate only when a table reappears.
+      forward_path = @forward_path + [table.name]
+
+      table.belongs_tos.filter_map do |relation|
+        # A polymorphic belongs_to points at several parent tables through one
+        # column, so it cannot project to a single parent id set.
+        next if relation.polymorphic?
+
+        parent = table_by_name[relation.table_name]
+        next if parent.nil?
+        next if forward_path.include?(parent.name)
+
+        # allow_reverse and forward scoping stay enabled so the parent may itself
+        # be scoped via referenced_by or via *its* parent — this is what makes the
+        # cascade multi-hop.
+        parent_query = self.class.run(parent.name, table_by_name, dump_target, @logger, allow_reverse: true, forward_path: forward_path)
+
+        # Only a constrained parent narrows anything; an unconstrained parent
+        # would select every pk (i.e. dump all) and not help.
+        next unless parent_query.where_clauses.any? || parent_query.join_clauses.any?
+
+        [relation, parent, parent_query]
+      end
     end
 
     private def build_where_clauses(table, dump_target)

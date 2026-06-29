@@ -1284,4 +1284,89 @@ RSpec.describe Exwiw::QueryAstBuilder do
       )
     end
   end
+
+  describe 'single-target full-dump warning' do
+    let(:log_output) { StringIO.new }
+    let(:logger) { Logger.new(log_output) }
+    let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'business_entities', ids: [1]) }
+
+    let(:business_entities) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'business_entities', primary_key: 'id', belongs_tos: [],
+        columns: [{ name: 'id' }]
+      )
+    end
+    # Two reverse-scoped hubs, each scoped through a referencer that belongs_to
+    # the target, and `child` belongs_to both — so the cascade has two scopable
+    # parents and cannot disambiguate.
+    let(:hub_a) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'hub_a', primary_key: 'id', belongs_tos: [],
+        reverse_scope: { via: [{ table: 'ref_a', column: 'hub_a_id' }] },
+        columns: [{ name: 'id' }]
+      )
+    end
+    let(:ref_a) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'ref_a', primary_key: 'id',
+        belongs_tos: [
+          { table_name: 'hub_a', foreign_key: 'hub_a_id' },
+          { table_name: 'business_entities', foreign_key: 'business_entity_id' },
+        ],
+        columns: [{ name: 'id' }, { name: 'hub_a_id' }, { name: 'business_entity_id' }]
+      )
+    end
+    let(:hub_b) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'hub_b', primary_key: 'id', belongs_tos: [],
+        reverse_scope: { via: [{ table: 'ref_b', column: 'hub_b_id' }] },
+        columns: [{ name: 'id' }]
+      )
+    end
+    let(:ref_b) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'ref_b', primary_key: 'id',
+        belongs_tos: [
+          { table_name: 'hub_b', foreign_key: 'hub_b_id' },
+          { table_name: 'business_entities', foreign_key: 'business_entity_id' },
+        ],
+        columns: [{ name: 'id' }, { name: 'hub_b_id' }, { name: 'business_entity_id' }]
+      )
+    end
+    let(:child) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'child', primary_key: 'id',
+        belongs_tos: [
+          { table_name: 'hub_a', foreign_key: 'hub_a_id' },
+          { table_name: 'hub_b', foreign_key: 'hub_b_id' },
+        ],
+        columns: [{ name: 'id' }, { name: 'hub_a_id' }, { name: 'hub_b_id' }]
+      )
+    end
+    let(:countries) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'countries', primary_key: 'id', belongs_tos: [],
+        columns: [{ name: 'id' }]
+      )
+    end
+    let(:all_tables) { [business_entities, hub_a, ref_a, hub_b, ref_b, child, countries] }
+    let(:table_by_name) { all_tables.each_with_object({}) { |t, h| h[t.name] = t } }
+
+    def build(name)
+      described_class.run(name, table_by_name, dump_target, logger)
+    end
+
+    it 'warns and dumps in full when a satellite has multiple scopable parents' do
+      ast = build('child')
+      expect(ast.where_clauses).to eq([])
+      expect(ast.join_clauses).to eq([])
+      expect(log_output.string).to include('child belongs_to multiple scopable parents')
+    end
+
+    it 'does not warn for an unrelated table intentionally dumped in full' do
+      ast = build('countries')
+      expect(ast.where_clauses).to eq([])
+      expect(log_output.string).not_to include('dumped in full')
+    end
+  end
 end
