@@ -101,8 +101,9 @@ module Exwiw
               scopable_parent_candidates(table).size > 1
           @logger.warn(
             "  #{table.name} belongs_to multiple scopable parents; the cascade cannot " \
-            "pick one unambiguously, so it is dumped in full. Declare a scope_column on " \
-            "it, or scope it through a single parent, to avoid a cross-tenant full dump."
+            "pick one unambiguously, so it is dumped in full. If this is intended, set " \
+            "`scope_exempt: true`. Otherwise, scope it through a single parent (e.g. ignore one belongs_to edge), " \
+            "or switch to scope-column mode to scope it directly."
           )
         end
       end
