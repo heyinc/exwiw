@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-30
+
 ### Added
 
 - **`exwiw explain` now supports the mongodb adapter.** It runs the server's [explain command](https://www.mongodb.com/docs/manual/reference/command/explain/) for the `find` each collection would be dumped with, and prints the explain document as JSON alongside the find description. Verbosity is configurable via the `EXWIW_MONGODB_EXPLAIN_VERBOSITY` environment variable or the `explain_verbosity:` config key (the env var wins): `queryPlanner` (default), `executionStats`, or `allPlansExecution`. The default `queryPlanner` only **plans** the query — it does not execute it or scan any documents — so it is safe to point at a production source; `executionStats`/`allPlansExecution` run the real extraction query to gather runtime stats and should be used deliberately. Because a scoped collection's `belongs_to` ids are captured at runtime (which `explain` never does), `explain` fills each scoped collection's real foreign-key filter (e.g. `users` → `{ shop_id: { $in: [...] } }`) with a placeholder id instead of the match-nothing `{_id: {$in: []}}` fallback — so the plan reports the real `IXSCAN`/`COLLSCAN` (queryPlanner selects an index by field, not value; only the bound values are fake). `ExplainRunner` now prints the adapter-agnostic query description (the compiled SELECT for SQL, the find description for mongodb), so the SQL adapters' output is unchanged.
