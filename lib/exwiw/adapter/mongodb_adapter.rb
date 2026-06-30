@@ -68,6 +68,28 @@ module Exwiw
       def initialize(connection_config, logger)
         super
         @state = {}
+        @explain_placeholder = false
+      end
+
+      # A recognizably-fake ObjectId substituted for captured parent ids when
+      # building scope filters in `explain` placeholder mode (see
+      # #explain_scope_with_placeholders! and #parent_state_for).
+      EXPLAIN_PLACEHOLDER_OID_HEX = "ffffffffffffffffffffffff"
+
+      # Switch #build_query into placeholder-scope mode for `explain`. The
+      # mongodb scope of a non-target collection is its parents' captured ids,
+      # which the serial dump harvests at runtime in #execute. `explain` never
+      # executes a query, so that @state stays empty and every scoped child would
+      # otherwise fall back to the match-nothing `{_id: {$in: []}}` filter —
+      # hiding which field (e.g. a foreign key) the real dump would actually
+      # filter on, and thus whether it is indexed. In this mode #parent_state_for
+      # returns a placeholder id for each dumped parent instead of reading
+      # @state, so build_query emits the real foreign-key filter shape with a
+      # dummy value. queryPlanner picks an index by the queried FIELD, not the
+      # value, so index selection (IXSCAN vs COLLSCAN) is reported correctly even
+      # though the bound value is fake.
+      def explain_scope_with_placeholders!
+        @explain_placeholder = true
       end
 
       # Propagation @state accessor, used ONLY by MongodbParallelDumper to seed a
@@ -500,13 +522,38 @@ module Exwiw
       # constrained by: the values of the parent field the FK references
       # (`relation.references`, default the parent primary_key). nil when the
       # parent has not been executed yet.
+      #
+      # In `explain` placeholder mode (#explain_scope_with_placeholders!) there is
+      # no captured state, so return a one-element placeholder id for any dumped
+      # (non-embedded) parent — enough to make the child's foreign-key clause
+      # appear with its real field, so the plan reflects the real dump. An
+      # embedded parent is not dumped on its own and yields nil, exactly as a real
+      # run's empty @state would.
       private def parent_state_for(relation, config_by_name)
+        if @explain_placeholder
+          parent = config_by_name[relation.table_name]
+          return nil if parent.nil? || parent.embedded?
+
+          return [explain_placeholder_id]
+        end
+
         parent_fields = @state[relation.table_name]
         return nil if parent_fields.nil?
 
         reference_field =
           relation.references || config_by_name.fetch(relation.table_name).primary_key
         parent_fields[reference_field]
+      end
+
+      # The placeholder id used in explain placeholder mode. Built lazily because
+      # build_query can run before any db access loads bson; falls back to the
+      # hex String if bson is genuinely unavailable (the filter shape is what
+      # matters, not the value's type).
+      private def explain_placeholder_id
+        require 'bson' unless defined?(::BSON::ObjectId)
+        @explain_placeholder_id ||= ::BSON::ObjectId.from_string(EXPLAIN_PLACEHOLDER_OID_HEX)
+      rescue LoadError
+        EXPLAIN_PLACEHOLDER_OID_HEX
       end
 
       # A masking plan compiled once per collection config and reused for every

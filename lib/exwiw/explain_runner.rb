@@ -21,6 +21,10 @@ module Exwiw
 
     def run
       adapter = Adapter.build(@connection_config, @logger)
+      # explain executes nothing, so an adapter whose non-target scope is captured
+      # at runtime (mongodb) has no parent ids to filter children by; ask it to
+      # build placeholder scope filters so each query reflects the real dump.
+      adapter.explain_scope_with_placeholders!
       configs = load_table_config(adapter.class.table_config_class)
       validate_ignored(configs)
 

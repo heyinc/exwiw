@@ -191,6 +191,14 @@ module Exwiw
         raise NotImplementedError, "#{self.class.name} does not implement #explain"
       end
 
+      # Hook letting `explain` tell an adapter whose scope is resolved at runtime
+      # (mongodb captures parent ids during execution) to build placeholder scope
+      # filters instead, since explain executes nothing. No-op by default: the
+      # SQL adapters embed scoping in the query itself, so their `explain` already
+      # reflects the real query without any captured state.
+      def explain_scope_with_placeholders!
+      end
+
       # Identifier text prepended to every query exwiw sends to the (often
       # production) source DB, so the statement is recognizable in the
       # processlist / slow-query log / db.currentOp() and can be killed if it

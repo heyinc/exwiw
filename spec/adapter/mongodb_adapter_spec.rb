@@ -401,6 +401,30 @@ module Exwiw
         end
       end
 
+      describe "#explain_scope_with_placeholders! (explain mode)" do
+        let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: ["a00100000000000000000001"]) }
+        let(:placeholder) { BSON::ObjectId.from_string("ffffffffffffffffffffffff") }
+
+        before { adapter.explain_scope_with_placeholders! }
+
+        it "builds a scoped child's filter on its real foreign key with a placeholder id" do
+          users = config_by_name.fetch("users")
+          query = adapter.build_query(users, dump_target, config_by_name)
+
+          # Without placeholder mode this child would be the match-nothing
+          # `{_id: {$in: []}}` (no parent ids captured); here it is the real
+          # foreign-key shape with a dummy value.
+          expect(query.filter).to eq("shop_id" => { "$in" => [placeholder] })
+        end
+
+        it "reflects the real index usage of the scoped query (users.shop_id is unindexed -> COLLSCAN)" do
+          users = config_by_name.fetch("users")
+          parsed = JSON.parse(adapter.explain(adapter.build_query(users, dump_target, config_by_name)))
+
+          expect(parsed.fetch("queryPlanner").fetch("winningPlan").to_s).to include("COLLSCAN")
+        end
+      end
+
       describe "#to_bulk_insert" do
         let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: [1]) }
 

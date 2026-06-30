@@ -150,6 +150,8 @@ EXWIW_MONGODB_EXPLAIN_VERBOSITY=executionStats exwiw explain \
 
 `executionStats` and `allPlansExecution` execute the extraction query against the source, so use them deliberately on large/production collections.
 
+> **Scoped collections use a placeholder id.** A non-target collection is scoped by its parents' ids, which a real dump captures while running each parent query — but `explain` runs nothing. So for scoped collections, `explain` fills the real foreign-key filter (e.g. `users` → `{ shop_id: { $in: [...] } }`) with a placeholder id rather than real values. The plan still reflects the real dump: `queryPlanner` chooses an index by the queried *field*, not its value, so whether a scoped extraction does an `IXSCAN` or a `COLLSCAN` is reported correctly. Only the bound *values* are fake. (The target collection uses the real `--ids`; reference collections with no `belongs_to` use the real `{}` full scan.)
+
 ### Scope-column mode
 
 The default `--target-table` extraction assumes the schema converges on a single
