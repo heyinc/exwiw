@@ -7,13 +7,16 @@ module Exwiw
       schema_dir:,
       dump_target:,
       logger:,
-      io: $stdout
+      io: $stdout,
+      explain_verbosity: nil
     )
       @connection_config = connection_config
       @schema_dir = schema_dir
       @dump_target = dump_target
       @logger = logger
       @io = io
+      # mongodb-only; nil lets the adapter pick its safe default (queryPlanner).
+      @explain_verbosity = explain_verbosity
     end
 
     def run
@@ -44,11 +47,13 @@ module Exwiw
         @logger.debug("Explaining '#{table_name}'... (#{idx + 1}/#{total_size})")
 
         query_ast = adapter.build_query(table, @dump_target, table_by_name)
-        sql = adapter.commented_sql(query_ast)
-        explain_text = adapter.explain(query_ast)
+        # describe_query is the adapter-agnostic "what query is this": the
+        # commented SELECT for SQL adapters, the find description for mongodb.
+        query_text = adapter.describe_query(query_ast)
+        explain_text = adapter.explain(query_ast, verbosity: @explain_verbosity)
 
         @io.puts "-- [#{idx + 1}/#{total_size}] #{table_name}"
-        @io.puts sql
+        @io.puts query_text
         @io.puts
         @io.puts "-- EXPLAIN:"
         @io.puts explain_text

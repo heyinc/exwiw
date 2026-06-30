@@ -382,6 +382,25 @@ module Exwiw
         end
       end
 
+      describe "#explain" do
+        let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: ["a00100000000000000000001"]) }
+        let(:query) { adapter.build_query(config_by_name.fetch("shops"), dump_target, config_by_name) }
+
+        it "returns the queryPlanner plan as JSON and does NOT execute the query (safe default)" do
+          parsed = JSON.parse(adapter.explain(query))
+
+          expect(parsed).to have_key("queryPlanner")
+          # queryPlanner only plans; without execution there are no runtime stats.
+          expect(parsed).not_to have_key("executionStats")
+        end
+
+        it "gathers execution stats when verbosity is executionStats" do
+          parsed = JSON.parse(adapter.explain(query, verbosity: "executionStats"))
+
+          expect(parsed).to have_key("executionStats")
+        end
+      end
+
       describe "#to_bulk_insert" do
         let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: [1]) }
 

@@ -59,7 +59,7 @@ driver implements that auth handshake itself and sidesteps the issue.
 exwiw has two subcommands:
 
 - `export` (default) — generate INSERT/COPY SQL files. If the subcommand is omitted, `export` is assumed.
-- `explain` — print the compiled SQL and its `EXPLAIN` output for each query that `export` would run, without executing the SELECTs.
+- `explain` — print each query `export` would run together with its `EXPLAIN` output. SQL adapters compile the SELECT without executing it; mongodb runs the server's explain (defaulting to the execution-free `queryPlanner`).
 
 ### `exwiw export`
 
@@ -115,7 +115,7 @@ idx meaning is the same as insert sql.
 
 ### `exwiw explain`
 
-Print the compiled SQL and its `EXPLAIN` output (estimate-only; `EXPLAIN QUERY PLAN` on SQLite) for each query that `export` would run, to stdout. No SELECT is executed. Supported for `mysql`, `postgresql`, and `sqlite`. The `mongodb` adapter is not yet supported.
+Print the query each `export` would run together with its `EXPLAIN` output, to stdout. For the SQL adapters (`mysql`, `postgresql`, `sqlite`) this is the compiled SELECT plus its `EXPLAIN` (estimate-only; `EXPLAIN QUERY PLAN` on SQLite) — no SELECT is executed. For `mongodb` it is the `find` description plus the server's explain document as JSON.
 
 ```bash
 # preview the queries exwiw would run, without executing the SELECTs
@@ -128,6 +128,27 @@ exwiw explain \
 ```
 
 The `--output-dir`, `--output-format`, `--insert-only`, and `--after-insert-hook` options are dump-specific and rejected when used with `explain`.
+
+#### MongoDB explain verbosity
+
+The mongodb explain runs the server's [explain command](https://www.mongodb.com/docs/manual/reference/command/explain/) at a configurable verbosity. The default, **`queryPlanner`, only plans the query and does not execute it**, so it is safe to point at a production source. Set it with the `EXWIW_MONGODB_EXPLAIN_VERBOSITY` environment variable or the `explain_verbosity:` config key (the env var wins):
+
+| verbosity | behaviour |
+|---|---|
+| `queryPlanner` (default) | Plans the query only. **The query is not executed** — no documents are scanned. |
+| `executionStats` | **Runs the query** and reports runtime statistics (docs examined, time, etc.). |
+| `allPlansExecution` | Runs the winning plan **and the rejected candidate plans** to gather their stats. |
+
+```bash
+# inspect index usage of the real extraction query (executes it)
+EXWIW_MONGODB_EXPLAIN_VERBOSITY=executionStats exwiw explain \
+  --adapter=mongodb \
+  --uri="mongodb+srv://reader@cluster/app_production" \
+  --schema-dir=exwiw/schema \
+  --target-collection=shops --ids=...
+```
+
+`executionStats` and `allPlansExecution` execute the extraction query against the source, so use them deliberately on large/production collections.
 
 ### Scope-column mode
 
@@ -286,6 +307,7 @@ Notes:
 - **Relative paths in the config (`schema_dir`, `output_dir`, `after_insert_hook`) are resolved relative to the config file's own directory**, not the current working directory. So with the config at the project root, `schema_dir: exwiw/schema` reads naturally, and an absolute `--config=/path/to/exwiw.yml` works no matter where you run from. (CLI path flags remain relative to the current directory — each source resolves relative to where it is written.) Absolute paths are used as-is.
 - Unknown keys are rejected so a typo surfaces immediately.
 - Export-only keys (`output_dir`, `output_format`, `insert_only`, `after_insert_hook`) are ignored when running `explain`, so a single config file can be shared by both subcommands.
+- `explain_verbosity` sets the mongodb `explain` verbosity (`queryPlanner` | `executionStats` | `allPlansExecution`, default `queryPlanner`); the `EXWIW_MONGODB_EXPLAIN_VERBOSITY` env var overrides it. Ignored by the SQL adapters and by `export`. See [`exwiw explain`](#mongodb-explain-verbosity).
 
 ### Generator
 

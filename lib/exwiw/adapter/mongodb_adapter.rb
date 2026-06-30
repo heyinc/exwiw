@@ -193,8 +193,30 @@ module Exwiw
         raise NotImplementedError, "MongodbAdapter does not support bulk delete"
       end
 
-      def explain(_query)
-        raise NotImplementedError, "MongodbAdapter does not support explain yet"
+      # Default explain verbosity. `queryPlanner` asks the server to PLAN the
+      # query without executing it, so it is safe to run against a production
+      # source — no documents are scanned or returned. `executionStats` and
+      # `allPlansExecution` actually run the query to collect runtime stats (the
+      # latter also runs the rejected candidate plans), so they carry the cost of
+      # the real extraction query.
+      DEFAULT_EXPLAIN_VERBOSITY = "queryPlanner"
+
+      # Server-side explain for the find this dump would issue, returned as
+      # pretty-printed relaxed extended JSON (same value semantics as the dumped
+      # documents). `verbosity` is one of queryPlanner / executionStats /
+      # allPlansExecution; see DEFAULT_EXPLAIN_VERBOSITY for the safety
+      # implications. A String verbosity is passed through to the driver as-is.
+      def explain(query, verbosity: nil)
+        verbosity ||= DEFAULT_EXPLAIN_VERBOSITY
+        @logger.debug("  Running explain (verbosity=#{verbosity}) on '#{query.collection}': filter=#{query.filter.inspect}")
+
+        result = db[query.collection]
+          .find(query.filter)
+          .projection(query.projection)
+          .comment(query_comment_text("collection=#{query.collection}"))
+          .explain(verbosity: verbosity)
+
+        JSON.pretty_generate(result.as_extended_json(mode: :relaxed))
       end
 
       def describe_query(query)
