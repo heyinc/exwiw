@@ -1,6 +1,7 @@
 {
   "name": "products",
   "primary_key": "_id",
+  "query_timeout_ms": 45000,
   "belongs_tos": [{
     "table_name": "shops",
     "foreign_key": "shop_id"

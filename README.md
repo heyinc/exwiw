@@ -300,6 +300,7 @@ insert_only: false
 after_insert_hook: hooks/seed.rb
 log_level: info              # debug | info
 # target_table / ids / ids_field / scope_column may also be set here
+# mongodb_query_timeout_ms: 30000   # global query timeout (mongodb only)
 ```
 
 With the file above, only the connection details need to be supplied on the CLI:
@@ -317,6 +318,7 @@ Notes:
 - Unknown keys are rejected so a typo surfaces immediately.
 - Export-only keys (`output_dir`, `output_format`, `insert_only`, `after_insert_hook`) are ignored when running `explain`, so a single config file can be shared by both subcommands.
 - `explain_verbosity` sets the mongodb `explain` verbosity (`queryPlanner` | `executionStats` | `allPlansExecution`, default `queryPlanner`); the `EXWIW_MONGODB_EXPLAIN_VERBOSITY` env var overrides it. Ignored by the SQL adapters and by `export`. See [`exwiw explain`](#mongodb-explain-verbosity).
+- `mongodb_query_timeout_ms` sets the global, server-enforced query timeout (mongodb only); the `--mongodb-query-timeout-ms` CLI flag overrides it. Ignored by the SQL adapters. See [MongoDB notes](#mongodb-notes).
 
 ### Generator
 
@@ -395,7 +397,7 @@ It is a distinct task and class (`Exwiw::MongoidSchemaGenerator`) from the Activ
 
 Models in an inheritance hierarchy whose subclasses share the base's collection (Mongoid STI, distinguished by the auto-added `_type` discriminator) collapse into a single config: the generator discovers the subclasses via `descendants` (Mongoid registers only the base class in `Mongoid.models`) and unions every class's `fields` and `belongs_tos` into the collection config, so subclass-only fields and associations are not lost.
 
-Regeneration preserves hand-edited `replace_with`, `filter`, `ignore`, and `bulk_insert_chunk_size` values, like the ActiveRecord generator. Indexes are not written to the config — they are introspected from the live database at dump time (see [MongoDB notes](#mongodb-notes)). Polymorphic `belongs_to` is not yet expanded by this task.
+Regeneration preserves hand-edited `replace_with`, `filter`, `ignore`, `bulk_insert_chunk_size`, and `query_timeout_ms` values, like the ActiveRecord generator. Indexes are not written to the config — they are introspected from the live database at dump time (see [MongoDB notes](#mongodb-notes)). Polymorphic `belongs_to` is not yet expanded by this task.
 
 By default the task **aborts** when a model uses a construct exwiw cannot represent: a `belongs_to` whose target class can no longer be resolved (a stale relation left behind after its model was removed), or a polymorphic / self-referential-cyclic / ambiguous / unresolvable-parent `embedded_in` (see the cases above).
 
@@ -800,6 +802,7 @@ The MongoDB adapter is experimental. To use it:
 - `--target-collection=COLLECTION` is a mongodb-only alias of `--target-table` (use whichever reads better for MongoDB). Specifying both, or using `--target-collection` with a non-mongodb adapter, is an error.
 - `--ids-field=FIELD` matches `--ids` against `FIELD` on the target collection instead of its primary key (e.g. `--target-collection=users --ids=a@example.com --ids-field=email`). Downstream foreign-key propagation still keys off the primary key, so only the target collection's filter changes. Unlike the primary-key path, the supplied ids are **not** type-coerced (the stored type of a custom field is unknown), so pass values matching the field's actual type. This flag is **mongodb-only** (the SQL adapters have no equivalent).
 - Large or embedded-document-heavy dumps are streamed automatically: the adapter reads the collection through a lazy cursor (not `.to_a`) and writes JSONL in chunks, so peak memory is bounded by the chunk size rather than the collection size — no flag to set. Encoding each document to MongoDB Extended JSON is accelerated by an **optional native (C) extension** that compiles automatically on `gem install`; where it cannot compile, exwiw falls back to a byte-identical pure-Ruby encoder. See [`docs/optimization-notes.md`](docs/optimization-notes.md) for the performance investigation and [`docs/optimize-mongodb-export-with-native-ext.md`](docs/optimize-mongodb-export-with-native-ext.md) for the native encoder's design. Benchmark your own data with `script/bench_mongodb_dump.rb`.
+- `--mongodb-query-timeout-ms=N` sets a global, **server-enforced** timeout (in milliseconds) on every query exwiw issues — the find cursor's whole lifetime (the initial batch and every `getMore` the streaming dump walks), the count, and an executing `explain`. Past the deadline the server aborts the operation and exwiw fails the run, so an accidentally heavy or unscoped query cannot keep pinning the (often production) source. It is **mongodb-only** (the SQL adapters shell out to their own clients) and may also be set as `mongodb_query_timeout_ms:` in the config file. The default is no timeout. A single collection can opt to a different limit with a `query_timeout_ms` key in its schema config (a sibling of `bulk_insert_chunk_size`), which overrides the global for that collection's find/count — use it to give a known-large collection more headroom, or to cap one that tends to run away. Hand-edited `query_timeout_ms` values are preserved across schema regeneration.
 - `--parallel-workers=N` (opt-in, `export` only) forks `N` worker processes that decode whole collections in parallel — the dominant cost on a large dump is the driver's BSON→Ruby decode, and each worker decodes its own collections in their natural order, so the output stays **byte-identical** to a serial run (same filenames and content). It needs a dump target (the schedule is built around the scoped DAG) and a `fork`-capable runtime (CRuby on POSIX), falling back to the serial path otherwise; it also accepts `parallel_workers:` in the config file. The speedup needs real cores to spend — it reaches ~2× from 4 workers and saturates there. The default is serial. See [`docs/mongodb-dump-parallelism-2x-notes.md`](docs/mongodb-dump-parallelism-2x-notes.md) for the schedule and measurements.
 - Output is JSON Lines (`insert-{idx}-{collection}.jsonl`) using MongoDB Extended JSON (relaxed mode). Import with `mongoimport`:
   ```bash

@@ -37,6 +37,7 @@ module Exwiw
       scope_column
       parallel_workers
       explain_verbosity
+      mongodb_query_timeout_ms
     ].freeze
 
     # MongoDB explain verbosity levels (passed through to the server's explain
@@ -89,6 +90,7 @@ module Exwiw
       @insert_only = nil
       @after_insert_hook_path = nil
       @parallel_workers = nil
+      @mongodb_query_timeout_ms = nil
       @explain_verbosity = nil
       # nil (not :info) so we can tell "user passed --log-level" from the default,
       # letting a config-file value fill in; the :info default is applied later.
@@ -113,6 +115,7 @@ module Exwiw
         password: @database_password,
         database_name: @database_name,
         uri: @connection_uri,
+        mongodb_query_timeout_ms: @mongodb_query_timeout_ms,
       )
 
       dump_target = DumpTarget.new(
@@ -178,6 +181,7 @@ module Exwiw
       resolve_ids_field!
       resolve_uri_option!
       resolve_parallel_workers!
+      resolve_mongodb_query_timeout_ms!
 
       if @subcommand == "explain"
         validate_explain_only!
@@ -331,6 +335,7 @@ module Exwiw
       @ids_field ||= config["ids_field"]
       @scope_column ||= config["scope_column"]
       @parallel_workers ||= parse_parallel_workers(config["parallel_workers"]) if config.key?("parallel_workers")
+      @mongodb_query_timeout_ms ||= parse_mongodb_query_timeout_ms(config["mongodb_query_timeout_ms"]) if config.key?("mongodb_query_timeout_ms")
       @explain_verbosity ||= config["explain_verbosity"]
     end
 
@@ -454,6 +459,38 @@ module Exwiw
       Integer(value)
     rescue ArgumentError, TypeError
       $stderr.puts "config 'parallel_workers' must be an integer (got #{value.inspect})"
+      exit 1
+    end
+
+    # `--mongodb-query-timeout-ms` sets the global, server-enforced CSOT timeout
+    # applied to every MongoDB query (find cursor lifetime, count, executing
+    # explain). It is mongodb-only (the SQL adapters shell out to their own
+    # clients) and must be a positive integer. A per-collection `query_timeout_ms`
+    # in the schema config overrides it. Runs after the adapter name is normalized
+    # so the family check is reliable.
+    private def resolve_mongodb_query_timeout_ms!
+      return if @mongodb_query_timeout_ms.nil?
+
+      if @database_adapter != "mongodb"
+        $stderr.puts "--mongodb-query-timeout-ms is only supported by the mongodb adapter"
+        exit 1
+      end
+
+      if @mongodb_query_timeout_ms < 1
+        $stderr.puts "--mongodb-query-timeout-ms must be a positive integer (got #{@mongodb_query_timeout_ms})"
+        exit 1
+      end
+    end
+
+    # Coerce a config-file `mongodb_query_timeout_ms` (YAML scalar) to Integer,
+    # matching the CLI flag's Integer coercion. A non-integer value is a config
+    # typo, so fail fast rather than silently dropping it.
+    private def parse_mongodb_query_timeout_ms(value)
+      return nil if value.nil?
+
+      Integer(value)
+    rescue ArgumentError, TypeError
+      $stderr.puts "config 'mongodb_query_timeout_ms' must be an integer (got #{value.inspect})"
       exit 1
     end
 
@@ -591,6 +628,7 @@ module Exwiw
           @after_insert_hook_path = File.expand_path(v)
         end
         opts.on("--parallel-workers=N", Integer, "Fork N workers for the MongoDB dump's parallel schedule (mongodb + export only; N>=2 enables it, default is serial). Output is byte-identical to serial; falls back to serial where fork is unavailable.") { |v| @parallel_workers = v }
+        opts.on("--mongodb-query-timeout-ms=N", Integer, "Global server-enforced timeout (ms) for every MongoDB query (mongodb only). Aborts an accidentally heavy/unscoped query past the deadline. Overridden per collection by `query_timeout_ms` in the schema config.") { |v| @mongodb_query_timeout_ms = v }
         opts.on("--log-level=LEVEL", "Log level (debug, info). default is info") { |v| @log_level = v.to_sym }
 
         opts.on("--help", "Print this help") do

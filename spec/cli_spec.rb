@@ -295,6 +295,49 @@ module Exwiw
       end
     end
 
+    describe '--mongodb-query-timeout-ms validation' do
+      def run_cli(argv)
+        CLI.new(argv).run
+      end
+
+      it 'parses --mongodb-query-timeout-ms into the ivar for the mongodb adapter' do
+        cli = CLI.new(['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                       '--schema-dir=e2e/mongodb-schema', '--target-collection=users', '--ids=1',
+                       '--mongodb-query-timeout-ms=30000'])
+        cli.send(:validate_options!)
+        expect(cli.instance_variable_get(:@mongodb_query_timeout_ms)).to eq(30000)
+      end
+
+      it 'rejects --mongodb-query-timeout-ms for non-mongodb adapters' do
+        argv = ['--adapter=sqlite', '--database=tmp/test.sqlite3', '--schema-dir=e2e/sqlite-schema',
+                '--target-table=users', '--ids=1', '--mongodb-query-timeout-ms=30000']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--mongodb-query-timeout-ms is only supported by the mongodb adapter/).to_stderr
+      end
+
+      it 'rejects a non-positive --mongodb-query-timeout-ms' do
+        argv = ['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                '--schema-dir=e2e/mongodb-schema', '--target-collection=users', '--ids=1',
+                '--mongodb-query-timeout-ms=0']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--mongodb-query-timeout-ms must be a positive integer/).to_stderr
+      end
+
+      it 'flows the parsed value into the ConnectionConfig' do
+        cli = CLI.new(['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                       '--schema-dir=e2e/mongodb-schema', '--target-collection=users', '--ids=1',
+                       '--mongodb-query-timeout-ms=30000'])
+        captured = nil
+        allow(Runner).to receive(:new) do |**kwargs|
+          captured = kwargs[:connection_config]
+          instance_double(Runner, run: nil)
+        end
+        allow($stdin).to receive(:tty?).and_return(false)
+        cli.run
+        expect(captured.mongodb_query_timeout_ms).to eq(30000)
+      end
+    end
+
     describe 'output dir clear confirmation' do
       around do |example|
         Dir.mktmpdir do |dir|

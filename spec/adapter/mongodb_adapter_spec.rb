@@ -70,6 +70,21 @@ module Exwiw
               projection: { "_id" => 1, "name" => 1, "updated_at" => 1, "created_at" => 1 },
             )
           end
+
+          it "leaves timeout_ms nil and omits it from to_h when the collection sets none" do
+            shops = config_by_name.fetch("shops")
+            query = adapter.build_query(shops, dump_target, config_by_name)
+            expect(query.timeout_ms).to be_nil
+            expect(query.to_h).not_to have_key(:timeout_ms)
+          end
+
+          it "carries the collection's query_timeout_ms onto the query (and into to_h)" do
+            shops = config_by_name.fetch("shops")
+            shops.query_timeout_ms = 45_000
+            query = adapter.build_query(shops, dump_target, config_by_name)
+            expect(query.timeout_ms).to eq(45_000)
+            expect(query.to_h).to include(timeout_ms: 45_000)
+          end
         end
 
         context "when dump_target.ids_field overrides the filter field" do
@@ -378,6 +393,29 @@ module Exwiw
 
             expect(users.size).to eq(2)
             expect(users.map { |u| u["shop_id"] }.uniq).to eq([shop1_oid])
+          end
+        end
+
+        context "when the collection sets a per-collection query_timeout_ms" do
+          let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: ["a00100000000000000000001"]) }
+
+          it "passes timeout_ms to both the find and the count operations" do
+            shops = config_by_name.fetch("shops")
+            shops.query_timeout_ms = 12_345
+            query = adapter.build_query(shops, dump_target, config_by_name)
+
+            view = double("view")
+            allow(view).to receive(:projection).and_return(view)
+            allow(view).to receive(:comment).and_return(view)
+            allow(view).to receive(:each)
+            expect(view).to receive(:count_documents).with({ timeout_ms: 12_345 }).and_return(0)
+            collection = double("collection")
+            expect(collection).to receive(:find).with(query.filter, { timeout_ms: 12_345 }).and_return(view)
+            allow(adapter).to receive(:db).and_return({ "shops" => collection })
+
+            result = adapter.execute(query)
+            result.size # triggers count_documents
+            result.to_a # triggers the streaming each
           end
         end
       end
@@ -723,6 +761,33 @@ module Exwiw
           client = double('client')
           expect(Mongo::Client).to receive(:new)
             .with(['db.example.com:27017'], database: 'app')
+            .and_return(client)
+          expect(adapter_for(config).send(:db)).to eq(client)
+        end
+
+        it "passes the global mongodb_query_timeout_ms as the client-wide CSOT timeout (host:port)" do
+          config = ConnectionConfig.new(
+            adapter: 'mongodb', host: 'db.example.com', port: 27017,
+            database_name: 'app', user: nil, password: nil, uri: nil,
+            mongodb_query_timeout_ms: 30_000,
+          )
+          client = double('client')
+          expect(Mongo::Client).to receive(:new)
+            .with(['db.example.com:27017'], timeout_ms: 30_000, database: 'app')
+            .and_return(client)
+          expect(adapter_for(config).send(:db)).to eq(client)
+        end
+
+        it "passes the global mongodb_query_timeout_ms alongside the URI" do
+          config = ConnectionConfig.new(
+            adapter: 'mongodb',
+            uri: 'mongodb+srv://u:p@cluster.example.com/app',
+            database_name: nil,
+            mongodb_query_timeout_ms: 30_000,
+          )
+          client = double('client')
+          expect(Mongo::Client).to receive(:new)
+            .with('mongodb+srv://u:p@cluster.example.com/app', timeout_ms: 30_000)
             .and_return(client)
           expect(adapter_for(config).send(:db)).to eq(client)
         end

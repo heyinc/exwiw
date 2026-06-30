@@ -20,6 +20,11 @@ bundle exec ruby e2e/setup_with_mongodb.rb "${FROM_DATABASE_NAME}"
 # server; the from-clean variant still covers the --host/--port path. The
 # database name is intentionally left out of the CLI and taken from the URI
 # path (mongodb://host:port/<db>) to verify it resolves from the URI.
+#
+# --mongodb-query-timeout-ms exercises the global, server-enforced query
+# timeout end-to-end (set generously so the tiny seed always finishes within
+# it). The per-collection override is exercised too: e2e/mongodb-schema/users.json
+# carries its own query_timeout_ms.
 bundle exec exe/exwiw \
   --adapter=mongodb \
   --uri="mongodb://${MONGO_HOST}:${MONGO_PORT}/${FROM_DATABASE_NAME}" \
@@ -27,6 +32,7 @@ bundle exec exe/exwiw \
   --target-table=shops \
   --ids=a00100000000000000000001 \
   --output-dir=tmp/mongodb \
+  --mongodb-query-timeout-ms=60000 \
   --log-level=debug
 
 # Import generated jsonl into target

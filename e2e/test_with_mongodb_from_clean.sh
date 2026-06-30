@@ -30,7 +30,10 @@ mongosh --quiet "mongodb://${MONGO_HOST}:${MONGO_PORT}/${TO_DATABASE_NAME}" \
 bundle exec ruby e2e/setup_with_mongodb.rb "${FROM_DATABASE_NAME}"
 
 # Run exwiw — output to a dedicated dir so we don't collide with the default
-# scenario's artifacts.
+# scenario's artifacts. --mongodb-query-timeout-ms also covers the global
+# timeout over the --host/--port client branch (the --uri branch is covered by
+# test_with_mongodb.sh); the per-collection override rides along via
+# e2e/mongodb-schema/users.json.
 bundle exec exe/exwiw \
   --adapter=mongodb \
   --host="${MONGO_HOST}" \
@@ -40,6 +43,7 @@ bundle exec exe/exwiw \
   --target-table=shops \
   --ids=a00100000000000000000001 \
   --output-dir=tmp/mongodb-clean \
+  --mongodb-query-timeout-ms=60000 \
   --log-level=debug
 
 # Apply insert-000-schema.js against the empty TO database. This must create
