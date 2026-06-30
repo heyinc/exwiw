@@ -61,10 +61,73 @@ module Exwiw
         expect { run_cli(argv) }.to raise_error(SystemExit).and output(/not applicable in 'explain'/).to_stderr
       end
 
-      it 'rejects mongodb adapter with explain' do
-        argv = ['explain', '--adapter=mongodb', '--host=localhost', '--port=27017',
-                '--database=app', '--schema-dir=e2e/mongodb-schema']
-        expect { run_cli(argv) }.to raise_error(SystemExit).and output(/mongodb adapter is not yet supported by 'explain'/).to_stderr
+      it 'accepts the mongodb adapter (no longer rejected)' do
+        cli = CLI.new(['explain', '--adapter=mongodb', '--host=localhost', '--port=27017',
+                       '--database=app', '--schema-dir=e2e/mongodb-schema'])
+        expect { cli.send(:validate_options!) }.not_to raise_error
+      end
+    end
+
+    describe 'explain verbosity (mongodb)' do
+      def explain_cli(extra = [])
+        CLI.new(['explain', '--adapter=mongodb', '--host=localhost', '--port=27017',
+                 '--database=app', '--schema-dir=e2e/mongodb-schema', *extra])
+      end
+
+      def stub_env(value)
+        allow(ENV).to receive(:[]).and_call_original
+        allow(ENV).to receive(:[]).with('EXWIW_MONGODB_EXPLAIN_VERBOSITY').and_return(value)
+      end
+
+      it 'defaults to queryPlanner (the query is not executed)' do
+        cli = explain_cli
+        cli.send(:validate_options!)
+        expect(cli.instance_variable_get(:@explain_verbosity)).to eq('queryPlanner')
+      end
+
+      it 'reads verbosity from EXWIW_MONGODB_EXPLAIN_VERBOSITY' do
+        stub_env('executionStats')
+        cli = explain_cli
+        cli.send(:validate_options!)
+        expect(cli.instance_variable_get(:@explain_verbosity)).to eq('executionStats')
+      end
+
+      it 'reads verbosity from the config file' do
+        Dir.mktmpdir do |dir|
+          path = File.join(dir, 'exwiw.yml')
+          File.write(path, "explain_verbosity: allPlansExecution\n")
+          cli = explain_cli(["--config=#{path}"])
+          cli.send(:validate_options!)
+          expect(cli.instance_variable_get(:@explain_verbosity)).to eq('allPlansExecution')
+        end
+      end
+
+      it 'prefers the env var over the config-file value' do
+        stub_env('executionStats')
+        Dir.mktmpdir do |dir|
+          path = File.join(dir, 'exwiw.yml')
+          File.write(path, "explain_verbosity: allPlansExecution\n")
+          cli = explain_cli(["--config=#{path}"])
+          cli.send(:validate_options!)
+          expect(cli.instance_variable_get(:@explain_verbosity)).to eq('executionStats')
+        end
+      end
+
+      it 'rejects an invalid verbosity' do
+        stub_env('bogus')
+        cli = explain_cli
+        expect { cli.send(:validate_options!) }.to raise_error(SystemExit)
+          .and output(/Invalid explain verbosity 'bogus'/).to_stderr
+      end
+
+      it 'ignores verbosity for non-mongodb adapters (never validated)' do
+        Dir.mktmpdir do |dir|
+          path = File.join(dir, 'exwiw.yml')
+          File.write(path, "explain_verbosity: bogus\n")
+          cli = CLI.new(['explain', '--adapter=sqlite', '--database=tmp/test.sqlite3',
+                         '--schema-dir=e2e/sqlite-schema', "--config=#{path}"])
+          expect { cli.send(:validate_options!) }.not_to raise_error
+        end
       end
     end
 

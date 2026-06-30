@@ -90,7 +90,7 @@ module Exwiw
         StreamingResult.new(connection: connection, data_sql: data_sql, count_sql: count_sql)
       end
 
-      def explain(query_ast)
+      def explain(query_ast, verbosity: nil)
         sql = commented_sql(query_ast)
 
         @logger.debug("  Executing EXPLAIN: \n#{sql}")

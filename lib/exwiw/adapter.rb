@@ -182,9 +182,21 @@ module Exwiw
 
       # Run the database-specific EXPLAIN for the given query and return the
       # output as a single string for `explain` subcommand to print.
-      # SQL adapters override; MongodbAdapter currently raises.
-      def explain(_query_ast)
+      # `verbosity` selects the explain detail level; it is mongodb-only (the
+      # MongoDB explain command's queryPlanner / executionStats /
+      # allPlansExecution) and the SQL adapters accept it only to keep the
+      # contract uniform — they ignore it. SQL adapters override; MongodbAdapter
+      # implements verbosity.
+      def explain(_query_ast, verbosity: nil)
         raise NotImplementedError, "#{self.class.name} does not implement #explain"
+      end
+
+      # Hook letting `explain` tell an adapter whose scope is resolved at runtime
+      # (mongodb captures parent ids during execution) to build placeholder scope
+      # filters instead, since explain executes nothing. No-op by default: the
+      # SQL adapters embed scoping in the query itself, so their `explain` already
+      # reflects the real query without any captured state.
+      def explain_scope_with_placeholders!
       end
 
       # Identifier text prepended to every query exwiw sends to the (often

@@ -36,7 +36,14 @@ module Exwiw
       ids_field
       scope_column
       parallel_workers
+      explain_verbosity
     ].freeze
+
+    # MongoDB explain verbosity levels (passed through to the server's explain
+    # command). `queryPlanner` only plans the query and is the safe default —
+    # the query is not executed; the other two run it to gather runtime stats.
+    EXPLAIN_VERBOSITIES = %w[queryPlanner executionStats allPlansExecution].freeze
+    DEFAULT_EXPLAIN_VERBOSITY = "queryPlanner"
 
     # Database connection settings are environment-specific (and sometimes
     # secret-adjacent), so they must be passed via CLI/env, never the committed
@@ -82,6 +89,7 @@ module Exwiw
       @insert_only = nil
       @after_insert_hook_path = nil
       @parallel_workers = nil
+      @explain_verbosity = nil
       # nil (not :info) so we can tell "user passed --log-level" from the default,
       # letting a config-file value fill in; the :info default is applied later.
       @log_level = nil
@@ -138,6 +146,7 @@ module Exwiw
           dump_target: dump_target,
           logger: logger,
           io: $stdout,
+          explain_verbosity: @explain_verbosity,
         ).run
       end
     end
@@ -172,6 +181,7 @@ module Exwiw
 
       if @subcommand == "explain"
         validate_explain_only!
+        resolve_explain_verbosity!
       end
 
       if @database_adapter != "sqlite"
@@ -321,6 +331,7 @@ module Exwiw
       @ids_field ||= config["ids_field"]
       @scope_column ||= config["scope_column"]
       @parallel_workers ||= parse_parallel_workers(config["parallel_workers"]) if config.key?("parallel_workers")
+      @explain_verbosity ||= config["explain_verbosity"]
     end
 
     # Strip a trailing slash (like the CLI's dir options) and expand relative to
@@ -447,11 +458,6 @@ module Exwiw
     end
 
     private def validate_explain_only!
-      if @database_adapter == "mongodb"
-        $stderr.puts "mongodb adapter is not yet supported by 'explain' subcommand"
-        exit 1
-      end
-
       rejected = []
       rejected << "--output-dir" unless @output_dir.nil?
       rejected << "--output-format" unless @output_format.nil?
@@ -461,6 +467,24 @@ module Exwiw
 
       unless rejected.empty?
         $stderr.puts "The following options are not applicable in 'explain' subcommand: #{rejected.join(', ')}"
+        exit 1
+      end
+    end
+
+    # Resolve the MongoDB explain verbosity for an `explain` run. It is
+    # mongodb-only, so this no-ops (and skips validation) for the SQL adapters,
+    # which ignore verbosity. The env var wins over the config-file value (it is
+    # the more run-specific override, like a CLI flag would be); when neither is
+    # set the safe, execution-free `queryPlanner` default is used.
+    private def resolve_explain_verbosity!
+      return unless @database_adapter == "mongodb"
+
+      env = ENV["EXWIW_MONGODB_EXPLAIN_VERBOSITY"]
+      @explain_verbosity = env unless env.nil? || env.empty?
+      @explain_verbosity ||= DEFAULT_EXPLAIN_VERBOSITY
+
+      unless EXPLAIN_VERBOSITIES.include?(@explain_verbosity)
+        $stderr.puts "Invalid explain verbosity '#{@explain_verbosity}'. Available options are: #{EXPLAIN_VERBOSITIES.join(', ')}"
         exit 1
       end
     end
@@ -533,7 +557,9 @@ module Exwiw
           Subcommands:
             export    Generate INSERT/COPY SQL files (default when omitted).
             explain   Print EXPLAIN output for each extraction query to stdout.
-                      (not yet supported for the mongodb adapter)
+                      For mongodb, set verbosity via EXWIW_MONGODB_EXPLAIN_VERBOSITY
+                      or `explain_verbosity:` in config (queryPlanner (default,
+                      no query is executed) | executionStats | allPlansExecution).
         BANNER
         opts.version = Exwiw::VERSION
 
