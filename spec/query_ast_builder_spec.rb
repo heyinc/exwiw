@@ -1363,7 +1363,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
       expect(log_output.string).to include('child belongs_to multiple scopable parents')
     end
 
-    it 'does not warn for an unrelated table intentionally dumped in full' do
+    it 'does not warn for an unrelated table dumped in full' do
       ast = build('countries')
       expect(ast.where_clauses).to eq([])
       expect(log_output.string).not_to include('dumped in full')
