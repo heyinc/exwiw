@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-06-30
+
 ### Fixed
 
 - **The `reverse_scope` satellite cascade now fires in single-target (`--target-table`) mode, not only scope-column mode.** A table that `belongs_to` a `reverse_scope`'d hub (a "satellite") is scoped by constraining it to the hub's in-scope ids — the multi-hop forward (`via_scoped_parent`) cascade. That cascade ran only in scope-column mode: in single-target / PK-anchor mode the hub itself was scoped via `reverse_scope`, but its `belongs_to` children fell through to a full dump — a silent cross-tenant export in a multi-tenant schema, despite the README promising the cascade works in "both single-target and scope-column mode." The single-target build now runs the same `build_belongs_to_scoped_clause` cascade for a non-target table that has no `belongs_to` path to the dump target, so satellites tighten to the kept ids (multi-hop, keeping the single-unambiguous-parent rule, polymorphic skip, and forward-path cycle guard); it can only narrow such a table's output, never widen it. Scope-column mode is unchanged — the cascade logic is reused as-is. Because single-target mode has no `validate_scope!` pre-flight, a satellite the cascade cannot resolve to a single scopable parent (e.g. it `belongs_to` two scopable hubs) is still dumped in full but now logs a warning. The README also documents that `referenced_by` scoping takes precedence over the hub cascade (which can under-scope) and how to force the hub cascade. SQL adapters only.
