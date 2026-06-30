@@ -357,31 +357,36 @@ module Exwiw
     # exactly one) and the single-target full-dump warning (which flags two or
     # more, since the cascade then cannot disambiguate).
     private def scopable_parent_candidates(table)
-      # This table plus every ancestor currently being forward-resolved; a
-      # candidate parent already on this path would close a belongs_to cycle, so
-      # it is skipped. Threading the grown path into the parent build lets the
-      # cascade recurse N hops and terminate only when a table reappears.
-      forward_path = @forward_path + [table.name]
+      # Memoized: #run can resolve this twice for the same table (once via
+      # build_belongs_to_scoped_clause, once for the ambiguous-parent warning),
+      # and each pass recursively builds every parent's query.
+      (@scopable_parent_candidates ||= {})[table.name] ||= begin
+        # This table plus every ancestor currently being forward-resolved; a
+        # candidate parent already on this path would close a belongs_to cycle, so
+        # it is skipped. Threading the grown path into the parent build lets the
+        # cascade recurse N hops and terminate only when a table reappears.
+        forward_path = @forward_path + [table.name]
 
-      table.belongs_tos.filter_map do |relation|
-        # A polymorphic belongs_to points at several parent tables through one
-        # column, so it cannot project to a single parent id set.
-        next if relation.polymorphic?
+        table.belongs_tos.filter_map do |relation|
+          # A polymorphic belongs_to points at several parent tables through one
+          # column, so it cannot project to a single parent id set.
+          next if relation.polymorphic?
 
-        parent = table_by_name[relation.table_name]
-        next if parent.nil?
-        next if forward_path.include?(parent.name)
+          parent = table_by_name[relation.table_name]
+          next if parent.nil?
+          next if forward_path.include?(parent.name)
 
-        # allow_reverse and forward scoping stay enabled so the parent may itself
-        # be scoped via referenced_by or via *its* parent — this is what makes the
-        # cascade multi-hop.
-        parent_query = self.class.run(parent.name, table_by_name, dump_target, @logger, allow_reverse: true, forward_path: forward_path)
+          # allow_reverse and forward scoping stay enabled so the parent may itself
+          # be scoped via referenced_by or via *its* parent — this is what makes the
+          # cascade multi-hop.
+          parent_query = self.class.run(parent.name, table_by_name, dump_target, @logger, allow_reverse: true, forward_path: forward_path)
 
-        # Only a constrained parent narrows anything; an unconstrained parent
-        # would select every pk (i.e. dump all) and not help.
-        next unless parent_query.where_clauses.any? || parent_query.join_clauses.any?
+          # Only a constrained parent narrows anything; an unconstrained parent
+          # would select every pk (i.e. dump all) and not help.
+          next unless parent_query.where_clauses.any? || parent_query.join_clauses.any?
 
-        [relation, parent, parent_query]
+          [relation, parent, parent_query]
+        end
       end
     end
 
