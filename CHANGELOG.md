@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **The mongodb adapter accepts a server-enforced query timeout, globally and per collection.** A global `--mongodb-query-timeout-ms=N` (also `mongodb_query_timeout_ms:` in the config file) sets the MongoDB driver's CSOT `timeout_ms` on the client, so every operation — the find cursor's whole lifetime (initial batch and every `getMore` the streaming dump walks), the document count, and an executing `explain` — is bounded; past the deadline the server aborts the operation and exwiw fails the run, so an accidentally heavy or unscoped query cannot keep pinning the (often production) source. A per-collection `query_timeout_ms` key in the schema config overrides the global for that collection's find/count (give a known-large collection more headroom, or cap a runaway one); like `bulk_insert_chunk_size`, it is user-maintained and preserved across Mongoid schema regeneration. Both are **mongodb-only** (the SQL adapters shell out to their own clients) and must be positive integers; the default is no timeout. The fork-parallel dump inherits both automatically (workers rebuild the client from the same connection config and run the same per-collection queries).
+
 ## [0.9.1] - 2026-06-30
 
 ### Fixed

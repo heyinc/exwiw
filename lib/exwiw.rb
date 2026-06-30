@@ -56,5 +56,13 @@ module Exwiw
   # mongodb adapter, e.g. `mongodb+srv://...`). When present it is the source of
   # truth for the connection — host/port/user/password are ignored — so TLS,
   # replica_set, auth_source, etc. can be expressed via the URI's query string.
-  ConnectionConfig = Struct.new(:adapter, :host, :port, :user, :password, :database_name, :uri, keyword_init: true)
+  #
+  # `mongodb_query_timeout_ms` is the global, server-enforced operation timeout
+  # (CSOT `timeout_ms`) applied to every MongoDB query exwiw issues — the find
+  # cursor's whole lifetime, the count, and an executing `explain`. It guards
+  # against an accidentally heavy/unscoped query pinning the (often production)
+  # source: the server aborts the operation past the deadline. nil leaves it
+  # unset (no timeout). A per-collection `query_timeout_ms` overrides it.
+  # mongodb adapter only.
+  ConnectionConfig = Struct.new(:adapter, :host, :port, :user, :password, :database_name, :uri, :mongodb_query_timeout_ms, keyword_init: true)
 end

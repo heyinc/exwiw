@@ -13,6 +13,13 @@ module Exwiw
     attribute :belongs_tos, array(BelongsTo)
     attribute :fields, array(MongodbField)
     attribute :bulk_insert_chunk_size, optional(Integer), skip_serializing_if_nil: true
+    # Per-collection server-enforced query timeout in milliseconds (CSOT). Applied
+    # to this collection's find (whole cursor lifetime), count, and an executing
+    # explain; overrides the global ConnectionConfig#mongodb_query_timeout_ms. Use
+    # it to give a known-large collection more headroom than the global default
+    # (or, conversely, to cap one that tends to run away). User-maintained — the
+    # generator never emits it, so #merge carries it forward across regeneration.
+    attribute :query_timeout_ms, optional(Integer), skip_serializing_if_nil: true
     attribute :ignore, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
     # Free-form note. Purely informational — exwiw never reads it — and preserved
     # across `MongoidSchemaGenerator` regeneration like the field / belongs_to
@@ -62,7 +69,8 @@ module Exwiw
     # - structural facts come from the freshly generated config: primary_key,
     #   belongs_tos, embedded_in.
     # - user customizations are kept from the receiver: filter, ignore,
-    #   bulk_insert_chunk_size, and each field's `replace_with` masking rule.
+    #   bulk_insert_chunk_size, query_timeout_ms, and each field's `replace_with`
+    #   masking rule.
     # - generated fields drive the field list (so added/removed fields track the
     #   model), but a matching receiver field wins to retain its masking.
     def merge(passed)
@@ -73,6 +81,7 @@ module Exwiw
         merged.primary_key = passed.primary_key
         merged.filter = filter
         merged.bulk_insert_chunk_size = bulk_insert_chunk_size
+        merged.query_timeout_ms = query_timeout_ms
         merged.ignore = ignore
         merged.ignore_type = ignore_type
         # A freshly generated comment (e.g. the skip_unsupported marker) wins so

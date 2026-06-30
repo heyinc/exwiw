@@ -217,6 +217,26 @@ module Exwiw
         expect(token.to_hash).to eq({ 'name' => 'token', 'replace_with' => 'X', 'comment' => 'secret', 'ignore' => true })
         expect(merged.fields.map(&:name)).to eq(['_id', 'token', 'extra'])
       end
+
+      it 'carries the user-owned query_timeout_ms forward (the generator never emits it)' do
+        current.query_timeout_ms = 120_000
+        merged = current.merge(passed)
+        expect(merged.query_timeout_ms).to eq(120_000)
+      end
+    end
+
+    describe 'query_timeout_ms serialization' do
+      it 'round-trips when set and is omitted from the hash when nil' do
+        with_timeout = described_class.from_symbol_keys(
+          name: 'orders', primary_key: '_id', belongs_tos: [], fields: [], query_timeout_ms: 90_000,
+        )
+        expect(with_timeout.to_hash).to include('query_timeout_ms' => 90_000)
+
+        without_timeout = described_class.from_symbol_keys(
+          name: 'orders', primary_key: '_id', belongs_tos: [], fields: [],
+        )
+        expect(without_timeout.to_hash).not_to have_key('query_timeout_ms')
+      end
     end
 
     describe '#reject_ignored_members!' do

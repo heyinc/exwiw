@@ -41,12 +41,18 @@ rm -f "$SERIAL_DIR"/* "$PARALLEL_DIR"/*
 # Setup source db. Both dumps read the same (unmodified) source.
 bundle exec ruby e2e/setup_with_mongodb_parallel.rb "${FROM_DATABASE_NAME}"
 
+# --mongodb-query-timeout-ms is shared by both runs, so it keeps the output
+# byte-identical while proving the forked workers inherit the global timeout
+# (they rebuild the client from the same connection config). The per-collection
+# override rides along via e2e/mongodb-parallel-schema/products.json, exercising
+# query_timeout_ms threading through a collection processed in a fork worker.
 common_args=(
   --adapter=mongodb
   --uri="mongodb://${MONGO_HOST}:${MONGO_PORT}/${FROM_DATABASE_NAME}"
   --schema-dir=e2e/mongodb-parallel-schema
   --target-table=shops
   --ids=d00100000000000000000001
+  --mongodb-query-timeout-ms=60000
   --log-level=info
 )
 

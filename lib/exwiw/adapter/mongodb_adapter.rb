@@ -40,15 +40,20 @@ module Exwiw
       class StreamingResult
         include Enumerable
 
-        def initialize(view:, collection:, keys:, state:)
+        def initialize(view:, collection:, keys:, state:, timeout_ms: nil)
           @view = view
           @collection = collection
           @keys = keys
           @state = state
+          @timeout_ms = timeout_ms
         end
 
         def size
-          @size ||= @view.count_documents
+          # count_documents reads :timeout_ms only from the opts passed here (it
+          # does not inherit the find view's per-op timeout), so the per-collection
+          # value must be threaded in explicitly. When nil it falls back to the
+          # client-wide global timeout, like every other operation.
+          @size ||= @timeout_ms ? @view.count_documents(timeout_ms: @timeout_ms) : @view.count_documents
         end
         alias length size
 
@@ -172,6 +177,7 @@ module Exwiw
           primary_key: config.primary_key,
           filter: filter,
           projection: build_projection(config, @propagation_keys),
+          timeout_ms: config.query_timeout_ms,
         )
       end
 
@@ -179,7 +185,7 @@ module Exwiw
         @logger.debug("  Executing Mongo find on '#{query.collection}': filter=#{query.filter.inspect} projection=#{query.projection.inspect}")
 
         view = db[query.collection]
-          .find(query.filter)
+          .find(query.filter, find_timeout_opts(query))
           .projection(query.projection)
           .comment(query_comment_text("collection=#{query.collection}"))
 
@@ -195,7 +201,7 @@ module Exwiw
         # large / embed-heavy collections — the dump's dominant memory cost. The
         # propagation-key values are captured as the cursor streams and published
         # into @state once the pass completes (see StreamingResult).
-        StreamingResult.new(view: view, collection: query.collection, keys: keys, state: @state)
+        StreamingResult.new(view: view, collection: query.collection, keys: keys, state: @state, timeout_ms: query.timeout_ms)
       end
 
       # NOTE: relies on @embedded_children_by_parent set by a prior build_query
@@ -233,7 +239,7 @@ module Exwiw
         @logger.debug("  Running explain (verbosity=#{verbosity}) on '#{query.collection}': filter=#{query.filter.inspect}")
 
         result = db[query.collection]
-          .find(query.filter)
+          .find(query.filter, find_timeout_opts(query))
           .projection(query.projection)
           .comment(query_comment_text("collection=#{query.collection}"))
           .explain(verbosity: verbosity)
@@ -358,6 +364,16 @@ module Exwiw
         ::BSON::ObjectId.legal?(str)
       rescue LoadError
         false
+      end
+
+      # Per-operation find options carrying the collection's CSOT timeout. An
+      # empty hash when the query has none, so the operation inherits the
+      # client-wide global timeout (or runs untimed if that is also unset). The
+      # find view's :timeout_ms governs the whole cursor lifetime — initial batch
+      # plus every getMore the streaming dump walks — which is what makes it the
+      # right cap for an accidentally heavy/unscoped extraction.
+      private def find_timeout_opts(query)
+        query.timeout_ms ? { timeout_ms: query.timeout_ms } : {}
       end
 
       private def reject_filter!(config)
@@ -670,14 +686,14 @@ module Exwiw
               # given, overrides the database in the URI path; otherwise the
               # URI's own database is used. The URI is never logged (it may carry
               # credentials).
-              client_options = {}
+              client_options = global_timeout_options
               if @connection_config.database_name && !@connection_config.database_name.to_s.empty?
                 client_options[:database] = @connection_config.database_name
               end
               Mongo::Client.new(@connection_config.uri, **client_options)
             else
               address = "#{@connection_config.host}:#{@connection_config.port}"
-              options = { database: @connection_config.database_name }
+              options = global_timeout_options.merge(database: @connection_config.database_name)
               if @connection_config.user && !@connection_config.user.to_s.empty?
                 options[:user] = @connection_config.user
                 options[:password] = @connection_config.password
@@ -689,6 +705,15 @@ module Exwiw
 
       private def uri_connection?
         !@connection_config.uri.nil? && !@connection_config.uri.to_s.empty?
+      end
+
+      # Client-level CSOT default applied to every operation on this connection
+      # (find cursor lifetime, count, executing explain). nil when no global
+      # timeout is configured, leaving the client untimed; a per-collection
+      # `query_timeout_ms` still overrides this per find/count.
+      private def global_timeout_options
+        timeout = @connection_config.mongodb_query_timeout_ms
+        timeout ? { timeout_ms: timeout } : {}
       end
     end
   end
