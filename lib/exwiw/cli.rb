@@ -575,6 +575,12 @@ module Exwiw
         "#{formatted_ts} [#{progname}]: #{msg}\n"
       end
 
+      # When STDOUT is a pipe (captured by a parent process / log aggregation),
+      # Logger.new(STDOUT) is block-buffered, so per-collection progress only
+      # surfaces when the buffer fills or the process exits. Sync so each log
+      # line flushes immediately and progress is visible in real time.
+      STDOUT.sync = true
+
       Logger.new(
         STDOUT,
         level: @log_level,

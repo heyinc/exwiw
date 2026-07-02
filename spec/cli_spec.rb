@@ -32,6 +32,27 @@ module Exwiw
       end
     end
 
+    describe '#build_logger' do
+      # build_logger flips STDOUT.sync so piped/redirected progress logs are not
+      # block-buffered. Restore the flag so it does not leak into other specs.
+      around do |example|
+        original_sync = STDOUT.sync
+        example.run
+      ensure
+        STDOUT.sync = original_sync
+      end
+
+      it 'enables STDOUT sync so per-collection progress flushes in real time' do
+        cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3',
+                       '--schema-dir=e2e/sqlite-schema', '--log-level=info'])
+        STDOUT.sync = false
+
+        cli.send(:build_logger)
+
+        expect(STDOUT.sync).to be(true)
+      end
+    end
+
     describe 'explain subcommand validation' do
       def run_cli(argv)
         CLI.new(argv).run

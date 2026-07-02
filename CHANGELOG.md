@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Progress logs now flush in real time when stdout is a pipe.** The CLI logger writes to `STDOUT`, which Ruby block-buffers when stdout is not a TTY (e.g. captured by a parent process or shipped to log aggregation), so a long `export`/`explain` surfaced its per-collection progress (`Processing table '...' (i/n)`, `Generated INSERT statement for N records`) only when the buffer filled or the process exited — reading as a stall. The CLI now sets `STDOUT.sync = true` before building the logger so each line flushes immediately. Data output is written to files (not stdout), so this does not affect dump throughput.
+
 ## [0.9.2] - 2026-06-30
 
 ### Added
