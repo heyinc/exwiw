@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-07-07
+
 ### Fixed
 
 - **PostgreSQL: a `COMMENT ON EXTENSION` for a skipped extension no longer aborts the restore.** pg_dump emits `COMMENT ON EXTENSION <name> IS '...'` right after each `CREATE EXTENSION`. When the `CREATE` was skipped by the graceful `DO … EXCEPTION WHEN feature_not_supported` block (a target that cannot provide the extension — e.g. AlloyDB's `google_vacuum_mgmt` restored into vanilla PostgreSQL), the bare `COMMENT` then failed with `undefined_object` (`extension "…" does not exist`) and aborted the whole restore. A new `DdlPostprocessor.wrap_comment_on_extension_in_do_block` pass wraps each `COMMENT ON EXTENSION` in a `DO $exwiw$ … EXCEPTION WHEN undefined_object THEN NULL … $exwiw$` block, so it applies when the extension exists and is a no-op when it was skipped. This makes any managed-platform extension (AlloyDB `google_*`, `alloydb_scann`, etc.) skip cleanly, not just the one reported.
