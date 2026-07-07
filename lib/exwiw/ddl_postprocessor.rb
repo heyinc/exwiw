@@ -64,6 +64,48 @@ module Exwiw
       sql.gsub(/^[ \t]*CREATE\s+(?:OR\s+REPLACE\s+)?(?:CONSTRAINT\s+)?TRIGGER\b[^;]*;\r?\n?/i, "")
     end
 
+    # A bare `CREATE TYPE ... AS ENUM (...)` (as a full-database pg_dump emits,
+    # unlike a `--table` dump, which omits enum types) is not idempotent: a
+    # second restore raises `duplicate_object`. Wrap each in a DO block that
+    # swallows that error, matching the form of #create_type_enum_statements.
+    # Enum labels never contain a semicolon or an unescaped `)`, so the match
+    # ends at the first `);` after `AS ENUM (`.
+    CREATE_TYPE_ENUM_RE = /^[ \t]*CREATE\s+TYPE\b.+?\bAS\s+ENUM\s*\(.+?\)\s*;/mi.freeze
+
+    def wrap_create_type_enum_in_do_block(sql)
+      sql.gsub(CREATE_TYPE_ENUM_RE) do |stmt|
+        <<~SQL.chomp
+          DO $exwiw$ BEGIN
+            #{stmt.strip}
+          EXCEPTION WHEN duplicate_object THEN NULL;
+          END $exwiw$;
+        SQL
+      end
+    end
+
+    # A bare `CREATE EXTENSION ...;` (as a full-database pg_dump emits, unlike a
+    # `--table` dump, which omits extensions) has no graceful skip: a restore
+    # target that cannot create the extension aborts the whole restore. Wrap
+    # each in a DO block that catches only the two "cannot provide it here"
+    # cases — feature_not_supported (0A000, binaries absent) and
+    # invalid_schema_name (3F000, required schema absent) — and re-raises them
+    # as a WARNING so the skip surfaces in the restore logs. insufficient_
+    # privilege (42501) is deliberately NOT caught: a restore role lacking
+    # CREATE privilege is a misconfiguration to fix, not to skip silently.
+    CREATE_EXTENSION_RE = /^[ \t]*CREATE\s+EXTENSION\b(?:\s+IF\s+NOT\s+EXISTS)?\s+(?<name>"[^"]+"|[^\s;]+)[^;]*;/i.freeze
+
+    def wrap_create_extension_in_do_block(sql)
+      sql.gsub(CREATE_EXTENSION_RE) do
+        stmt = Regexp.last_match(0).strip
+        extname = Regexp.last_match(:name).delete('"')
+        warning = "exwiw: skipped CREATE EXTENSION #{extname} (SQLSTATE %): %"
+        warning_literal = "'#{warning.gsub("'", "''")}'"
+        "DO $$ BEGIN #{stmt} " \
+          "EXCEPTION WHEN feature_not_supported OR invalid_schema_name THEN " \
+          "RAISE WARNING #{warning_literal}, SQLSTATE, SQLERRM; END $$;"
+      end
+    end
+
     # Generate idempotent CREATE TYPE ... AS ENUM statements.
     # +enum_types+ is an Array of Hashes with keys :schema, :name, :labels.
     def create_type_enum_statements(enum_types)

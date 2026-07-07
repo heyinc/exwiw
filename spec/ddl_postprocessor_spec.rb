@@ -120,6 +120,69 @@ module Exwiw
       end
     end
 
+    describe '.wrap_create_type_enum_in_do_block' do
+      it 'wraps a single-line CREATE TYPE ... AS ENUM in an idempotent DO block' do
+        sql = "CREATE TYPE public.user_role AS ENUM ('admin', 'member');"
+        out = described_class.wrap_create_type_enum_in_do_block(sql)
+        expect(out).to include('DO $exwiw$ BEGIN')
+        expect(out).to include("CREATE TYPE public.user_role AS ENUM ('admin', 'member');")
+        expect(out).to include('EXCEPTION WHEN duplicate_object THEN NULL;')
+        expect(out).to include('END $exwiw$;')
+      end
+
+      it 'wraps a multi-line CREATE TYPE ... AS ENUM (pg_dump layout)' do
+        sql = <<~SQL
+          CREATE TYPE public.user_role AS ENUM (
+              'admin',
+              'member'
+          );
+        SQL
+        out = described_class.wrap_create_type_enum_in_do_block(sql)
+        expect(out).to include('DO $exwiw$ BEGIN')
+        expect(out).to include("'admin'")
+        expect(out).to include("'member'")
+        expect(out).to include('EXCEPTION WHEN duplicate_object THEN NULL;')
+        expect(out.scan(/DO \$exwiw\$ BEGIN/).size).to eq(1)
+      end
+
+      it 'wraps each CREATE TYPE independently and leaves other DDL untouched' do
+        sql = <<~SQL
+          CREATE TYPE public.a AS ENUM ('x');
+          CREATE TABLE IF NOT EXISTS public.t (id int);
+          CREATE TYPE public.b AS ENUM ('y', 'z');
+        SQL
+        out = described_class.wrap_create_type_enum_in_do_block(sql)
+        expect(out.scan(/DO \$exwiw\$ BEGIN/).size).to eq(2)
+        expect(out).to include('CREATE TABLE IF NOT EXISTS public.t (id int);')
+      end
+    end
+
+    describe '.wrap_create_extension_in_do_block' do
+      it 'wraps CREATE EXTENSION in a DO block that warns-and-skips the graceful errors' do
+        sql = 'CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public;'
+        out = described_class.wrap_create_extension_in_do_block(sql)
+        expect(out).to include('DO $$ BEGIN CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public;')
+        expect(out).to match(/EXCEPTION WHEN feature_not_supported OR invalid_schema_name THEN RAISE WARNING '[^']*btree_gist[^']*', SQLSTATE, SQLERRM; END \$\$;/)
+      end
+
+      it 'does NOT catch insufficient_privilege' do
+        sql = 'CREATE EXTENSION btree_gist;'
+        out = described_class.wrap_create_extension_in_do_block(sql)
+        expect(out).not_to include('insufficient_privilege')
+      end
+
+      it 'names each extension in its own WARNING' do
+        sql = <<~SQL
+          CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;
+          CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
+        SQL
+        out = described_class.wrap_create_extension_in_do_block(sql)
+        expect(out).to include('skipped CREATE EXTENSION uuid-ossp')
+        expect(out).to include('skipped CREATE EXTENSION pg_trgm')
+        expect(out.scan(/DO \$\$ BEGIN CREATE EXTENSION/).size).to eq(2)
+      end
+    end
+
     describe '.create_type_enum_statements' do
       it 'returns empty string for empty input' do
         expect(described_class.create_type_enum_statements([])).to eq("")

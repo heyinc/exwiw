@@ -22,14 +22,18 @@ module Exwiw
       describe "#dump_schema" do
         let(:schema_path) { Tempfile.new(['mysql_schema', '.sql']).path }
 
-        it "writes CREATE TABLE IF NOT EXISTS for the requested tables" do
+        it "writes CREATE TABLE IF NOT EXISTS for every table in the database" do
+          # Full-database dump: the passed tables no longer scope the output, so
+          # pass a subset and assert the whole database's DDL is emitted.
           tables = [shops_table(adapter_name), users_table(adapter_name)]
           adapter.dump_schema(tables, schema_path)
 
           sql = File.read(schema_path)
           expect(sql).to match(/CREATE TABLE IF NOT EXISTS `shops`/i)
           expect(sql).to match(/CREATE TABLE IF NOT EXISTS `users`/i)
-          expect(sql).not_to match(/`products`/) # not in scope
+          # Tables NOT in the passed subset are still emitted (whole-database dump).
+          expect(sql).to match(/CREATE TABLE IF NOT EXISTS `products`/i)
+          expect(sql).to match(/CREATE TABLE IF NOT EXISTS `reviews`/i)
         end
 
         it "wraps output with SET FOREIGN_KEY_CHECKS" do
