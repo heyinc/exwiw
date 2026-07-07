@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-07-07
+
 ### Changed
 
 - **The schema dump (`insert-000-schema.sql`) now emits DDL for every table in the source database, not just the config-scoped tables.** Previously the SQL adapters restricted the schema dump to the tables that had a config entry (`pg_dump --table <t>` / `mysqldump <db> <t...>` / a `sqlite_master` filter by `ordered_tables`), so any table without a JSON config was absent from the dump — and a restore target then failed with `relation does not exist` the moment anything referenced an unscoped table. All three SQL adapters (postgresql / mysql / sqlite) now dump the whole database's schema; a table absent from the config gets its `CREATE TABLE` (schema) but no `INSERT` (empty data), which is the intended result. Data extraction (the `INSERT` files, `validate_scope!`, the `DELETE` pass) is unchanged: `dump_schema(ordered_tables, …)` keeps its signature but uses `ordered_tables` only for logging, not to select which tables are emitted. This is a default, non-opt-in behavior change: consumer repos' baked schemas will now contain every table in the source DB.
