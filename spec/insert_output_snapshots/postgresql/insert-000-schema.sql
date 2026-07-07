@@ -31,7 +31,7 @@ DO $$ BEGIN CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public; EXCEPT
 -- Name: EXTENSION btree_gist; Type: COMMENT; Schema: -; Owner: -
 --
 
-COMMENT ON EXTENSION btree_gist IS 'support for indexing common datatypes in GiST';
+DO $exwiw$ BEGIN COMMENT ON EXTENSION btree_gist IS 'support for indexing common datatypes in GiST'; EXCEPTION WHEN undefined_object THEN NULL; END $exwiw$;
 
 
 --
