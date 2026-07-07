@@ -466,6 +466,21 @@ module Exwiw
             expect(bulk_insert_sql).to include("'#{escaped}'")
           end
         end
+
+        context "has newline in value" do
+          let(:results) do
+            [
+              ["1", "a;\nb", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
+            ]
+          end
+
+          let(:bulk_insert_sql) { adapter.to_bulk_insert(results, shops_table(adapter_name)) }
+
+          it "escapes newlines so each tuple stays on a single line" do
+            expect(bulk_insert_sql).to include("'a;\\nb'")
+            expect(bulk_insert_sql).not_to include("a;\nb")
+          end
+        end
       end
 
       describe "#to_bulk_delete" do

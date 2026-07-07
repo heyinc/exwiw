@@ -340,12 +340,24 @@ module Exwiw
           "WHERE #{subquery.table_name}.#{subquery.where_column} IN (#{inner_values.join(', ')})"
       end
 
+      # Backslash and control-character escapes, matching mysqldump. Escaping
+      # newlines keeps every VALUES tuple on a single line, so a value that
+      # itself contains a newline cannot break consumers that split the dump
+      # into statements on a semicolon-newline boundary.
+      SPECIAL_CHARACTER_ESCAPES = {
+        "\\" => "\\\\",
+        "\n" => "\\n",
+        "\r" => "\\r",
+        "\u0000" => "\\0",
+        "\u001A" => "\\Z",
+      }.freeze
+
       private def escape_value(value)
         case value
         when nil
           "NULL"
         when String
-          qv = value.gsub('\\') { '\\\\' }
+          qv = value.gsub(/[\\\r\n\u0000\u001A]/) { |char| SPECIAL_CHARACTER_ESCAPES.fetch(char) }
           qv = escape_single_quote(qv)
           "'#{qv}'"
         else
