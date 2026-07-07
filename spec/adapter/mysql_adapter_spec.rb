@@ -467,18 +467,29 @@ module Exwiw
           end
         end
 
-        context "has newline in value" do
+        context "has control characters in value" do
           let(:results) do
+            ts = "2025-01-01 00:00:00.000000"
             [
-              ["1", "a;\nb", "2025-01-01 00:00:00.000000", "2025-01-01 00:00:00.000000"],
+              ["1", "a;\nb", ts, ts],
+              ["2", "a\rb", ts, ts],
+              ["3", "a\u0000b", ts, ts],
+              ["4", "a\u001Ab", ts, ts],
             ]
           end
 
           let(:bulk_insert_sql) { adapter.to_bulk_insert(results, shops_table(adapter_name)) }
 
-          it "escapes newlines so each tuple stays on a single line" do
+          it "escapes control characters so tuples stay parseable" do
             expect(bulk_insert_sql).to include("'a;\\nb'")
+            expect(bulk_insert_sql).to include("'a\\rb'")
+            expect(bulk_insert_sql).to include("'a\\0b'")
+            expect(bulk_insert_sql).to include("'a\\Zb'")
+
             expect(bulk_insert_sql).not_to include("a;\nb")
+            expect(bulk_insert_sql).not_to include("a\rb")
+            expect(bulk_insert_sql).not_to include("a\u0000b")
+            expect(bulk_insert_sql).not_to include("a\u001Ab")
           end
         end
       end
