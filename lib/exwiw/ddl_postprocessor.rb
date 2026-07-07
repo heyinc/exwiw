@@ -106,6 +106,26 @@ module Exwiw
       end
     end
 
+    # pg_dump emits `COMMENT ON EXTENSION <name> IS '...';` right after the
+    # matching CREATE EXTENSION. When the CREATE was skipped (its DO block caught
+    # feature_not_supported because the target cannot provide the extension —
+    # e.g. AlloyDB's google_vacuum_mgmt restored into vanilla PostgreSQL), this
+    # bare COMMENT then aborts the whole restore with `undefined_object` (42704,
+    # "extension ... does not exist"). Wrap each COMMENT in a DO block that
+    # swallows undefined_object, so it applies when the extension exists and is a
+    # no-op when it was skipped. The IS clause is matched as a whole single-quoted
+    # string (doubled quotes escaped) or NULL, so an embedded `;` does not end the
+    # match early.
+    COMMENT_ON_EXTENSION_RE =
+      /^[ \t]*COMMENT\s+ON\s+EXTENSION\s+(?:"[^"]+"|[^\s]+)\s+IS\s+(?:'(?:[^']|'')*'|NULL)\s*;/i.freeze
+
+    def wrap_comment_on_extension_in_do_block(sql)
+      sql.gsub(COMMENT_ON_EXTENSION_RE) do
+        stmt = Regexp.last_match(0).strip
+        "DO $exwiw$ BEGIN #{stmt} EXCEPTION WHEN undefined_object THEN NULL; END $exwiw$;"
+      end
+    end
+
     # Generate idempotent CREATE TYPE ... AS ENUM statements.
     # +enum_types+ is an Array of Hashes with keys :schema, :name, :labels.
     def create_type_enum_statements(enum_types)
