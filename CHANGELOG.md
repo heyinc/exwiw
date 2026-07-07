@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **The schema dump (`insert-000-schema.sql`) now emits DDL for every table in the source database, not just the config-scoped tables.** Previously the SQL adapters restricted the schema dump to the tables that had a config entry (`pg_dump --table <t>` / `mysqldump <db> <t...>` / a `sqlite_master` filter by `ordered_tables`), so any table without a JSON config was absent from the dump — and a restore target then failed with `relation does not exist` the moment anything referenced an unscoped table. All three SQL adapters (postgresql / mysql / sqlite) now dump the whole database's schema; a table absent from the config gets its `CREATE TABLE` (schema) but no `INSERT` (empty data), which is the intended result. Data extraction (the `INSERT` files, `validate_scope!`, the `DELETE` pass) is unchanged: `dump_schema(ordered_tables, …)` keeps its signature but uses `ordered_tables` only for logging, not to select which tables are emitted. This is a default, non-opt-in behavior change: consumer repos' baked schemas will now contain every table in the source DB.
+  - **PostgreSQL**: because a whole-database `pg_dump` emits `CREATE EXTENSION` and `CREATE TYPE … AS ENUM` itself (a `--table` dump omitted both, which is why exwiw used to prepend them by hand from `pg_extension` / `pg_enum`), the manual prepend and its two helper queries are removed. Their robustness is preserved by two new `DdlPostprocessor` passes applied in place: enum types are wrapped in a `DO $exwiw$ … EXCEPTION WHEN duplicate_object THEN NULL … $exwiw$` block (so a re-restore does not fail), and each `CREATE EXTENSION` is wrapped in a `DO $$ … EXCEPTION WHEN feature_not_supported OR invalid_schema_name THEN RAISE WARNING … $$` block (so a target that cannot provide the extension warns-and-skips rather than aborting; `insufficient_privilege` is still not caught). A managed-platform or `pglogical` extension the source happens to have is now handled by this graceful skip instead of being filtered out by name.
+  - `strip_triggers` is still applied unchanged. A whole-database dump now also contains the `CREATE FUNCTION` definitions that triggers reference, so exwiw could in principle keep triggers instead of stripping them — but this release does not change that behavior.
+
 ## [0.9.3] - 2026-07-02
 
 ### Fixed

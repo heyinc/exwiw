@@ -23,6 +23,8 @@ module Exwiw
         let(:schema_path) { Tempfile.new(['postgresql_schema', '.sql']).path }
 
         it "writes CREATE TABLE IF NOT EXISTS and wraps ADD CONSTRAINT in DO block" do
+          # Full-database dump: the passed tables no longer scope the output, so
+          # pass a subset and assert the whole database's DDL is emitted.
           tables = [shops_table(adapter_name), users_table(adapter_name)]
           begin
             adapter.dump_schema(tables, schema_path)
@@ -36,25 +38,34 @@ module Exwiw
           sql = File.read(schema_path)
           expect(sql).to match(/CREATE TABLE IF NOT EXISTS public\.shops/i).or(match(/CREATE TABLE IF NOT EXISTS shops/i))
           expect(sql).to match(/CREATE TABLE IF NOT EXISTS public\.users/i).or(match(/CREATE TABLE IF NOT EXISTS users/i))
+          # Tables NOT in the passed subset are still emitted (whole-database dump).
+          expect(sql).to match(/CREATE TABLE IF NOT EXISTS public\.products/i).or(match(/CREATE TABLE IF NOT EXISTS products/i))
+          expect(sql).to match(/CREATE TABLE IF NOT EXISTS public\.reviews/i).or(match(/CREATE TABLE IF NOT EXISTS reviews/i))
           # If pg_dump emits any ADD CONSTRAINT lines, they must be wrapped in DO block
           if sql =~ /ALTER TABLE/i
             expect(sql).to include('DO $exwiw$')
             expect(sql).to include('EXCEPTION WHEN duplicate_object')
           end
-          # Extension prepend is best-effort: feature_not_supported (binaries absent)
-          # and invalid_schema_name (required schema absent) are skipped with a WARNING
+          # A whole-database dump emits CREATE EXTENSION itself; the post-processor
+          # wraps it best-effort: feature_not_supported (binaries absent) and
+          # invalid_schema_name (required schema absent) are skipped with a WARNING
           # so a restore target that cannot create the extension is not fatal; but a
           # privilege error must still abort, so insufficient_privilege is NOT caught.
-          expect(sql).to include('DO $$ BEGIN CREATE EXTENSION IF NOT EXISTS "btree_gist";')
+          expect(sql).to match(/DO \$\$ BEGIN CREATE EXTENSION IF NOT EXISTS btree_gist\b/)
           expect(sql).to match(/EXCEPTION WHEN feature_not_supported OR invalid_schema_name THEN RAISE WARNING '[^']*btree_gist[^']*', SQLSTATE, SQLERRM; END \$\$;/)
           expect(sql).not_to include('insufficient_privilege')
           ext_pos = sql.index("DO $$ BEGIN CREATE EXTENSION")
           table_pos = sql.index("CREATE TABLE")
           expect(ext_pos).to be < table_pos
           expect(ext_pos).to be < sql.index("CREATE TYPE")
+          # The enum type is wrapped in an idempotent DO block (pg_dump's bare
+          # CREATE TYPE is not idempotent on re-restore).
           expect(sql).to include('CREATE TYPE')
-          expect(sql).to include("AS ENUM ('admin', 'member')")
-          enum_match = sql.match(/AS ENUM \(([^)]+)\)/)
+          expect(sql).to include("AS ENUM (")
+          expect(sql).to match(/DO \$exwiw\$ BEGIN\s+CREATE TYPE .*AS ENUM/m)
+          expect(sql).to include("'admin'")
+          expect(sql).to include("'member'")
+          enum_match = sql.match(/AS ENUM \(([^)]+)\)/m)
           labels = enum_match[1].scan(/'([^']*(?:''[^']*)*)'/).flatten
           expect(labels).to eq(labels.uniq), "enum labels should not be duplicated: #{labels}"
         end

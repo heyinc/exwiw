@@ -26,7 +26,9 @@ module Exwiw
       describe "#dump_schema" do
         let(:schema_path) { Tempfile.new(['sqlite_schema', '.sql']).path }
 
-        it "writes idempotent CREATE TABLE/INDEX statements for the given tables" do
+        it "writes idempotent CREATE TABLE/INDEX statements for every table in the database" do
+          # Full-database dump: the passed tables no longer scope the output, so
+          # pass a subset and assert the whole database's DDL is emitted.
           tables = [shops_table(adapter_name), users_table(adapter_name)]
           adapter.dump_schema(tables, schema_path)
 
@@ -34,16 +36,20 @@ module Exwiw
           expect(sql).to include('CREATE TABLE IF NOT EXISTS "shops"')
           expect(sql).to include('CREATE TABLE IF NOT EXISTS "users"')
           expect(sql).to include('CREATE INDEX IF NOT EXISTS "index_users_on_shop_id"')
-          # Tables not in ordered_tables are not emitted
-          expect(sql).not_to include('"products"')
+          # Tables NOT in the passed subset are still emitted (whole-database dump).
+          expect(sql).to include('CREATE TABLE IF NOT EXISTS "products"')
         end
 
-        it "emits tables in the provided order" do
-          tables = [users_table(adapter_name), shops_table(adapter_name)]
+        it "emits every table in sqlite_master (creation) order, independent of the passed subset" do
+          # Pass only `users`, yet the whole database is emitted in creation
+          # order (shops was created before users in the seed schema).
+          tables = [users_table(adapter_name)]
           adapter.dump_schema(tables, schema_path)
 
           sql = File.read(schema_path)
-          expect(sql.index('CREATE TABLE IF NOT EXISTS "users"')).to be < sql.index('CREATE TABLE IF NOT EXISTS "shops"')
+          expect(sql).to include('CREATE TABLE IF NOT EXISTS "shops"')
+          expect(sql).to include('CREATE TABLE IF NOT EXISTS "products"')
+          expect(sql.index('CREATE TABLE IF NOT EXISTS "shops"')).to be < sql.index('CREATE TABLE IF NOT EXISTS "users"')
         end
 
         it "is idempotent — re-running the produced SQL against the same DB does not raise" do
