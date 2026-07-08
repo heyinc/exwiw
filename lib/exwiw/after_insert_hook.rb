@@ -35,7 +35,9 @@ module Exwiw
       content = ctx.collected.join("\n")
       outputs << ['after_insert', content] unless content.empty?
       ctx.collected_by_collection.each do |collection, chunks|
-        outputs << [collection, chunks.join("\n")]
+        body = chunks.join("\n")
+        next if body.empty?
+        outputs << [collection, body]
       end
 
       if outputs.empty?
