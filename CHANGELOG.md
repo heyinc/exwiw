@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **The MySQL adapter now escapes newline and control characters (`\n`, `\r`, `\0`, `\Z`) in string values, matching mysqldump.** They were previously written raw, so a value containing a newline was emitted with a literal line break inside its `VALUES` tuple. That is valid SQL on its own, but it breaks any consumer that splits a dump into statements on a semicolon-newline boundary when a string value contains `;` immediately followed by a newline — the statement is cut mid-value, leaving an unterminated string literal. Escaping keeps every tuple on a single line. Single-quote escaping (doubling) is unchanged, and the SQLite/PostgreSQL adapters are unaffected. MySQL insert output changes only for string values that contain these characters.
+
 ## [0.9.5] - 2026-07-07
 
 ### Fixed

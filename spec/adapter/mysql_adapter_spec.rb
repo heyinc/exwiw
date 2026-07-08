@@ -466,6 +466,32 @@ module Exwiw
             expect(bulk_insert_sql).to include("'#{escaped}'")
           end
         end
+
+        context "has control characters in value" do
+          let(:results) do
+            ts = "2025-01-01 00:00:00.000000"
+            [
+              ["1", "a;\nb", ts, ts],
+              ["2", "a\rb", ts, ts],
+              ["3", "a\u0000b", ts, ts],
+              ["4", "a\u001Ab", ts, ts],
+            ]
+          end
+
+          let(:bulk_insert_sql) { adapter.to_bulk_insert(results, shops_table(adapter_name)) }
+
+          it "escapes control characters so tuples stay parseable" do
+            expect(bulk_insert_sql).to include("'a;\\nb'")
+            expect(bulk_insert_sql).to include("'a\\rb'")
+            expect(bulk_insert_sql).to include("'a\\0b'")
+            expect(bulk_insert_sql).to include("'a\\Zb'")
+
+            expect(bulk_insert_sql).not_to include("a;\nb")
+            expect(bulk_insert_sql).not_to include("a\rb")
+            expect(bulk_insert_sql).not_to include("a\u0000b")
+            expect(bulk_insert_sql).not_to include("a\u001Ab")
+          end
+        end
       end
 
       describe "#to_bulk_delete" do
