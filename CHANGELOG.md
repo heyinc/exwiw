@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Ruby after-insert hooks can seed named MongoDB collections with `insert_jsonl(collection, template)`.** The single-argument `insert_sql(template)` / `insert_jsonl(template)` form writes all hook output to one collection-less `insert-{N+1}-after_insert.{ext}` file. That is fine for SQL — the statements name their table in-band — but MongoDB import derives the target collection from the filename (`insert-NNN-<collection>.jsonl` → `mongoimport --collection <collection>`), so a hook had no way to seed documents into specific collections. The new two-argument form (**mongodb-only**; a SQL adapter raises `ArgumentError`) appends the ERB-rendered extended-JSON lines to the named collection's own buffer; after the hook finishes each targeted collection is written to its own `insert-NNN-<collection>.jsonl`, numbered sequentially after the dump's own files (and after the collection-less `after_insert` file when both forms are used), so the existing filename-based import convention applies to hook output unchanged. The single-argument form is untouched.
+
 ## [0.9.5] - 2026-07-07
 
 ### Fixed
