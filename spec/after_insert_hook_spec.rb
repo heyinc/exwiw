@@ -25,6 +25,36 @@ module Exwiw
         ctx.insert_jsonl('{"x":<%= cli_options.fetch(:ids).first %>}')
         expect(ctx.collected).to eq(['{"x":1}'])
       end
+
+      context 'with a jsonl output extension' do
+        let(:ctx) { described_class.new(cli_options, output_extension: 'jsonl') }
+
+        it 'collects collection-targeted insert_jsonl output per collection' do
+          ctx.insert_jsonl('users', '{"email":"u<%= cli_options.fetch(:ids).first %>@example.com"}')
+          ctx.insert_jsonl('posts', '{"title":"hello"}')
+          expect(ctx.collected_by_collection).to eq(
+            'users' => ['{"email":"u1@example.com"}'],
+            'posts' => ['{"title":"hello"}'],
+          )
+          expect(ctx.collected).to eq([])
+        end
+
+        it 'appends multiple calls for the same collection' do
+          ctx.insert_jsonl('users', '{"n":1}')
+          ctx.insert_jsonl('users', '{"n":2}')
+          expect(ctx.collected_by_collection).to eq('users' => ['{"n":1}', '{"n":2}'])
+        end
+
+        it 'raises for a collection name that is not filename-safe' do
+          expect { ctx.insert_jsonl('../evil', '{}') }.to raise_error(ArgumentError, /invalid collection name/)
+        end
+      end
+
+      it 'raises when the collection-targeted form is used with a non-jsonl adapter' do
+        expect {
+          ctx.insert_jsonl('users', '{}')
+        }.to raise_error(ArgumentError, /only supported for the MongoDB adapter/)
+      end
     end
 
     describe '.run with a .rb hook' do
@@ -76,6 +106,72 @@ module Exwiw
         )
 
         expect(Dir[File.join(output_dir, 'insert-*-after_insert.sql')]).to be_empty
+      end
+    end
+
+    describe '.run with a .rb hook targeting collections (jsonl)' do
+      let(:output_dir) { 'tmp/after_insert_hook_spec_jsonl' }
+      let(:hook_path) { File.join(output_dir, 'hook.rb') }
+      let(:cli_options) { { ids: ['10', '20'], target_table: 'shops' } }
+
+      before do
+        FileUtils.rm_rf(output_dir)
+        FileUtils.mkdir_p(output_dir)
+      end
+
+      def run_hook(next_idx: 4)
+        AfterInsertHook.run(
+          path: hook_path,
+          cli_options: cli_options,
+          output_dir: output_dir,
+          next_idx: next_idx,
+          output_extension: 'jsonl',
+          logger: logger,
+        )
+      end
+
+      it 'writes one sequentially numbered file per collection' do
+        File.write(hook_path, <<~RUBY)
+          insert_jsonl 'users', <<~JSONL
+            <%- cli_options.fetch(:ids).each do |id| -%>
+            {"shop_id":<%= id %>,"email":"default@example.com"}
+            <%- end -%>
+          JSONL
+          insert_jsonl 'posts', '{"title":"welcome"}'
+        RUBY
+
+        run_hook
+
+        users = File.read(File.join(output_dir, 'insert-004-users.jsonl'))
+        expect(users).to include('{"shop_id":10,"email":"default@example.com"}')
+        expect(users).to include('{"shop_id":20,"email":"default@example.com"}')
+        posts = File.read(File.join(output_dir, 'insert-005-posts.jsonl'))
+        expect(posts).to include('{"title":"welcome"}')
+      end
+
+      it 'appends multiple calls for the same collection into one file' do
+        File.write(hook_path, <<~RUBY)
+          insert_jsonl 'users', '{"n":1}'
+          insert_jsonl 'users', '{"n":2}'
+        RUBY
+
+        run_hook
+
+        users = File.read(File.join(output_dir, 'insert-004-users.jsonl'))
+        expect(users).to eq(%({"n":1}\n{"n":2}))
+        expect(Dir[File.join(output_dir, 'insert-005-*.jsonl')]).to be_empty
+      end
+
+      it 'keeps the collection-less buffer at next_idx and numbers collections after it' do
+        File.write(hook_path, <<~RUBY)
+          insert_jsonl '{"untargeted":true}'
+          insert_jsonl 'users', '{"n":1}'
+        RUBY
+
+        run_hook
+
+        expect(File.read(File.join(output_dir, 'insert-004-after_insert.jsonl'))).to eq('{"untargeted":true}')
+        expect(File.read(File.join(output_dir, 'insert-005-users.jsonl'))).to eq('{"n":1}')
       end
     end
 
