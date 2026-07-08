@@ -178,6 +178,55 @@ module Exwiw
           expect(config.fields.first.to_hash).to eq({ "name" => "raw" })
         end
       end
+
+      context 'with reverse_scope' do
+        let(:json) do
+          {
+            "name" => "accounts",
+            "primary_key" => "_id",
+            "reverse_scope" => {
+              "via" => [
+                { "table" => "articles", "column" => "author_account_id" },
+                { "table" => "invitations", "column" => "invitee_account_id" },
+              ],
+            },
+            "belongs_tos" => [],
+            "fields" => [{ "name" => "_id" }],
+          }
+        end
+
+        it 'loads the via arms and round-trips them through to_hash' do
+          config = described_class.from(json)
+          expect(config.reverse_scope.via.map { |v| [v.table, v.column] }).to eq([
+            %w[articles author_account_id],
+            %w[invitations invitee_account_id],
+          ])
+          expect(config.to_hash["reverse_scope"]).to eq(json["reverse_scope"])
+        end
+
+        it 'is omitted from to_hash when not set' do
+          config = described_class.from(json.except("reverse_scope"))
+          expect(config.reverse_scope).to be_nil
+          expect(config.to_hash).not_to have_key("reverse_scope")
+        end
+      end
+
+      context 'when reverse_scope is set on an embedded config' do
+        let(:json) do
+          {
+            "name" => "posts",
+            "primary_key" => "_id",
+            "embedded_in" => { "collection_name" => "users", "path" => "posts" },
+            "reverse_scope" => { "via" => [{ "table" => "articles", "column" => "post_id" }] },
+            "belongs_tos" => [],
+            "fields" => [{ "name" => "_id" }],
+          }
+        end
+
+        it 'raises (an embedded config is never dumped on its own)' do
+          expect { described_class.from(json) }.to raise_error(ArgumentError, /reverse_scope must not be defined/)
+        end
+      end
     end
 
     describe '#merge' do
@@ -222,6 +271,14 @@ module Exwiw
         current.query_timeout_ms = 120_000
         merged = current.merge(passed)
         expect(merged.query_timeout_ms).to eq(120_000)
+      end
+
+      it 'carries the user-owned reverse_scope forward (the generator never emits it)' do
+        current.reverse_scope = ReverseScope.from(
+          'via' => [{ 'table' => 'articles', 'column' => 'author_account_id' }],
+        )
+        merged = current.merge(passed)
+        expect(merged.reverse_scope.via.map { |v| [v.table, v.column] }).to eq([%w[articles author_account_id]])
       end
     end
 

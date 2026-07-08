@@ -247,6 +247,82 @@ RSpec.describe Exwiw::DetermineTableProcessingOrder do
       end
     end
 
+    context 'with runtime_reverse_scope (mongodb)' do
+      # Generic reverse-scope shape: `accounts` is a global-identity collection
+      # referenced by two organization-scoped collections. In runtime mode the
+      # adapter needs the referencers' captured ids BEFORE accounts is dumped,
+      # so the reverse_scope arms become ordering dependencies — and an arm's
+      # own belongs_to back to the reverse-scoped collection is inverted rather
+      # than kept.
+      def collection(name, deps: [], reverse_via: nil)
+        Exwiw::MongodbCollectionConfig.from_symbol_keys(
+          name: name,
+          primary_key: '_id',
+          belongs_tos: deps.map { |d| { table_name: d, foreign_key: "#{d}_id" } },
+          fields: [{ name: '_id' }] + deps.map { |d| { name: "#{d}_id" } },
+          **(reverse_via ? { reverse_scope: { via: reverse_via } } : {}),
+        )
+      end
+
+      let(:organizations) { collection('organizations') }
+      let(:articles) { collection('articles', deps: %w[organizations accounts]) }
+      let(:invitations) { collection('invitations', deps: %w[organizations]) }
+      let(:accounts) do
+        collection('accounts', reverse_via: [
+          { table: 'articles', column: 'accounts_id' },
+          { table: 'invitations', column: 'invitee_account_id' },
+        ])
+      end
+      let(:account_profiles) { collection('account_profiles', deps: %w[accounts]) }
+
+      let(:tables) { [accounts, account_profiles, organizations, articles, invitations] }
+
+      it 'orders the reverse-scoped collection after all of its via referencers' do
+        order = described_class.run(tables, runtime_reverse_scope: true)
+
+        expect(order).to contain_exactly(*%w[organizations articles invitations accounts account_profiles])
+        expect(order.index('accounts')).to be > order.index('articles')
+        expect(order.index('accounts')).to be > order.index('invitations')
+        # articles belongs_to accounts, but that edge is inverted by the arm —
+        # while the non-arm satellite still comes after the reverse-scoped
+        # collection, so its filter can use the captured accounts ids.
+        expect(order.index('account_profiles')).to be > order.index('accounts')
+      end
+
+      it 'keeps the historical belongs_to-only order by default (SQL adapters)' do
+        order = described_class.run(tables)
+
+        # Without runtime mode, accounts (no belongs_to) resolves first and the
+        # referencer that belongs_to it comes after — the FK-loadable order the
+        # SQL output needs.
+        expect(order.index('accounts')).to be < order.index('articles')
+      end
+
+      it 'raises when reverse_scope arms create an ordering cycle' do
+        # accounts must come after articles (arm), articles after categories
+        # (belongs_to), categories after accounts (belongs_to): no order can
+        # satisfy all three, and silently breaking the arm would build the
+        # reverse filter from missing state.
+        articles_via_category = collection('articles', deps: %w[organizations categories])
+        categories = collection('categories', deps: %w[accounts])
+        accounts_config = collection('accounts', reverse_via: [{ table: 'articles', column: 'author_account_id' }])
+        tables = [organizations, articles_via_category, categories, accounts_config]
+
+        expect {
+          described_class.run(tables, runtime_reverse_scope: true)
+        }.to raise_error(ArgumentError, /reverse_scope creates an ordering cycle.*'accounts' \(via: articles\)/m)
+      end
+
+      it 'still breaks a plain belongs_to cycle (no reverse_scope edge involved) instead of raising' do
+        binders = collection('binders', deps: %w[responses])
+        responses = collection('responses', deps: %w[binders])
+
+        expect(
+          described_class.run([binders, responses, accounts, articles, invitations, organizations], runtime_reverse_scope: true)
+        ).to contain_exactly(*%w[binders responses accounts articles invitations organizations])
+      end
+    end
+
     context 'when full tables' do
       let(:tables) do
         [

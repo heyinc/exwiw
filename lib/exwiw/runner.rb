@@ -47,7 +47,16 @@ module Exwiw
       QueryAstBuilder.validate_scope!(dumpable_configs, table_by_name, @dump_target, @logger)
 
       @logger.info("Determining table processing order...")
-      ordered_table_names = DetermineTableProcessingOrder.run(dumpable_configs, logger: @logger)
+      # runtime_reverse_scope: the mongodb adapter builds a reverse-scoped
+      # collection's filter from ids captured while its `via` referencers were
+      # dumped, so those referencers must be processed first. The SQL adapters
+      # scope via subqueries and keep the historical belongs_to-only order
+      # (which also keeps their INSERT output loadable in foreign-key order).
+      ordered_table_names = DetermineTableProcessingOrder.run(
+        dumpable_configs,
+        logger: @logger,
+        runtime_reverse_scope: adapter.is_a?(Adapter::MongodbAdapter),
+      )
 
       clean_output_dir!
 
@@ -58,7 +67,7 @@ module Exwiw
       # replacement for the whole schema+inserts pass, after which the common
       # after-insert hook still runs. Everything before this point (validation,
       # scope check, ordering, output-dir clean) applies to both paths.
-      if use_mongodb_parallel?(adapter)
+      if use_mongodb_parallel?(adapter, configs)
         dump_mongodb_parallel(configs, table_by_name)
         run_after_insert_hook(adapter, ordered_table_names.size)
         return
@@ -209,12 +218,21 @@ module Exwiw
     # target (the schedule is built around the scoped DAG), and a runtime that can
     # fork. Anything else falls back to the serial path (warning when the user
     # explicitly asked for parallelism but it cannot apply).
-    private def use_mongodb_parallel?(adapter)
+    private def use_mongodb_parallel?(adapter, configs)
       return false unless adapter.is_a?(Adapter::MongodbAdapter)
       return false unless @parallel_workers && @parallel_workers > 1
 
       if @dump_target.table_name.nil?
         @logger.warn("--parallel-workers ignored: MongoDB parallelism needs a --target-collection; running serially.")
+        return false
+      end
+
+      # A reverse-scoped collection consumes @state captured from its `via`
+      # referencers, an ordering constraint the parallel schedule (built around
+      # the belongs_to DAG only) does not express yet — a worker could dump the
+      # collection before its arms and silently drop rows. Run serially instead.
+      if configs.any? { |c| c.respond_to?(:reverse_scope) && c.reverse_scope&.via&.any? }
+        @logger.warn("--parallel-workers ignored: reverse_scope collections require the serial processing order; running serially.")
         return false
       end
 

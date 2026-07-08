@@ -38,7 +38,13 @@ module Exwiw
       QueryAstBuilder.validate_scope!(dumpable_configs, table_by_name, @dump_target, @logger)
 
       @logger.debug("Determining table processing order...")
-      ordered_table_names = DetermineTableProcessingOrder.run(dumpable_configs, logger: @logger)
+      # Match the export's processing order (see Runner#run): mongodb orders a
+      # reverse-scoped collection after its `via` referencers.
+      ordered_table_names = DetermineTableProcessingOrder.run(
+        dumpable_configs,
+        logger: @logger,
+        runtime_reverse_scope: adapter.is_a?(Adapter::MongodbAdapter),
+      )
 
       total_size = ordered_table_names.size
       ordered_table_names.each_with_index do |table_name, idx|

@@ -360,6 +360,187 @@ module Exwiw
             }.to raise_error(NotImplementedError, /embedded/)
           end
         end
+
+        context "for a reverse-scoped collection (reverse_scope)" do
+          # `accounts` is a global-identity collection: no belongs_to of its own,
+          # referenced by two scoped collections (`articles.author_account_id`,
+          # `invitations.invitee_account_id`). It opts into reverse scoping via
+          # both arms; the arm columns are captured while the referencers are
+          # dumped (see the ordering in DetermineTableProcessingOrder) and the
+          # collection is constrained to their union.
+          let(:organizations) do
+            MongodbCollectionConfig.from(
+              "name" => "organizations", "primary_key" => "_id",
+              "belongs_tos" => [], "fields" => [{ "name" => "_id" }],
+            )
+          end
+          let(:articles) do
+            MongodbCollectionConfig.from(
+              "name" => "articles", "primary_key" => "_id",
+              "belongs_tos" => [{ "table_name" => "organizations", "foreign_key" => "organization_id" }],
+              "fields" => [{ "name" => "_id" }, { "name" => "organization_id" }],
+            )
+          end
+          let(:invitations) do
+            MongodbCollectionConfig.from(
+              "name" => "invitations", "primary_key" => "_id",
+              "belongs_tos" => [{ "table_name" => "organizations", "foreign_key" => "organization_id" }],
+              "fields" => [{ "name" => "_id" }, { "name" => "organization_id" }, { "name" => "invitee_account_id" }],
+            )
+          end
+          let(:accounts_reverse_scope) do
+            {
+              "via" => [
+                { "table" => "articles", "column" => "author_account_id" },
+                { "table" => "invitations", "column" => "invitee_account_id" },
+              ],
+            }
+          end
+          let(:accounts) do
+            MongodbCollectionConfig.from(
+              "name" => "accounts", "primary_key" => "_id",
+              "reverse_scope" => accounts_reverse_scope,
+              "belongs_tos" => [], "fields" => [{ "name" => "_id" }],
+            )
+          end
+          let(:local_config_by_name) do
+            [organizations, articles, invitations, accounts]
+              .each_with_object({}) { |c, h| h[c.name] = c }
+          end
+          let(:dump_target) { Exwiw::DumpTarget.new(table_name: "organizations", ids: ["org1"]) }
+
+          it "captures the via-arm column of a referencer even when it is not a declared field" do
+            # articles does not declare author_account_id in `fields`, but the
+            # accounts reverse_scope names it as an arm column, so it must be
+            # projected and captured while articles streams.
+            query = adapter.build_query(articles, dump_target, local_config_by_name)
+            expect(query.projection).to include("author_account_id" => 1)
+          end
+
+          it "constrains the collection to the union of the captured arm ids, dropping nils and deduping" do
+            adapter.instance_variable_set(:@state, {
+              "articles" => { "_id" => %w[ar1 ar2 ar3], "author_account_id" => ["acc1", "acc2", nil, "acc2"] },
+              "invitations" => { "_id" => %w[in1], "invitee_account_id" => ["acc2", "acc3"] },
+            })
+            query = adapter.build_query(accounts, dump_target, local_config_by_name)
+            expect(query.filter).to eq("_id" => { "$in" => %w[acc1 acc2 acc3] })
+          end
+
+          it "flattens an array-valued arm column (one referenced id per element)" do
+            adapter.instance_variable_set(:@state, {
+              "articles" => { "_id" => %w[ar1], "author_account_id" => [%w[acc1 acc2], nil] },
+              "invitations" => { "_id" => [], "invitee_account_id" => [] },
+            })
+            query = adapter.build_query(accounts, dump_target, local_config_by_name)
+            expect(query.filter).to eq("_id" => { "$in" => %w[acc1 acc2] })
+          end
+
+          it "matches nothing (not everything) when the arms captured no ids" do
+            adapter.instance_variable_set(:@state, {
+              "articles" => { "_id" => [], "author_account_id" => [] },
+              "invitations" => { "_id" => [], "invitee_account_id" => [] },
+            })
+            query = adapter.build_query(accounts, dump_target, local_config_by_name)
+            expect(query.filter).to eq("_id" => { "$in" => [] })
+          end
+
+          it "skips an arm whose referencer has not been dumped, keeping the surviving arms" do
+            adapter.instance_variable_set(:@state, {
+              "invitations" => { "_id" => %w[in1], "invitee_account_id" => %w[acc3] },
+            })
+            query = adapter.build_query(accounts, dump_target, local_config_by_name)
+            expect(query.filter).to eq("_id" => { "$in" => %w[acc3] })
+          end
+
+          it "skips an unscoped arm (referencer with no path to the dump target) with a warning" do
+            # `banners` is reference data dumped in full: its captured ids span
+            # every scope, so unioning them would silently widen the dump —
+            # exactly the arm the SQL adapters skip too.
+            banners = MongodbCollectionConfig.from(
+              "name" => "banners", "primary_key" => "_id",
+              "belongs_tos" => [], "fields" => [{ "name" => "_id" }, { "name" => "account_id" }],
+            )
+            accounts_config = MongodbCollectionConfig.from(
+              "name" => "accounts", "primary_key" => "_id",
+              "reverse_scope" => {
+                "via" => [
+                  { "table" => "banners", "column" => "account_id" },
+                  { "table" => "articles", "column" => "author_account_id" },
+                ],
+              },
+              "belongs_tos" => [], "fields" => [{ "name" => "_id" }],
+            )
+            configs = local_config_by_name.merge("banners" => banners, "accounts" => accounts_config)
+
+            logger = instance_spy(Logger)
+            local_adapter = described_class.new(connection_config, logger)
+            local_adapter.instance_variable_set(:@state, {
+              "banners" => { "_id" => %w[b1], "account_id" => %w[acc9] },
+              "articles" => { "_id" => %w[ar1], "author_account_id" => %w[acc1] },
+            })
+
+            query = local_adapter.build_query(accounts_config, dump_target, configs)
+            expect(query.filter).to eq("_id" => { "$in" => %w[acc1] })
+            expect(logger).to have_received(:warn).with(/'banners\.account_id' is not scoped/)
+          end
+
+          it "falls back to the historical behavior when no arm survives (full dump for a belongs_to-less collection)" do
+            # No referencer has any captured state, so every arm is skipped —
+            # mirror the SQL adapters' dump-all fallback for a table with no
+            # belongs_to of its own. (With the reverse_scope-aware processing
+            # order this only happens when every referencer itself matched
+            # nothing AND was skipped, e.g. ignore:true referencers.)
+            adapter.instance_variable_set(:@state, {})
+            query = adapter.build_query(accounts, dump_target, local_config_by_name)
+            expect(query.filter).to eq({})
+          end
+
+          it "ignores reverse_scope on a genuinely scoped collection (belongs_to scope wins, as in SQL)" do
+            scoped_accounts = MongodbCollectionConfig.from(
+              "name" => "accounts", "primary_key" => "_id",
+              "reverse_scope" => accounts_reverse_scope,
+              "belongs_tos" => [{ "table_name" => "organizations", "foreign_key" => "organization_id" }],
+              "fields" => [{ "name" => "_id" }, { "name" => "organization_id" }],
+            )
+            configs = local_config_by_name.merge("accounts" => scoped_accounts)
+            adapter.instance_variable_set(:@state, {
+              "organizations" => { "_id" => %w[org1] },
+              "articles" => { "_id" => %w[ar1], "author_account_id" => %w[acc1] },
+            })
+            query = adapter.build_query(scoped_accounts, dump_target, configs)
+            expect(query.filter).to eq("organization_id" => { "$in" => %w[org1] })
+          end
+
+          it "replaces the reference-parent strict-AND with the reverse filter (SQL parity: reverse scope IS the scope clause)" do
+            # accounts also belongs_to `plans` (reference data). SQL emits only
+            # the `pk IN (UNION ...)` clause for a reverse-scoped table; the
+            # mongodb filter must likewise not AND the reference-parent ids in.
+            plans = MongodbCollectionConfig.from(
+              "name" => "plans", "primary_key" => "_id",
+              "belongs_tos" => [], "fields" => [{ "name" => "_id" }],
+            )
+            accounts_with_plan = MongodbCollectionConfig.from(
+              "name" => "accounts", "primary_key" => "_id",
+              "reverse_scope" => accounts_reverse_scope,
+              "belongs_tos" => [{ "table_name" => "plans", "foreign_key" => "plan_id" }],
+              "fields" => [{ "name" => "_id" }, { "name" => "plan_id" }],
+            )
+            configs = local_config_by_name.merge("plans" => plans, "accounts" => accounts_with_plan)
+            adapter.instance_variable_set(:@state, {
+              "plans" => { "_id" => %w[p1 p2] },
+              "articles" => { "_id" => %w[ar1], "author_account_id" => %w[acc1] },
+            })
+            query = adapter.build_query(accounts_with_plan, dump_target, configs)
+            expect(query.filter).to eq("_id" => { "$in" => %w[acc1] })
+          end
+
+          it "builds a placeholder id filter in explain placeholder mode (real filter shape, no state)" do
+            placeholder = BSON::ObjectId.from_string("ffffffffffffffffffffffff")
+            adapter.explain_scope_with_placeholders!
+            query = adapter.build_query(accounts, dump_target, local_config_by_name)
+            expect(query.filter).to eq("_id" => { "$in" => [placeholder] })
+          end
+        end
       end
 
       describe "#execute" do
