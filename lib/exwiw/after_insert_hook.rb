@@ -75,7 +75,7 @@ module Exwiw
     class Context
       # Collection names become part of the output filename, so restrict them
       # to plain path-safe names (no separators, no leading dot).
-      COLLECTION_NAME_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/
+COLLECTION_NAME_PATTERN = /\A[A-Za-z0-9_][A-Za-z0-9_.-]*\z/
 
       attr_reader :cli_options, :collected, :collected_by_collection
 
