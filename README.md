@@ -488,10 +488,11 @@ By default, exwiw generates `delete-*.sql` files alongside the `insert-*.sql` fi
 
 `--after-insert-hook=PATH` runs a post-processing hook **after** all per-table insert/delete files have been written. The hook can be either a Ruby file (`.rb`) or any executable script (e.g. `.sh`).
 
-**Ruby hook (`.rb`)**: provides a tiny DSL with two builtins:
+**Ruby hook (`.rb`)**: provides a tiny DSL with these builtins:
 
 - `cli_options` — Hash of all parsed CLI options (e.g. `cli_options.fetch(:ids)` returns the `--ids` array).
 - `insert_sql(template)` — appends an ERB-rendered string to a buffer. After the hook finishes, the buffer is concatenated and written to `insert-{N+1}-after_insert.{ext}` where `{N+1}` is one past the last per-table insert file. For the MongoDB adapter the equivalent alias `insert_jsonl(template)` is available; output goes to `insert-{N+1}-after_insert.jsonl`. Multiple `insert_sql` calls in a single hook are joined with `"\n"` into the same file. If no `insert_sql` call is made, no file is created.
+- `insert_jsonl(collection, template)` — **MongoDB adapter only**. SQL statements name their table in-band, but JSONL documents do not — the import convention derives the target collection from the filename — so the two-argument form writes the ERB-rendered extended-JSON lines to the named collection's own `insert-NNN-<collection>.jsonl` file, importable with the same `mongoimport --collection <collection>` convention as the per-collection dump files. Multiple calls targeting the same collection are appended (joined with `"\n"`) into that collection's file; distinct collections get one file each, numbered sequentially after the last per-collection dump file (the collection-less `after_insert` buffer, when also used, keeps `{N+1}` and the collection files follow it). Calling this form with a SQL adapter raises an error.
 
 Example `hooks/seed_default_users.rb`:
 
@@ -502,6 +503,17 @@ insert_sql <<~SQL
   INSERT INTO users (tenant_id, email) VALUES (<%= tenant_id %>, 'default@example.com');
   <%- end -%>
 SQL
+```
+
+MongoDB example seeding two collections (`insert-{N+1}-users.jsonl` and `insert-{N+2}-posts.jsonl`):
+
+```ruby
+insert_jsonl 'users', <<~JSONL
+  <%- cli_options.fetch(:ids).each do |shop_id| -%>
+  {"shop_id":{"$oid":"<%= shop_id %>"},"email":"default@example.com"}
+  <%- end -%>
+JSONL
+insert_jsonl 'posts', '{"title":"welcome"}'
 ```
 
 **Shell hook**: anything other than `.rb` is exec'd as a child process. It is a pure side-effect hook — exwiw does not capture its stdout. The hook receives these env vars and inherits `DATABASE_PASSWORD` from the parent:
@@ -808,6 +820,7 @@ The MongoDB adapter is experimental. To use it:
   ```bash
   mongoimport --db app_dev --collection users --file dump/insert-002-users.jsonl
   ```
+- A Ruby [after-insert hook](#after-insert-hook) can seed extra documents into named collections with `insert_jsonl(collection, template)`; each targeted collection gets its own `insert-NNN-<collection>.jsonl` file numbered after the dump's own files, so the filename-based `mongoimport` convention above applies to hook output unchanged.
 - The leading `dump/insert-000-schema.js` contains `db.createCollection(...)` and `db.<col>.createIndex(...)` calls for every top-level collection (indexes are introspected from the source via `listIndexes`; the auto-created `_id_` index is skipped). Apply it with mongosh **before** running `mongoimport`:
   ```bash
   mongosh "mongodb://localhost/app_dev" dump/insert-000-schema.js

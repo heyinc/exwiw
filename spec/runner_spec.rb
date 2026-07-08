@@ -269,6 +269,60 @@ module Exwiw
       end
     end
 
+    describe 'with after_insert_hook_path (.rb) targeting collections on mongodb' do
+      let(:connection_config) do
+        ConnectionConfig.new(
+          adapter: 'mongodb',
+          database_name: 'exwiw_test',
+          host: ENV.fetch('MONGO_HOST', '127.0.0.1'),
+          port: ENV.fetch('MONGO_PORT', 27017).to_i,
+          user: nil,
+          password: nil,
+        )
+      end
+      let(:hook_path) { 'tmp/runner_spec_after_hook_mongodb.rb' }
+      let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['a00100000000000000000001']) }
+      let(:runner) do
+        Runner.new(
+          connection_config: connection_config,
+          output_dir: output_dir,
+          schema_dir: 'e2e/mongodb-schema',
+          dump_target: dump_target,
+          after_insert_hook_path: hook_path,
+          cli_options: { ids: ['a00100000000000000000001'], target_table: 'shops' },
+          logger: ::Logger.new(nil),
+        )
+      end
+
+      before do
+        File.write(hook_path, <<~RUBY)
+          insert_jsonl 'coupons', '{"code":"WELCOME"}'
+          insert_jsonl 'coupons', '{"code":"VIP"}'
+          insert_jsonl 'tags', '{"name":"new"}'
+        RUBY
+      end
+
+      after do
+        FileUtils.rm_f(hook_path)
+      end
+
+      it 'writes one jsonl file per targeted collection, numbered after the extracted collections' do
+        runner.run
+
+        coupons = Dir[File.join(output_dir, 'insert-*-coupons.jsonl')]
+        tags = Dir[File.join(output_dir, 'insert-*-tags.jsonl')]
+        expect(coupons.size).to eq(1)
+        expect(tags.size).to eq(1)
+        expect(File.read(coupons.first)).to eq(%({"code":"WELCOME"}\n{"code":"VIP"}))
+        expect(File.read(tags.first)).to eq('{"name":"new"}')
+
+        index = ->(path) { File.basename(path)[/\Ainsert-(\d{3})/, 1].to_i }
+        extracted_max = (Dir[File.join(output_dir, 'insert-*')] - coupons - tags).map(&index).max
+        expect(index.(coupons.first)).to eq(extracted_max + 1)
+        expect(index.(tags.first)).to eq(extracted_max + 2)
+      end
+    end
+
     describe 'with ignore:true on a table config' do
       let(:dump_target) { DumpTarget.new(table_name: nil, ids: []) }
 
