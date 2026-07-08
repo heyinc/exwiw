@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-07-08
+
 ### Added
 
 - **`map` masking mode (SQL adapters).** The long-promised `map` column key is now implemented: its value is evaluated once as Ruby and must yield a `Proc`, which is then called for every fetched row with a row accessor (`r['column_name']` reads any column's fetched value) and whose return value replaces the column value in the dump. Unlike `replace_with`/`raw_sql` (which compile into the `SELECT` and run in the database), `map` runs in the exwiw process — it can express transforms SQL cannot, at a measured cost of well under a microsecond per row. There is no automatic NULL preservation (the proc receives `nil` and decides), the key is exclusive with the other masking keys on the same column, and it executes arbitrary Ruby from the schema config — only load trusted configs. mysql/postgresql/sqlite only (the MongoDB adapter silently drops the key, like `raw_sql`); both the INSERT and the PostgreSQL COPY output paths are covered, and the transform streams with the existing bounded-memory dump (no change to the memory profile).
