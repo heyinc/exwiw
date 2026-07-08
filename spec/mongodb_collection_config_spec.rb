@@ -173,9 +173,59 @@ module Exwiw
           }
         end
 
-        it 'silently ignores raw_sql since MongodbField does not declare it' do
-          config = described_class.from(json)
-          expect(config.fields.first.to_hash).to eq({ "name" => "raw" })
+        it 'raises: MongodbField does not declare raw_sql (it was previously a silent no-op)' do
+          expect { described_class.from(json) }.to raise_error(
+            UnknownConfigKeyError,
+            /Unknown key 'raw_sql' in collection 'users' \(in fields\[0\]\)/,
+          )
+        end
+      end
+
+      context 'strict unknown-key validation' do
+        let(:base_json) do
+          {
+            "name" => "users",
+            "primary_key" => "_id",
+            "belongs_tos" => [{ "table_name" => "shops", "foreign_key" => "shop_id" }],
+            "fields" => [{ "name" => "_id" }],
+          }
+        end
+
+        it 'rejects an unknown top-level key, naming the key and the collection' do
+          expect { described_class.from(base_json.merge("reverse_scop" => { "via" => [] })) }.to raise_error(
+            UnknownConfigKeyError,
+            /Unknown key 'reverse_scop' in collection 'users'\. Allowed keys: .*reverse_scope/,
+          )
+        end
+
+        it 'rejects an unknown key inside a belongs_to entry with its position' do
+          json = base_json.merge(
+            "belongs_tos" => [{ "table_name" => "shops", "foreign_key" => "shop_id", "foreign_keu" => "x" }],
+          )
+          expect { described_class.from(json) }.to raise_error(
+            UnknownConfigKeyError,
+            /Unknown key 'foreign_keu' in collection 'users' \(in belongs_tos\[0\]\)/,
+          )
+        end
+
+        it 'rejects an unknown key inside a reverse_scope via arm' do
+          json = base_json.merge(
+            "belongs_tos" => [],
+            "reverse_scope" => { "via" => [{ "table" => "articles", "column" => "user_id", "colunm" => "typo" }] },
+          )
+          expect { described_class.from(json) }.to raise_error(
+            UnknownConfigKeyError,
+            /Unknown key 'colunm' in collection 'users' \(in reverse_scope\.via\[0\]\)/,
+          )
+        end
+
+        it 'keeps accepting comment everywhere it is declared (documentation key)' do
+          json = base_json.merge(
+            "comment" => "collection note",
+            "belongs_tos" => [{ "table_name" => "shops", "foreign_key" => "shop_id", "comment" => "bt note" }],
+            "fields" => [{ "name" => "_id", "comment" => "field note" }],
+          )
+          expect { described_class.from(json) }.not_to raise_error
         end
       end
 

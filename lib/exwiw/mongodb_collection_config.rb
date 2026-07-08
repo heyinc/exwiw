@@ -53,6 +53,16 @@ module Exwiw
     attribute :reverse_scope, Serdes::OptionalType.new(ReverseScope), skip_serializing_if_nil: true
 
     def self.from(obj)
+      # Reject unknown keys before deserializing: Serdes silently drops them,
+      # which would turn a typo'd key — or a key only the SQL adapters support,
+      # like a field-level `raw_sql` — into a silent no-op (see
+      # Exwiw::StrictKeys). `comment` is a declared attribute here and on the
+      # nested belongs_to/field entries, so free-form notes stay accepted.
+      if obj.is_a?(Hash)
+        collection_name = obj["name"] || obj[:name]
+        StrictKeys.validate!(self, obj, owner: "collection '#{collection_name}'")
+      end
+
       instance = super
       instance.__send__(:validate_embedded!)
       instance.__send__(:validate_belongs_tos!)

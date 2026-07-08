@@ -293,7 +293,12 @@ module Exwiw
         # considered during extraction. Done here (after loading from file)
         # rather than in `.from` so the schema generators keep the full config
         # and can preserve the ignored entries on regeneration.
-        klass.from(json).reject_ignored_members!
+        begin
+          klass.from(json).reject_ignored_members!
+        rescue UnknownConfigKeyError => e
+          # `.from` knows the table, not the file; point at the offending file.
+          raise UnknownConfigKeyError, "#{file}: #{e.message}"
+        end
       end
     end
 

@@ -124,6 +124,23 @@ module Exwiw
       end
     end
 
+    describe 'when a schema config carries an unknown key' do
+      let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1']) }
+
+      before do
+        shops_config = JSON.parse(File.read('e2e/sqlite-schema/shops.json'))
+        shops_config['bulk_insert_chunk_sise'] = 2 # typo'd key
+        File.write(File.join(schema_dir, 'shops.json'), JSON.dump(shops_config))
+      end
+
+      it 'aborts with an error naming the key, the table, and the offending file' do
+        expect { runner.run }.to raise_error(UnknownConfigKeyError) { |e|
+          expect(e.message).to include(File.join(schema_dir, 'shops.json'))
+          expect(e.message).to include("Unknown key 'bulk_insert_chunk_sise' in table 'shops'")
+        }
+      end
+    end
+
     describe 'ruby-side masking (map)' do
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: shop_ids) }
       let(:shop_ids) { ['1'] }

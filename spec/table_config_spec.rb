@@ -578,5 +578,66 @@ module Exwiw
         }.to raise_error(ArgumentError, /seed 'other\.id' does not name a column/)
       end
     end
+
+    describe 'strict unknown-key validation' do
+      let(:base_json) do
+        {
+          'name' => 'users',
+          'primary_key' => 'id',
+          'belongs_tos' => [{ 'table_name' => 'shops', 'foreign_key' => 'shop_id' }],
+          'columns' => [{ 'name' => 'id' }],
+        }
+      end
+
+      it 'rejects an unknown top-level key, naming the key and the table' do
+        expect { TableConfig.from(base_json.merge('reverse_scop' => { 'via' => [] })) }.to raise_error(
+          UnknownConfigKeyError,
+          /Unknown key 'reverse_scop' in table 'users'\. Allowed keys: .*reverse_scope/,
+        )
+      end
+
+      it 'lists every unknown key at once' do
+        expect { TableConfig.from(base_json.merge('foo' => 1, 'bar' => 2)) }.to raise_error(
+          UnknownConfigKeyError,
+          /Unknown keys 'foo', 'bar' in table 'users'/,
+        )
+      end
+
+      it 'rejects an unknown key inside a belongs_to entry with its position' do
+        json = base_json.merge(
+          'belongs_tos' => [
+            { 'table_name' => 'shops', 'foreign_key' => 'shop_id' },
+            { 'table_name' => 'shops', 'foreign_key' => 'owner_id', 'foreign_keu' => 'x' },
+          ],
+        )
+        expect { TableConfig.from(json) }.to raise_error(
+          UnknownConfigKeyError,
+          /Unknown key 'foreign_keu' in table 'users' \(in belongs_tos\[1\]\)/,
+        )
+      end
+
+      it 'rejects an unknown key inside a column entry, including nested replace_with_fake_data' do
+        json = base_json.merge(
+          'columns' => [{ 'name' => 'id' }, { 'name' => 'email', 'replace_with_fake_data' => { 'seed' => 'id', 'type' => 'email', 'lcoale' => 'ja' } }],
+        )
+        expect { TableConfig.from(json) }.to raise_error(
+          UnknownConfigKeyError,
+          /Unknown key 'lcoale' in table 'users' \(in columns\[1\]\.replace_with_fake_data\)/,
+        )
+      end
+
+      it 'keeps accepting comment everywhere it is declared (documentation key)' do
+        json = base_json.merge(
+          'comment' => 'table note',
+          'belongs_tos' => [{ 'table_name' => 'shops', 'foreign_key' => 'shop_id', 'comment' => 'bt note' }],
+          'columns' => [{ 'name' => 'id', 'comment' => 'column note' }],
+        )
+        expect { TableConfig.from(json) }.not_to raise_error
+      end
+
+      it 'raises an ArgumentError subclass so existing invalid-config handling still applies' do
+        expect(UnknownConfigKeyError.ancestors).to include(ArgumentError)
+      end
+    end
   end
 end

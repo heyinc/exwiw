@@ -74,7 +74,12 @@ module Exwiw
     private def load_table_config(klass)
       Dir[File.join(@schema_dir, "*.json")].map do |file|
         json = JSON.parse(File.read(file))
-        klass.from(json).reject_ignored_members!
+        begin
+          klass.from(json).reject_ignored_members!
+        rescue UnknownConfigKeyError => e
+          # `.from` knows the table, not the file; point at the offending file.
+          raise UnknownConfigKeyError, "#{file}: #{e.message}"
+        end
       end
     end
 
