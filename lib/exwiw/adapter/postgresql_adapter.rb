@@ -136,10 +136,14 @@ module Exwiw
         # robustness: enums swallow duplicate_object on re-restore; extensions
         # warn-and-skip feature_not_supported / invalid_schema_name so a target
         # that cannot provide the extension (e.g. pglogical's schema absent, or a
-        # managed-platform extension) does not abort the restore.
+        # managed-platform extension) does not abort the restore. The COMMENT ON
+        # EXTENSION that pg_dump emits alongside is likewise wrapped to swallow
+        # undefined_object, so a skipped extension's trailing comment does not
+        # abort the restore either.
         idempotent = stdout
         idempotent = DdlPostprocessor.wrap_create_type_enum_in_do_block(idempotent)
         idempotent = DdlPostprocessor.wrap_create_extension_in_do_block(idempotent)
+        idempotent = DdlPostprocessor.wrap_comment_on_extension_in_do_block(idempotent)
         idempotent = DdlPostprocessor.add_if_not_exists_to_create_schema(idempotent)
         idempotent = DdlPostprocessor.add_if_not_exists_to_create_sequence(idempotent)
         idempotent = DdlPostprocessor.add_if_not_exists_to_create_table(idempotent)

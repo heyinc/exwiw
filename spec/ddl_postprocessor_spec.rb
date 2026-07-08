@@ -183,6 +183,44 @@ module Exwiw
       end
     end
 
+    describe '.wrap_comment_on_extension_in_do_block' do
+      it 'wraps COMMENT ON EXTENSION in a DO block that swallows undefined_object' do
+        sql = "COMMENT ON EXTENSION btree_gist IS 'support for indexing common datatypes in GiST';"
+        out = described_class.wrap_comment_on_extension_in_do_block(sql)
+        expect(out).to eq(
+          "DO $exwiw$ BEGIN COMMENT ON EXTENSION btree_gist IS 'support for indexing common datatypes in GiST'; " \
+          "EXCEPTION WHEN undefined_object THEN NULL; END $exwiw$;"
+        )
+      end
+
+      it 'wraps a quoted extension name' do
+        sql = %(COMMENT ON EXTENSION "uuid-ossp" IS 'gen uuids';)
+        out = described_class.wrap_comment_on_extension_in_do_block(sql)
+        expect(out).to include('DO $exwiw$ BEGIN COMMENT ON EXTENSION "uuid-ossp" IS \'gen uuids\';')
+        expect(out).to include('EXCEPTION WHEN undefined_object THEN NULL; END $exwiw$;')
+      end
+
+      it 'does not end the match early on a semicolon inside the comment string' do
+        sql = "COMMENT ON EXTENSION foo IS 'a; b; c';"
+        out = described_class.wrap_comment_on_extension_in_do_block(sql)
+        expect(out).to eq(
+          "DO $exwiw$ BEGIN COMMENT ON EXTENSION foo IS 'a; b; c'; " \
+          "EXCEPTION WHEN undefined_object THEN NULL; END $exwiw$;"
+        )
+      end
+
+      it 'wraps each COMMENT ON EXTENSION independently and leaves other DDL untouched' do
+        sql = <<~SQL
+          COMMENT ON EXTENSION a IS 'x';
+          CREATE TABLE IF NOT EXISTS public.t (id int);
+          COMMENT ON EXTENSION b IS 'y';
+        SQL
+        out = described_class.wrap_comment_on_extension_in_do_block(sql)
+        expect(out.scan(/DO \$exwiw\$ BEGIN COMMENT ON EXTENSION/).size).to eq(2)
+        expect(out).to include('CREATE TABLE IF NOT EXISTS public.t (id int);')
+      end
+    end
+
     describe '.create_type_enum_statements' do
       it 'returns empty string for empty input' do
         expect(described_class.create_type_enum_statements([])).to eq("")
