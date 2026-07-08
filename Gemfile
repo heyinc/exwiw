@@ -16,6 +16,9 @@ gem "sqlite3"
 gem "mongo"
 gem "mongoid"
 
+# Optional at runtime (lazy-required by replace_with_fake_data masking).
+gem "faker"
+
 gem "activerecord"
 
 # Exercises the non-ActiveRecord belongs_to target path (a master with no DB

@@ -86,9 +86,17 @@ module Exwiw
         # turning the fetched rows into SQL/JSONL, the rescue below can report
         # both the failing step and the exact extraction query that produced the
         # data being processed.
-        phase = "executing extraction query"
+        phase = "compiling row transforms (map/replace_with_fake_data)"
         begin
+          # Ruby-side masking (map / replace_with_fake_data): wrap the streamed
+          # results so rows are transformed as they are drained. nil (and thus
+          # a byte-identical, cost-free run) when no column opts in; covers
+          # both the INSERT and COPY branches below.
+          row_transformer = RowTransformer.build(table)
+
+          phase = "executing extraction query"
           results = adapter.execute(query_ast)
+          results = row_transformer.wrap(results) if row_transformer
           insert_idx = (idx + 1).to_s.rjust(3, '0')
 
           if @output_format == 'copy'

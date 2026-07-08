@@ -359,6 +359,66 @@ module Exwiw
         end
       end
 
+      # Ruby-side masking against a real sqlite cursor: sqlite yields native
+      # Integer ids, so this proves the seed's to_s normalization on real
+      # driver output (pg/mysql yield strings; RowTransformer specs cover the
+      # equivalence).
+      describe "ruby-side masking (RowTransformer over a live cursor)" do
+        # Keep the Tempfile object referenced: taking only #path lets GC
+        # finalize (unlink) it mid-example, silently replacing the seeded DB
+        # with an empty one.
+        let(:db_file) { Tempfile.new(["row_transform", ".sqlite3"]) }
+        let(:db_path) { db_file.path }
+        let(:transform_connection_config) do
+          ConnectionConfig.new(
+            adapter: adapter_name,
+            database_name: db_path,
+            host: nil,
+            port: nil,
+            user: nil,
+            password: nil,
+          )
+        end
+        let(:transform_adapter) { described_class.new(transform_connection_config, logger) }
+        let(:table) do
+          Exwiw::TableConfig.from_symbol_keys(
+            name: "accounts",
+            primary_key: "id",
+            belongs_tos: [],
+            columns: [
+              { name: "id" },
+              { name: "nickname", replace_with_fake_data: { seed: "accounts.id", type: "human_name" } },
+              { name: "email", map: 'proc { |r| "user#{r["id"]}@masked.example" }' },
+            ],
+          )
+        end
+        let(:ast) do
+          QueryAst::Select.new.tap do |select_ast|
+            select_ast.from(table.name)
+            select_ast.select(table.columns)
+          end
+        end
+
+        before do
+          db = ::SQLite3::Database.new(db_path)
+          db.execute("CREATE TABLE accounts (id INTEGER PRIMARY KEY, nickname TEXT, email TEXT)")
+          db.execute("INSERT INTO accounts (id, nickname, email) VALUES (1, 'Alice', 'a@example.com')")
+          db.execute("INSERT INTO accounts (id, nickname, email) VALUES (2, NULL, 'b@example.com')")
+          db.close
+        end
+
+        it "transforms streamed rows, matching the value derived from a string seed" do
+          transformer = Exwiw::RowTransformer.build(table)
+          rows = transformer.wrap(transform_adapter.execute(ast)).to_a
+
+          expected_fake = Exwiw::RowTransformer.build(table).wrap([["1", "Alice", "x"]]).to_a[0][1]
+          expect(rows).to eq([
+            [1, expected_fake, "user1@masked.example"],
+            [2, nil, "user2@masked.example"],
+          ])
+        end
+      end
+
       describe "#explain" do
         it "returns EXPLAIN QUERY PLAN output for a simple select" do
           output = adapter.explain(build_select_shops_ast)

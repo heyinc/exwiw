@@ -123,6 +123,35 @@ module Exwiw
         expect(sql.scan(/INSERT INTO shops/).size).to eq(1)
       end
     end
+
+    describe 'ruby-side masking (map)' do
+      let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: shop_ids) }
+      let(:shop_ids) { ['1'] }
+
+      before do
+        shops_config = JSON.parse(File.read('e2e/sqlite-schema/shops.json'))
+        name_column = shops_config['columns'].find { |c| c['name'] == 'name' }
+        name_column['map'] = 'proc { |r| "shop-#{r["id"]}-masked" }'
+        File.write(File.join(schema_dir, 'shops.json'), JSON.dump(shops_config))
+      end
+
+      it 'writes the mapped value into the dump' do
+        runner.run
+
+        sql = File.read(Dir[File.join(output_dir, 'insert-*-shops.sql')].first)
+        expect(sql).to include("'shop-1-masked'")
+      end
+
+      context 'when no rows match' do
+        let(:shop_ids) { ['999999'] }
+
+        it 'still detects the empty table and skips the file' do
+          runner.run
+
+          expect(Dir[File.join(output_dir, 'insert-*-shops.sql')]).to be_empty
+        end
+      end
+    end
     describe 'error reporting when SQL generation fails' do
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1', '2']) }
       let(:log_io) { StringIO.new }

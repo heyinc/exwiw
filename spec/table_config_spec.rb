@@ -491,5 +491,92 @@ module Exwiw
         expect(merged.column_names).to eq(['id', 'added'])
       end
     end
+
+    describe 'ruby-side masking (map / replace_with_fake_data)' do
+      def config_with_columns(columns)
+        TableConfig.from_symbol_keys(name: 'users', primary_key: 'id', columns: columns)
+      end
+
+      it 'round-trips both keys through JSON and omits them when unset' do
+        config = config_with_columns([
+          { name: 'id' },
+          { name: 'name', replace_with_fake_data: { seed: 'users.id', type: 'human_name', locale: 'ja' } },
+          { name: 'bio', map: 'proc { |r| "bio" }' },
+        ])
+        reloaded = TableConfig.from(JSON.parse(JSON.generate(config.to_hash)))
+        expect(reloaded.columns[1].replace_with_fake_data.seed).to eq('users.id')
+        expect(reloaded.columns[1].replace_with_fake_data.type).to eq('human_name')
+        expect(reloaded.columns[1].replace_with_fake_data.locale).to eq('ja')
+        expect(reloaded.columns[2].map).to eq('proc { |r| "bio" }')
+        expect(reloaded.columns[0].to_hash).to eq({ 'name' => 'id' })
+        expect(reloaded.columns[1].to_hash['replace_with_fake_data']).to eq(
+          { 'seed' => 'users.id', 'type' => 'human_name', 'locale' => 'ja' }
+        )
+      end
+
+      it 'preserves both keys across merge with a regenerated config' do
+        current = config_with_columns([
+          { name: 'id' },
+          { name: 'name', replace_with_fake_data: { seed: 'id', type: 'human_name' } },
+          { name: 'bio', map: 'proc { |r| nil }' },
+        ])
+        regenerated = config_with_columns([{ name: 'id' }, { name: 'name' }, { name: 'bio' }])
+        merged = current.merge(regenerated)
+        expect(merged.columns[1].replace_with_fake_data.type).to eq('human_name')
+        expect(merged.columns[2].map).to eq('proc { |r| nil }')
+      end
+
+      it 'accepts a bare seed and a table-qualified seed' do
+        expect {
+          config_with_columns([
+            { name: 'id' },
+            { name: 'name', replace_with_fake_data: { seed: 'id', type: 'human_name' } },
+            { name: 'email', replace_with_fake_data: { seed: 'users.id', type: 'email' } },
+          ])
+        }.not_to raise_error
+      end
+
+      it 'rejects combining map with replace_with' do
+        expect {
+          config_with_columns([{ name: 'id' }, { name: 'name', map: 'proc {}', replace_with: 'x' }])
+        }.to raise_error(ArgumentError, /column 'name'.*cannot be combined/)
+      end
+
+      it 'rejects combining replace_with_fake_data with raw_sql' do
+        expect {
+          config_with_columns([
+            { name: 'id' },
+            { name: 'name', replace_with_fake_data: { seed: 'id', type: 'human_name' }, raw_sql: "'x'" },
+          ])
+        }.to raise_error(ArgumentError, /cannot be combined/)
+      end
+
+      it 'rejects combining map with replace_with_fake_data' do
+        expect {
+          config_with_columns([
+            { name: 'id' },
+            { name: 'name', map: 'proc {}', replace_with_fake_data: { seed: 'id', type: 'human_name' } },
+          ])
+        }.to raise_error(ArgumentError, /cannot be combined/)
+      end
+
+      it 'still allows the legacy raw_sql + replace_with combination' do
+        expect {
+          config_with_columns([{ name: 'id' }, { name: 'name', raw_sql: "'x'", replace_with: 'y' }])
+        }.not_to raise_error
+      end
+
+      it 'rejects an unknown fake data type, listing the supported ones' do
+        expect {
+          config_with_columns([{ name: 'id' }, { name: 'name', replace_with_fake_data: { seed: 'id', type: 'wat' } }])
+        }.to raise_error(ArgumentError, /unknown replace_with_fake_data type 'wat'.*human_name/)
+      end
+
+      it 'rejects a seed that does not name a column of this table' do
+        expect {
+          config_with_columns([{ name: 'id' }, { name: 'name', replace_with_fake_data: { seed: 'other.id', type: 'email' } }])
+        }.to raise_error(ArgumentError, /seed 'other\.id' does not name a column/)
+      end
+    end
   end
 end

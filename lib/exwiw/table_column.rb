@@ -7,6 +7,11 @@ module Exwiw
     attribute :name, String
     attribute :replace_with, optional(String), skip_serializing_if_nil: true
     attribute :raw_sql, optional(String), skip_serializing_if_nil: true
+    # Ruby-process-side masking modes, applied to the fetched rows by
+    # RowTransformer (SQL adapters only) — unlike replace_with/raw_sql, which
+    # compile into the SELECT and run in the database.
+    attribute :map, optional(String), skip_serializing_if_nil: true
+    attribute :replace_with_fake_data, Serdes::OptionalType.new(FakeData), skip_serializing_if_nil: true
     # User-owned fields preserved across schema regeneration (see
     # TableConfig#merge). `ignore:true` drops the column from extraction (SELECT /
     # INSERT) once the config is loaded (see TableConfig#reject_ignored_members!).

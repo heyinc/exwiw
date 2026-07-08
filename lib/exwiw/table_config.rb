@@ -219,6 +219,42 @@ module Exwiw
         if primary_key.nil? && !ignore
           raise ArgumentError, "Table '#{name}' requires primary_key."
         end
+
+        columns.each { |column| validate_ruby_side_masking!(column) }
+      end
+    end
+
+    # The Ruby-side masking modes (`map` / `replace_with_fake_data`) are strictly
+    # exclusive — with each other and with the SQL-side modes. Only the new keys
+    # are restricted: the legacy raw_sql > replace_with precedence stays lenient.
+    # Deliberately static (no faker require, no proc eval) so schema
+    # regeneration never executes config Ruby; the seed column and the map proc
+    # are resolved at dump time by RowTransformer.build.
+    private def validate_ruby_side_masking!(column)
+      ruby_side = [column.map && "map", column.replace_with_fake_data && "replace_with_fake_data"].compact
+      return if ruby_side.empty?
+
+      sql_side = [column.raw_sql && "raw_sql", column.replace_with && "replace_with"].compact
+      if ruby_side.size > 1 || sql_side.any?
+        raise ArgumentError,
+              "Table '#{name}' column '#{column.name}': #{(ruby_side + sql_side).join('/')} cannot be combined; " \
+              "use at most one of map/replace_with_fake_data, without raw_sql/replace_with."
+      end
+
+      fake_data = column.replace_with_fake_data
+      return unless fake_data
+
+      unless RowTransformer::FAKE_TYPES.key?(fake_data.type)
+        raise ArgumentError,
+              "Table '#{name}' column '#{column.name}': unknown replace_with_fake_data type '#{fake_data.type}' " \
+              "(supported: #{RowTransformer::FAKE_TYPES.keys.join(', ')})."
+      end
+
+      seed_column = fake_data.seed.delete_prefix("#{name}.")
+      if seed_column.include?(".") || columns.none? { |c| c.name == seed_column }
+        raise ArgumentError,
+              "Table '#{name}' column '#{column.name}': replace_with_fake_data seed '#{fake_data.seed}' " \
+              "does not name a column of this table (use 'column' or '#{name}.column')."
       end
     end
 
