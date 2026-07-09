@@ -901,10 +901,10 @@ fake value, across tables, runs, and adapters:
   that uses **only** `ja` person types needs no faker (that pool is built
   entirely from the bundled dataset); faker is required for every other type
   and locale.
-- Exclusive with the other masking keys on the same column. SQL adapters only
-  (the MongoDB adapter rejects the key on load, see
-  [Unknown keys are rejected](#unknown-keys-are-rejected)), and invisible to
-  `explain`.
+- Exclusive with the other masking keys on the same column, and invisible to
+  `explain`. Also supported by the MongoDB adapter on a `MongodbField` (seed
+  names a field of the collection, or `_id`), where it is applied document-side
+  after `replace_with` — see [MongoDB notes](#mongodb-notes).
 
 **Performance**: this is a per-row Ruby transform, measured at ~1.5–1.6µs/row
 per fake column (so ≈ +8s per 5M rows per column; ~+40% against a local sqlite
@@ -939,7 +939,7 @@ The MongoDB adapter is experimental. To use it:
   mongosh "mongodb://localhost/app_dev" dump/insert-000-schema.js
   ```
 - Unlike SQL adapters, the MongoDB adapter does not emit `delete-*.jsonl` files (drop the database / collection yourself before importing if needed).
-- `raw_sql`, `map`, and `replace_with_fake_data` are not supported (the `MongodbField` schema does not declare them; such keys in a config are rejected on load — see [Unknown keys are rejected](#unknown-keys-are-rejected)). Use `replace_with` for masking.
+- `replace_with_fake_data` is supported on a field ([full reference](#replace_with_fake_data)) — its `seed` names a field of the same collection (bare or `collection.`-qualified) or the primary key (`_id`), and it derives the same fake value as the SQL adapters for the same seed. It is applied document-side after `replace_with` (so a fake seed reads the already-masked value, matching the SQL adapters where `replace_with` runs in the database first), works inside embedded subdocuments, and is exclusive with `replace_with` on the same field. Add `gem "faker"` to use it (except a config using only `ja` person types). `raw_sql` and `map` are **not** supported (the `MongodbField` schema does not declare them; such keys are rejected on load — see [Unknown keys are rejected](#unknown-keys-are-rejected)); use `replace_with` for template masking.
 - The MongoDB adapter does not support the collection-level `filter` field (it raises `NotImplementedError` if set, since the SQL-string filter cannot be applied to MongoDB).
 
 #### `reverse_scope` on collections

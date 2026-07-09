@@ -216,6 +216,65 @@ module Exwiw
     # sampling with replacement (which wastes ~37% of slots to duplicates), this
     # gives PERSON_POOL_SIZE distinct identities — so JapaneseNames must supply
     # at least that many combinations.
+    # Compile a FakeData config into a callable `seed_value -> fake value`,
+    # requiring faker if the (type, locale) needs it. Shared by the SQL
+    # RowTransformer (per-row array) and the MongoDB mask plan (per-document
+    # hash): both derive byte-identical fake values from the same seed, keeping
+    # `replace_with_fake_data` consistent across adapters. The caller owns NULL
+    # preservation of the *target* (a nil seed still hashes "", deterministically,
+    # exactly like the SQL path). `error_context` names the offending column/field
+    # in raised messages.
+    def self.build_value_deriver(fake_data, error_context)
+      type = fake_data.type
+      unless PERSON_TYPES.key?(type) || FAKE_TYPES.key?(type)
+        raise ArgumentError,
+              "replace_with_fake_data for #{error_context}: unknown type '#{type}'. " \
+              "Supported: #{(PERSON_TYPES.keys + FAKE_TYPES.keys).join(', ')}"
+      end
+      require_faker! if type_needs_faker?(type, fake_data.locale)
+
+      if PERSON_TYPES.key?(type)
+        build_person_deriver(fake_data, error_context)
+      else
+        build_independent_deriver(fake_data)
+      end
+    end
+
+    # Person-family deriver: pick a coherent Person from the per-locale pool.
+    # The digest[0,8] index is shared with every other person column/field, so
+    # one seed's name values all belong to the same person.
+    def self.build_person_deriver(fake_data, error_context)
+      type = fake_data.type
+      locale = fake_data.locale
+      pool = person_pool(locale)
+      extractor = PERSON_TYPES.fetch(type)
+
+      if KANA_TYPES.include?(type) && pool.first.last_name_kana.nil?
+        raise ArgumentError,
+              "replace_with_fake_data for #{error_context}: type '#{type}' needs kana readings, " \
+              "which are only available with locale: ja (got locale: #{locale.inspect})"
+      end
+
+      lambda do |seed_value|
+        digest = Digest::SHA256.digest(seed_value.to_s)
+        person = pool[digest[0, 8].unpack1("Q>") % PERSON_POOL_SIZE]
+        extractor.call(person, locale)
+      end
+    end
+
+    # Independent-type deriver: pick a value from its own (type, locale) pool,
+    # composing a 64-bit token for uniqueness-sensitive types (email/username).
+    def self.build_independent_deriver(fake_data)
+      pool = fake_pool(fake_data.type, fake_data.locale)
+      compose = FAKE_TYPES.fetch(fake_data.type)[:compose]
+
+      lambda do |seed_value|
+        digest = Digest::SHA256.digest(seed_value.to_s)
+        base = pool[digest[0, 8].unpack1("Q>") % POOL_SIZE]
+        compose ? compose.call(base, digest[8, 8].unpack1("H*")) : base
+      end
+    end
+
     def self.build_japanese_person_pool(random)
       surnames = JapaneseNames::SURNAMES
       given_names = JapaneseNames::GIVEN_NAMES
@@ -338,47 +397,29 @@ module Exwiw
       seed_index
     end
 
-    # Person-family type: pick a coherent Person from the per-locale pool. The
+    # Person-family type: wrap the shared per-locale person deriver with this
+    # column's NULL preservation (a NULL target stays NULL). The deriver's
     # digest[0,8] index is shared with every other person column, so one seed's
     # name columns all belong to the same person.
     private def compile_person_fake(fake_data, column, column_index, seed_index)
-      type = fake_data.type
-      locale = fake_data.locale
-      pool = self.class.person_pool(locale)
-      extractor = PERSON_TYPES.fetch(type)
-
-      if KANA_TYPES.include?(type) && pool.first.last_name_kana.nil?
-        raise ArgumentError,
-              "replace_with_fake_data for column '#{@table_name}.#{column.name}': " \
-              "type '#{type}' needs kana readings, which are only available with locale: ja " \
-              "(got locale: #{locale.inspect})"
-      end
-
-      # NULL-preserving like replace_with: a NULL target stays NULL.
+      deriver = self.class.build_person_deriver(fake_data, "column '#{@table_name}.#{column.name}'")
       lambda do |row|
         next nil if row[column_index].nil?
 
-        digest = Digest::SHA256.digest(row[seed_index].to_s)
-        person = pool[digest[0, 8].unpack1("Q>") % PERSON_POOL_SIZE]
-        extractor.call(person, locale)
+        deriver.call(row[seed_index])
       end
     end
 
-    # Independent type: pick a value from its own (type, locale) pool.
+    # Independent type: wrap the shared per-(type, locale) deriver with this
+    # column's NULL preservation. A nil seed value hashes "" (deterministic).
+    # Seed values are normalized with to_s so sqlite's native Integer 123 and
+    # pg/mysql's string "123" pick the same fake value.
     private def compile_independent_fake(fake_data, column_index, seed_index)
-      pool = self.class.fake_pool(fake_data.type, fake_data.locale)
-      compose = FAKE_TYPES.fetch(fake_data.type)[:compose]
-
-      # NULL-preserving like replace_with: a NULL target stays NULL. A nil seed
-      # value hashes "" (deterministic). Seed values are normalized with to_s so
-      # sqlite's native Integer 123 and pg/mysql's string "123" pick the same
-      # fake value.
+      deriver = self.class.build_independent_deriver(fake_data)
       lambda do |row|
         next nil if row[column_index].nil?
 
-        digest = Digest::SHA256.digest(row[seed_index].to_s)
-        base = pool[digest[0, 8].unpack1("Q>") % POOL_SIZE]
-        compose ? compose.call(base, digest[8, 8].unpack1("H*")) : base
+        deriver.call(row[seed_index])
       end
     end
   end

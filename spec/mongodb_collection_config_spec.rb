@@ -181,6 +181,68 @@ module Exwiw
         end
       end
 
+      context 'replace_with_fake_data validation' do
+        def config_with_field(field)
+          {
+            "name" => "users",
+            "primary_key" => "_id",
+            "belongs_tos" => [{ "table_name" => "shops", "foreign_key" => "shop_id" }],
+            "fields" => [{ "name" => "_id" }, field],
+          }
+        end
+
+        it 'accepts a valid fake-data field seeded by the primary key' do
+          json = config_with_field(
+            "name" => "name", "replace_with_fake_data" => { "seed" => "_id", "type" => "human_name" },
+          )
+          config = described_class.from(json)
+          field = config.fields.find { |f| f.name == "name" }
+          expect(field.replace_with_fake_data.type).to eq("human_name")
+          expect(field.replace_with_fake_data.seed).to eq("_id")
+        end
+
+        it 'accepts a collection-qualified seed naming a declared field' do
+          json = config_with_field(
+            "name" => "name", "replace_with_fake_data" => { "seed" => "users._id", "type" => "human_name" },
+          )
+          expect { described_class.from(json) }.not_to raise_error
+        end
+
+        it 'rejects combining replace_with with replace_with_fake_data' do
+          json = config_with_field(
+            "name" => "name",
+            "replace_with" => "x-{_id}",
+            "replace_with_fake_data" => { "seed" => "_id", "type" => "human_name" },
+          )
+          expect { described_class.from(json) }.to raise_error(ArgumentError, /cannot be combined/)
+        end
+
+        it 'rejects an unknown fake-data type' do
+          json = config_with_field(
+            "name" => "name", "replace_with_fake_data" => { "seed" => "_id", "type" => "wat" },
+          )
+          expect { described_class.from(json) }.to raise_error(ArgumentError, /unknown replace_with_fake_data type 'wat'/)
+        end
+
+        it 'rejects a seed that names no field of this collection' do
+          json = config_with_field(
+            "name" => "name", "replace_with_fake_data" => { "seed" => "other.id", "type" => "human_name" },
+          )
+          expect { described_class.from(json) }.to raise_error(ArgumentError, /does not name a field of this collection/)
+        end
+
+        it 'rejects an unknown key nested inside replace_with_fake_data' do
+          json = config_with_field(
+            "name" => "name",
+            "replace_with_fake_data" => { "seed" => "_id", "type" => "human_name", "lcoale" => "ja" },
+          )
+          expect { described_class.from(json) }.to raise_error(
+            UnknownConfigKeyError,
+            /Unknown key 'lcoale' in collection 'users' \(in fields\[1\]\.replace_with_fake_data\)/,
+          )
+        end
+      end
+
       context 'strict unknown-key validation' do
         let(:base_json) do
           {
@@ -315,6 +377,28 @@ module Exwiw
         token = merged.fields.find { |f| f.name == 'token' }
         expect(token.to_hash).to eq({ 'name' => 'token', 'replace_with' => 'X', 'comment' => 'secret', 'ignore' => true })
         expect(merged.fields.map(&:name)).to eq(['_id', 'token', 'extra'])
+      end
+
+      it 'preserves a user-owned replace_with_fake_data on a field across regeneration' do
+        current_with_fake = described_class.from_symbol_keys(
+          name: 'orders',
+          primary_key: '_id',
+          belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id' }],
+          fields: [
+            { name: '_id' },
+            { name: 'buyer_name', replace_with_fake_data: { seed: '_id', type: 'human_name' } },
+          ],
+        )
+        regenerated = described_class.from_symbol_keys(
+          name: 'orders',
+          primary_key: '_id',
+          belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id' }],
+          fields: [{ name: '_id' }, { name: 'buyer_name' }],
+        )
+        merged = current_with_fake.merge(regenerated)
+        buyer = merged.fields.find { |f| f.name == 'buyer_name' }
+        expect(buyer.replace_with_fake_data.type).to eq('human_name')
+        expect(buyer.replace_with_fake_data.seed).to eq('_id')
       end
 
       it 'carries the user-owned query_timeout_ms forward (the generator never emits it)' do

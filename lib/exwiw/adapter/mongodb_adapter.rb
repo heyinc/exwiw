@@ -691,8 +691,10 @@ module Exwiw
       # A masking plan compiled once per collection config and reused for every
       # document of that collection. `masked_fields` is `[field_name,
       # template_segments]` for each field carrying a `replace_with`;
-      # `embedded` is one EmbeddedMask per embedded child.
-      MaskPlan = Struct.new(:masked_fields, :embedded)
+      # `faked_fields` is `[field_name, deriver, seed_field]` for each field
+      # carrying a `replace_with_fake_data`; `embedded` is one EmbeddedMask per
+      # embedded child.
+      MaskPlan = Struct.new(:masked_fields, :faked_fields, :embedded)
 
       # A pre-resolved embedded-child mask: the parent path split once into
       # `prefix` (the containers to descend into) and `last` (the field holding
@@ -721,17 +723,47 @@ module Exwiw
 
           acc << [field.name, compile_template(field.replace_with)]
         end
+        faked_fields = build_faked_fields(config)
         embedded = embedded_children_of(config).map do |child|
           *prefix, last = child.embedded_in.path.split(".")
           EmbeddedMask.new(prefix, last, build_mask_plan(child))
         end
-        MaskPlan.new(masked_fields, embedded)
+        MaskPlan.new(masked_fields, faked_fields, embedded)
       end
 
-      # Apply a precompiled MaskPlan to a document in place: render each masked
-      # field, then descend into each embedded child (recursing into its own
-      # plan). Equivalent to the old apply_replace_with! + apply_embedded_masking!
-      # pair, with all per-config lookups hoisted into the plan.
+      # Compile each `replace_with_fake_data` field into `[field_name, deriver,
+      # seed_field]`. The deriver (RowTransformer.build_value_deriver) is the
+      # same one the SQL adapters use, so a given seed value produces a
+      # byte-identical fake value across adapters. The seed is re-resolved here
+      # against the effective (post-ignore) fields, so a seed pointing at an
+      # `ignore:true` field — accepted by the load-time validation, which sees
+      # the full field list — is caught at dump time rather than silently
+      # hashing an absent value.
+      private def build_faked_fields(config)
+        config.fields.each_with_object([]) do |field, acc|
+          fake_data = field.replace_with_fake_data
+          next unless fake_data
+
+          seed_field = fake_data.seed.delete_prefix("#{config.name}.")
+          if seed_field != config.primary_key && config.fields.none? { |f| f.name == seed_field }
+            raise ArgumentError,
+                  "replace_with_fake_data for collection '#{config.name}' field '#{field.name}': " \
+                  "seed '#{fake_data.seed}' does not resolve to an extracted field (is it ignore:true?)"
+          end
+
+          deriver = RowTransformer.build_value_deriver(
+            fake_data, "collection '#{config.name}' field '#{field.name}'"
+          )
+          acc << [field.name, deriver, seed_field]
+        end
+      end
+
+      # Apply a precompiled MaskPlan to a document in place: render each
+      # `replace_with` field, then each `replace_with_fake_data` field, then
+      # descend into each embedded child (recursing into its own plan). Fake
+      # fields are applied after replace_with so a fake seed reads the already-
+      # masked value — matching the SQL adapters, where replace_with runs in the
+      # database before the Ruby-side fake transform sees the row.
       private def apply_mask_plan!(doc, plan)
         plan.masked_fields.each do |name, segments|
           # Preserve a NULL / absent source value instead of clobbering it into a
@@ -740,6 +772,14 @@ module Exwiw
           next if doc[name].nil?
 
           doc[name] = render_template(segments, doc)
+        end
+        plan.faked_fields.each do |name, deriver, seed_field|
+          # NULL-preserving like replace_with (an absent key stays absent). The
+          # seed is read from the current doc; a nil/absent seed hashes ""
+          # deterministically.
+          next if doc[name].nil?
+
+          doc[name] = deriver.call(doc[seed_field])
         end
         plan.embedded.each do |child|
           container = child.prefix.reduce(doc) { |acc, seg| acc.is_a?(Hash) ? acc[seg] : nil }

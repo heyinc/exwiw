@@ -810,6 +810,105 @@ module Exwiw
           expect(parsed["posts"][0]["title"]).to be_nil
           expect(parsed["posts"][1]["title"]).to eq("masked-title-102")
         end
+
+        context "replace_with_fake_data" do
+          # A `users` variant whose `name`/`email` carry replace_with_fake_data
+          # seeded by `_id`, so the same _id always maps to the same fake value.
+          let(:fake_users) do
+            MongodbCollectionConfig.from(
+              "name" => "users",
+              "primary_key" => "_id",
+              "belongs_tos" => [{ "table_name" => "shops", "foreign_key" => "shop_id" }],
+              "fields" => [
+                { "name" => "_id" },
+                { "name" => "name", "replace_with_fake_data" => { "seed" => "_id", "type" => "human_name" } },
+                { "name" => "email", "replace_with_fake_data" => { "seed" => "_id", "type" => "email" } },
+                { "name" => "shop_id" },
+              ],
+            )
+          end
+
+          it "replaces a field with a deterministic fake value seeded by another field" do
+            local = config_by_name.merge("users" => fake_users)
+            adapter.build_query(fake_users, dump_target, local)
+            rows = [
+              { "_id" => 1, "name" => "User 1", "email" => "u1@example.com", "shop_id" => 1 },
+              { "_id" => 2, "name" => "User 2", "email" => "u2@example.com", "shop_id" => 1 },
+              { "_id" => 1, "name" => "Dup", "email" => "dup@example.com", "shop_id" => 1 },
+            ]
+            parsed = adapter.to_bulk_insert(rows, fake_users).split("\n").map { |l| JSON.parse(l) }
+
+            # Same seed (_id=1) -> identical fake values; different seed differs.
+            expect(parsed[0]["name"]).to eq(parsed[2]["name"])
+            expect(parsed[0]["name"]).not_to eq(parsed[1]["name"])
+            expect(parsed[0]["email"]).to match(/@example\.com\z/)
+            expect(parsed[0]["name"]).not_to eq("User 1")
+          end
+
+          it "derives the same value as the SQL row transformer for the same seed" do
+            local = config_by_name.merge("users" => fake_users)
+            adapter.build_query(fake_users, dump_target, local)
+            parsed = JSON.parse(adapter.to_bulk_insert([{ "_id" => 42, "name" => "x", "shop_id" => 1 }], fake_users))
+
+            deriver = Exwiw::RowTransformer.build_value_deriver(
+              fake_users.fields.find { |f| f.name == "name" }.replace_with_fake_data, "test"
+            )
+            expect(parsed["name"]).to eq(deriver.call(42))
+          end
+
+          it "preserves a NULL target value" do
+            local = config_by_name.merge("users" => fake_users)
+            adapter.build_query(fake_users, dump_target, local)
+            parsed = JSON.parse(adapter.to_bulk_insert([{ "_id" => 1, "name" => nil, "shop_id" => 1 }], fake_users))
+
+            expect(parsed["name"]).to be_nil
+          end
+
+          it "applies fake data inside embedded subdocuments" do
+            profile = MongodbCollectionConfig.from(
+              "name" => "profile",
+              "primary_key" => "_id",
+              "embedded_in" => { "collection_name" => "users", "path" => "profile" },
+              "belongs_tos" => [],
+              "fields" => [
+                { "name" => "_id" },
+                { "name" => "full_name", "replace_with_fake_data" => { "seed" => "_id", "type" => "human_name" } },
+              ],
+            )
+            users_t = config_by_name.fetch("users")
+            local = config_by_name.merge("profile" => profile)
+            adapter.build_query(users_t, dump_target, local)
+            rows = [
+              { "_id" => 1, "name" => "User 1", "email" => "u1@example.com", "shop_id" => 1,
+                "profile" => { "_id" => 7, "full_name" => "Real Person" } },
+            ]
+            parsed = JSON.parse(adapter.to_bulk_insert(rows, users_t))
+
+            deriver = Exwiw::RowTransformer.build_value_deriver(
+              profile.fields.find { |f| f.name == "full_name" }.replace_with_fake_data, "test"
+            )
+            expect(parsed["profile"]["full_name"]).to eq(deriver.call(7))
+          end
+
+          it "raises at dump time when the seed resolves to an ignore:true field" do
+            ignored_seed = MongodbCollectionConfig.from(
+              "name" => "users",
+              "primary_key" => "_id",
+              "belongs_tos" => [{ "table_name" => "shops", "foreign_key" => "shop_id" }],
+              "fields" => [
+                { "name" => "_id" },
+                { "name" => "legacy_id", "ignore" => true },
+                { "name" => "name", "replace_with_fake_data" => { "seed" => "legacy_id", "type" => "human_name" } },
+                { "name" => "shop_id" },
+              ],
+            ).reject_ignored_members!
+            local = config_by_name.merge("users" => ignored_seed)
+            adapter.build_query(ignored_seed, dump_target, local)
+
+            expect { adapter.to_bulk_insert([{ "_id" => 1, "name" => "x", "shop_id" => 1 }], ignored_seed) }
+              .to raise_error(ArgumentError, /seed 'legacy_id' does not resolve to an extracted field/)
+          end
+        end
       end
 
       describe "#to_bulk_delete" do

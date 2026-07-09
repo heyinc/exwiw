@@ -66,6 +66,7 @@ module Exwiw
       instance = super
       instance.__send__(:validate_embedded!)
       instance.__send__(:validate_belongs_tos!)
+      instance.__send__(:validate_fake_data!)
       instance
     end
 
@@ -92,8 +93,8 @@ module Exwiw
     # - structural facts come from the freshly generated config: primary_key,
     #   belongs_tos, embedded_in.
     # - user customizations are kept from the receiver: filter, ignore,
-    #   bulk_insert_chunk_size, query_timeout_ms, and each field's `replace_with`
-    #   masking rule.
+    #   bulk_insert_chunk_size, query_timeout_ms, and each field's
+    #   `replace_with` / `replace_with_fake_data` masking rule.
     # - generated fields drive the field list (so added/removed fields track the
     #   model), but a matching receiver field wins to retain its masking.
     def merge(passed)
@@ -139,10 +140,47 @@ module Exwiw
           receiver = receiver_field_by_name[pf.name]
           if receiver
             pf.replace_with = receiver.replace_with if receiver.replace_with
+            pf.replace_with_fake_data = receiver.replace_with_fake_data if receiver.replace_with_fake_data
             pf.comment = receiver.comment if receiver.comment
             pf.ignore = receiver.ignore unless receiver.ignore.nil?
           end
           pf
+        end
+      end
+    end
+
+    # Ruby-side masking validation, mirroring TableConfig#validate_ruby_side_masking!
+    # for the SQL adapters: `replace_with_fake_data` is exclusive with
+    # `replace_with` on the same field, the type must be supported, and the seed
+    # must name a field of this collection (bare or `name.`-qualified) or its
+    # primary key. Deliberately static (no faker require, no pool build) so
+    # schema regeneration never triggers value generation; the seed is resolved
+    # again against the effective (post-ignore) fields at dump time in
+    # MongodbAdapter#build_mask_plan.
+    private def validate_fake_data!
+      fields.each do |field|
+        fake_data = field.replace_with_fake_data
+        next unless fake_data
+
+        if field.replace_with
+          raise ArgumentError,
+                "MongodbCollectionConfig '#{name}' field '#{field.name}': replace_with and " \
+                "replace_with_fake_data cannot be combined; use only one."
+        end
+
+        supported_types = RowTransformer::PERSON_TYPES.keys + RowTransformer::FAKE_TYPES.keys
+        unless supported_types.include?(fake_data.type)
+          raise ArgumentError,
+                "MongodbCollectionConfig '#{name}' field '#{field.name}': unknown " \
+                "replace_with_fake_data type '#{fake_data.type}' (supported: #{supported_types.join(', ')})."
+        end
+
+        seed_field = fake_data.seed.delete_prefix("#{name}.")
+        if seed_field.include?(".") || (seed_field != primary_key && fields.none? { |f| f.name == seed_field })
+          raise ArgumentError,
+                "MongodbCollectionConfig '#{name}' field '#{field.name}': replace_with_fake_data " \
+                "seed '#{fake_data.seed}' does not name a field of this collection " \
+                "(use 'field' or '#{name}.field')."
         end
       end
     end
