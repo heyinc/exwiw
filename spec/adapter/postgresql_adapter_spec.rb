@@ -600,6 +600,150 @@ module Exwiw
           end
         end
       end
+
+      describe "reserved-word identifier quoting" do
+        context "select query on a reserved-word table with reserved-word columns" do
+          let(:sql) { adapter.compile_ast(build_reserved_word_select_ast) }
+
+          it "double-quotes the reserved identifiers in SELECT, masking and WHERE, leaving safe names bare" do
+            expect(sql).to eq(
+              %(SELECT "order".id, "order"."from", CASE WHEN "order"."to" IS NOT NULL THEN CONCAT('masked-', "order"."from") ELSE NULL END FROM "order" WHERE "order"."from" = 1)
+            )
+          end
+        end
+
+        context "select query joining a reserved-word table via a reserved-word foreign key" do
+          let(:sql) { adapter.compile_ast(build_reserved_word_join_ast) }
+
+          it "double-quotes the reserved identifiers in every JOIN position" do
+            expect(sql).to eq(
+              %(SELECT "order".id, "order"."from", CASE WHEN "order"."to" IS NOT NULL THEN CONCAT('masked-', "order"."from") ELSE NULL END FROM "order" JOIN "group" ON "order"."references" = "group".id AND "group"."from" = 1)
+            )
+          end
+        end
+
+        context "select query with a materialized scope JOIN over reserved-word tables" do
+          let(:sql) { adapter.compile_ast(build_reserved_word_scope_ast) }
+
+          it "double-quotes the projection, the outer key and the qualified star" do
+            expect(sql).to eq(
+              %(SELECT "order".* FROM "order" JOIN (SELECT DISTINCT exwiw_scope_src_0."from" AS exwiw_scope_id FROM (SELECT "group"."from" FROM "group") AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON "order"."from" = exwiw_scope_ids_0.exwiw_scope_id)
+            )
+          end
+        end
+
+        context "bulk insert into the reserved-word table" do
+          let(:bulk_insert_sql) { adapter.to_bulk_insert([[1, 1, 'x']], reserved_word_table) }
+
+          it "double-quotes the reserved identifiers in the INSERT header" do
+            expect(bulk_insert_sql.strip).to eq(<<~SQL.strip)
+              INSERT INTO "order" (id, "from", "to") VALUES
+              (1, 1, 'x');
+            SQL
+          end
+        end
+
+        context "copy output for the reserved-word table" do
+          let(:copy_output) { adapter.to_copy_from_stdin([[1, 1, 'x']], reserved_word_table) }
+
+          it "double-quotes the reserved identifiers in the COPY header" do
+            expect(copy_output).to eq(<<~SQL.strip)
+              COPY "order" (id, "from", "to") FROM stdin;
+              1\t1\tx
+              \\.
+            SQL
+          end
+        end
+
+        context "bulk delete scoped by a reserved-word column" do
+          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_reserved_word_select_ast, reserved_word_table) }
+
+          it "double-quotes the reserved identifiers in DELETE" do
+            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
+              DELETE FROM "order"
+              WHERE "order"."from" = 1;
+            SQL
+          end
+        end
+
+        context "select query with only safe identifiers" do
+          let(:sql) { adapter.compile_ast(build_select_shops_ast) }
+
+          it "emits no quotes at all (byte-identical output)" do
+            expect(sql).not_to include('"')
+          end
+        end
+
+        # End-to-end proof (against the live postgres) that the quoted SQL
+        # actually parses and round-trips. TEMP tables keep the seed database
+        # untouched: they are visible only to this adapter's connection
+        # (execute / COUNT / DELETE / INSERT all reuse it) and are dropped
+        # with the connection when the example ends. Unquoted, `order` as a
+        # table name and `from` in an INSERT column list are postgres syntax
+        # errors.
+        describe "against a live database" do
+          let(:connection) { adapter.send(:connection) }
+          let(:extracted_rows) { adapter.execute(build_reserved_word_select_ast).to_a }
+
+          before do
+            connection.exec(%(CREATE TEMP TABLE "order" (id int PRIMARY KEY, "from" int, "to" varchar(32))))
+            connection.exec(%(INSERT INTO "order" (id, "from", "to") VALUES (1, 1, 'x'), (2, 2, 'y')))
+          end
+
+          context "extracting from the reserved-word table" do
+            it "returns the scoped row with the reserved columns masked" do
+              expect(extracted_rows).to eq([["1", "1", "masked-1"]])
+            end
+          end
+
+          context "applying the generated DELETE" do
+            before do
+              connection.exec(adapter.to_bulk_delete(build_reserved_word_select_ast, reserved_word_table))
+            end
+
+            it "removes only the scoped row" do
+              expect(connection.exec(%(SELECT id FROM "order")).values).to eq([["2"]])
+            end
+          end
+
+          context "restoring the generated INSERT after the scoped row was deleted" do
+            before do
+              rows = extracted_rows
+              connection.exec(adapter.to_bulk_delete(build_reserved_word_select_ast, reserved_word_table))
+              connection.exec(adapter.to_bulk_insert(rows, reserved_word_table))
+            end
+
+            it "round-trips the extracted rows" do
+              expect(connection.exec(%(SELECT id, "from", "to" FROM "order" ORDER BY id)).values).to eq([
+                ["1", "1", "masked-1"],
+                ["2", "2", "y"],
+              ])
+            end
+          end
+
+          context "reserved, mixed-case table with a serial primary key" do
+            let(:serial_table) do
+              Exwiw::TableConfig.from_symbol_keys(
+                name: "Order",
+                primary_key: "id",
+                belongs_tos: [],
+                columns: [{ name: "id" }, { name: "from" }],
+              )
+            end
+            let(:post_insert) { adapter.post_insert_sql(serial_table) }
+
+            before do
+              connection.exec(%(CREATE TEMP TABLE "Order" (id serial PRIMARY KEY, "from" int)))
+              connection.exec(%(INSERT INTO "Order" ("from") VALUES (1), (2)))
+            end
+
+            it "syncs the sequence via setval (pg_get_serial_sequence receives the quoted name, not the case-folded one)" do
+              expect(post_insert).to include("setval")
+              expect { connection.exec(post_insert) }.not_to raise_error
+            end
+          end
+        end
+      end
     end
   end
 end

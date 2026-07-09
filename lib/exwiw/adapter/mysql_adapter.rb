@@ -5,6 +5,7 @@ require 'open3'
 module Exwiw
   module Adapter
     class MysqlAdapter < Base
+      include IdentifierQuoting::Mysql
       include SqlBulkInsert
 
       # A lazy, streaming stand-in for the materialized rows #execute used to
@@ -152,22 +153,23 @@ module Exwiw
       end
 
       # The INSERT header for this adapter. MySQL backtick-quotes the table and
-      # column identifiers. #to_bulk_insert / #write_inserts (SqlBulkInsert)
-      # append the value tuples and the trailing `;`.
+      # column identifiers (always, to stay byte-identical with historical
+      # output). #to_bulk_insert / #write_inserts (SqlBulkInsert) append the
+      # value tuples and the trailing `;`.
       private def insert_header(table)
-        table_name = table.name
+        table_name = force_quote_table_name(table.name)
         if table.rails_managed?
-          "INSERT INTO `#{table_name}` VALUES\n"
+          "INSERT INTO #{table_name} VALUES\n"
         else
-          column_names = table.columns.map { |c| "`#{c.name}`" }.join(', ')
-          "INSERT INTO `#{table_name}` (#{column_names}) VALUES\n"
+          column_names = table.columns.map { |c| force_quote_identifier(c.name) }.join(', ')
+          "INSERT INTO #{table_name} (#{column_names}) VALUES\n"
         end
       end
 
       def to_bulk_delete(select_query_ast, table)
         raise NotImplementedError unless select_query_ast.is_a?(Exwiw::QueryAst::Select)
 
-        sql = "DELETE FROM #{select_query_ast.from_table_name}"
+        sql = "DELETE FROM #{quote_table_name(select_query_ast.from_table_name)}"
 
         if select_query_ast.join_clauses.empty?
           # Ignore filter option, because bulk delete is for cleaning before import,
@@ -205,7 +207,7 @@ module Exwiw
 
         foreign_key = first_join.foreign_key
         subquery_sql = compile_ast(subquery_ast)
-        sql += "\nWHERE #{select_query_ast.from_table_name}.#{foreign_key} IN (#{subquery_sql})"
+        sql += "\nWHERE #{qualified_name(select_query_ast.from_table_name, foreign_key)} IN (#{subquery_sql})"
 
         # first_join.base_where_clauses holds conditions on the outer
         # delete-target table (from_table_name), such as a polymorphic type
@@ -240,14 +242,14 @@ module Exwiw
                elsif query_ast.select_all
                  # A lifted scope JOIN brings a derived table into FROM, so a bare
                  # `*` would also project its column. Qualify to this table's own.
-                 scope_clauses.any? ? "#{query_ast.from_table_name}.*" : "*"
+                 scope_clauses.any? ? "#{quote_table_name(query_ast.from_table_name)}.*" : "*"
                else
                  query_ast.columns.map { |col| compile_column_name(query_ast, col) }.join(', ')
                end
-        sql += " FROM #{query_ast.from_table_name}"
+        sql += " FROM #{quote_table_name(query_ast.from_table_name)}"
 
         query_ast.join_clauses.each do |join|
-          sql += " JOIN #{join.join_table_name} ON #{join.base_table_name}.#{join.foreign_key} = #{join.join_table_name}.#{join.primary_key}"
+          sql += " JOIN #{quote_table_name(join.join_table_name)} ON #{qualified_name(join.base_table_name, join.foreign_key)} = #{qualified_name(join.join_table_name, join.primary_key)}"
 
           join.where_clauses.each do |where|
             compiled_where_condition = compile_where_condition(where, join.join_table_name)
@@ -290,10 +292,10 @@ module Exwiw
       # to `<col> IN (subquery)`.
       private def compile_scope_join(from_table_name, where_clause, idx)
         subquery = where_clause.value
-        projection = subquery_projection_name(subquery)
+        projection = quote_identifier(subquery_projection_name(subquery))
         src_alias = "exwiw_scope_src_#{idx}"
         ids_alias = "exwiw_scope_ids_#{idx}"
-        outer_key = "#{from_table_name}.#{where_clause.column_name}"
+        outer_key = qualified_name(from_table_name, where_clause.column_name)
 
         "JOIN (SELECT DISTINCT #{src_alias}.#{projection} AS exwiw_scope_id " \
           "FROM (#{compile_subquery(subquery)}) AS #{src_alias}) AS #{ids_alias} " \
@@ -304,7 +306,7 @@ module Exwiw
         # Use as it is if it's a raw query
         return where_clause if where_clause.is_a?(String)
 
-        key = "#{table_name}.#{where_clause.column_name}"
+        key = qualified_name(table_name, where_clause.column_name)
 
         if where_clause.operator == :eq
           values = where_clause.value.map { |v| escape_value(v) }
@@ -335,9 +337,9 @@ module Exwiw
         end
 
         inner_values = subquery.where_values.map { |v| escape_value(v) }
-        "SELECT #{subquery.table_name}.#{subquery.select_column} " \
-          "FROM #{subquery.table_name} " \
-          "WHERE #{subquery.table_name}.#{subquery.where_column} IN (#{inner_values.join(', ')})"
+        "SELECT #{qualified_name(subquery.table_name, subquery.select_column)} " \
+          "FROM #{quote_table_name(subquery.table_name)} " \
+          "WHERE #{qualified_name(subquery.table_name, subquery.where_column)} IN (#{inner_values.join(', ')})"
       end
 
       # Backslash and control-character escapes, matching mysqldump. Escaping
@@ -372,14 +374,14 @@ module Exwiw
       private def compile_column_name(ast, column)
         case column
         when Exwiw::QueryAst::ColumnValue::Plain
-          "#{ast.from_table_name}.#{column.name}"
+          qualified_name(ast.from_table_name, column.name)
         when Exwiw::QueryAst::ColumnValue::RawSql
           column.value
         when Exwiw::QueryAst::ColumnValue::ReplaceWith
           parts = column.value.scan(/[^{}]+|\{[^{}]*\}/).map do |part|
             if part.start_with?('{')
               name = part[1..-2]
-              "#{ast.from_table_name}.#{name}"
+              qualified_name(ast.from_table_name, name)
             else
               "'#{part}'"
             end

@@ -572,6 +572,119 @@ module Exwiw
           end
         end
       end
+
+      describe "reserved-word identifier quoting" do
+        context "select query on a reserved-word table with reserved-word columns" do
+          let(:sql) { adapter.compile_ast(build_reserved_word_select_ast) }
+
+          it "backtick-quotes the reserved identifiers in SELECT, masking and WHERE, leaving safe names bare" do
+            expect(sql).to eq(
+              %(SELECT `order`.id, `order`.`from`, CASE WHEN `order`.`to` IS NOT NULL THEN CONCAT('masked-', `order`.`from`) ELSE NULL END FROM `order` WHERE `order`.`from` = 1)
+            )
+          end
+        end
+
+        context "select query joining a reserved-word table via a reserved-word foreign key" do
+          let(:sql) { adapter.compile_ast(build_reserved_word_join_ast) }
+
+          it "backtick-quotes the reserved identifiers in every JOIN position" do
+            expect(sql).to eq(
+              %(SELECT `order`.id, `order`.`from`, CASE WHEN `order`.`to` IS NOT NULL THEN CONCAT('masked-', `order`.`from`) ELSE NULL END FROM `order` JOIN `group` ON `order`.`references` = `group`.id AND `group`.`from` = 1)
+            )
+          end
+        end
+
+        context "select query with a materialized scope JOIN over reserved-word tables" do
+          let(:sql) { adapter.compile_ast(build_reserved_word_scope_ast) }
+
+          it "backtick-quotes the projection, the outer key and the qualified star" do
+            expect(sql).to eq(
+              %(SELECT `order`.* FROM `order` JOIN (SELECT DISTINCT exwiw_scope_src_0.`from` AS exwiw_scope_id FROM (SELECT `group`.`from` FROM `group`) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON `order`.`from` = exwiw_scope_ids_0.exwiw_scope_id)
+            )
+          end
+        end
+
+        context "bulk insert into the reserved-word table" do
+          let(:bulk_insert_sql) { adapter.to_bulk_insert([[1, 1, 'x']], reserved_word_table) }
+
+          it "backtick-quotes the reserved table name in the INSERT header (columns were always quoted)" do
+            expect(bulk_insert_sql.strip).to eq(<<~SQL.strip)
+              INSERT INTO `order` (`id`, `from`, `to`) VALUES
+              (1, 1, 'x');
+            SQL
+          end
+        end
+
+        context "bulk delete scoped by a reserved-word column" do
+          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_reserved_word_select_ast, reserved_word_table) }
+
+          it "backtick-quotes the reserved identifiers in DELETE" do
+            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
+              DELETE FROM `order`
+              WHERE `order`.`from` = 1;
+            SQL
+          end
+        end
+
+        context "select query with only safe identifiers" do
+          let(:sql) { adapter.compile_ast(build_select_shops_ast) }
+
+          it "emits no backticks at all (byte-identical output)" do
+            expect(sql).not_to include('`')
+          end
+        end
+
+        # End-to-end proof (against the live mysql) that the quoted SQL
+        # actually parses and round-trips. A TEMPORARY table keeps the seed
+        # database untouched: it is visible only to this adapter's connection
+        # (execute / COUNT / DELETE / INSERT all reuse it) and is dropped with
+        # the connection when the example ends. Unquoted, `order` as a table
+        # name is a mysql syntax error.
+        describe "against a live database" do
+          let(:client) { adapter.send(:connection) }
+          # MysqlClient#query wraps SELECT results only; drive DDL/DML through
+          # the underlying driver connection (same connection, so the
+          # TEMPORARY table stays visible to the adapter's queries).
+          let(:raw_connection) { client.send(:raw) }
+          let(:extracted_rows) { adapter.execute(build_reserved_word_select_ast).to_a }
+
+          before do
+            raw_connection.query(%(CREATE TEMPORARY TABLE `order` (id INT PRIMARY KEY, `from` INT, `to` VARCHAR(32))))
+            raw_connection.query(%(INSERT INTO `order` (id, `from`, `to`) VALUES (1, 1, 'x'), (2, 2, 'y')))
+          end
+
+          context "extracting from the reserved-word table" do
+            it "returns the scoped row with the reserved columns masked" do
+              expect(extracted_rows).to eq([["1", "1", "masked-1"]])
+            end
+          end
+
+          context "applying the generated DELETE" do
+            before do
+              raw_connection.query(adapter.to_bulk_delete(build_reserved_word_select_ast, reserved_word_table).delete_suffix(";"))
+            end
+
+            it "removes only the scoped row" do
+              expect(client.query(%(SELECT id FROM `order`)).rows).to eq([["2"]])
+            end
+          end
+
+          context "restoring the generated INSERT after the scoped row was deleted" do
+            before do
+              rows = extracted_rows
+              raw_connection.query(adapter.to_bulk_delete(build_reserved_word_select_ast, reserved_word_table).delete_suffix(";"))
+              raw_connection.query(adapter.to_bulk_insert(rows, reserved_word_table).delete_suffix(";"))
+            end
+
+            it "round-trips the extracted rows" do
+              expect(client.query(%(SELECT id, `from`, `to` FROM `order` ORDER BY id)).rows).to eq([
+                ["1", "1", "masked-1"],
+                ["2", "2", "y"],
+              ])
+            end
+          end
+        end
+      end
     end
   end
 end

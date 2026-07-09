@@ -576,6 +576,138 @@ module Exwiw
           end
         end
       end
+
+      describe "reserved-word identifier quoting" do
+        context "select query on a reserved-word table with reserved-word columns" do
+          let(:sql) { adapter.compile_ast(build_reserved_word_select_ast) }
+
+          it "double-quotes the reserved identifiers in SELECT, masking and WHERE, leaving safe names bare" do
+            expect(sql).to eq(
+              %(SELECT "order".id, "order"."from", CASE WHEN "order"."to" IS NOT NULL THEN ('masked-' || "order"."from") ELSE NULL END FROM "order" WHERE "order"."from" = 1)
+            )
+          end
+        end
+
+        context "select query joining a reserved-word table via a reserved-word foreign key" do
+          let(:sql) { adapter.compile_ast(build_reserved_word_join_ast) }
+
+          it "double-quotes the reserved identifiers in every JOIN position" do
+            expect(sql).to eq(
+              %(SELECT "order".id, "order"."from", CASE WHEN "order"."to" IS NOT NULL THEN ('masked-' || "order"."from") ELSE NULL END FROM "order" JOIN "group" ON "order"."references" = "group".id AND "group"."from" = 1)
+            )
+          end
+        end
+
+        context "select query with a materialized scope JOIN over reserved-word tables" do
+          let(:sql) { adapter.compile_ast(build_reserved_word_scope_ast) }
+
+          it "double-quotes the projection, the outer key and the qualified star" do
+            expect(sql).to eq(
+              %(SELECT "order".* FROM "order" JOIN (SELECT DISTINCT exwiw_scope_src_0."from" AS exwiw_scope_id FROM (SELECT "group"."from" FROM "group") AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON "order"."from" = exwiw_scope_ids_0.exwiw_scope_id)
+            )
+          end
+        end
+
+        context "bulk insert into the reserved-word table" do
+          let(:bulk_insert_sql) { adapter.to_bulk_insert([[1, 1, 'x']], reserved_word_table) }
+
+          it "double-quotes the reserved identifiers in the INSERT header" do
+            expect(bulk_insert_sql.strip).to eq(<<~SQL.strip)
+              INSERT INTO "order" (id, "from", "to") VALUES
+              (1, 1, 'x');
+            SQL
+          end
+        end
+
+        context "bulk delete scoped by a reserved-word column" do
+          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_reserved_word_select_ast, reserved_word_table) }
+
+          it "double-quotes the reserved identifiers in DELETE" do
+            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
+              DELETE FROM "order"
+              WHERE "order"."from" = 1;
+            SQL
+          end
+        end
+
+        context "select query with only safe identifiers" do
+          let(:sql) { adapter.compile_ast(build_select_shops_ast) }
+
+          it "emits no quotes at all (byte-identical output)" do
+            expect(sql).not_to include('"')
+          end
+        end
+
+        # End-to-end proof (against a real, isolated sqlite file) that the
+        # quoted SQL actually parses and round-trips: SELECT with masking,
+        # the generated INSERT restored into a fresh database, and DELETE.
+        # Unquoted, every one of these statements is a sqlite syntax error.
+        describe "against a live database" do
+          # Keep the Tempfile objects referenced: taking only #path lets GC
+          # finalize (unlink) them mid-example, silently replacing the seeded
+          # DB with an empty one.
+          let(:source_db_file) { Tempfile.new(["reserved_source", ".sqlite3"]) }
+          let(:reserved_ddl) { %(CREATE TABLE "order" (id INTEGER PRIMARY KEY, "from" INTEGER, "to" TEXT)) }
+          let(:reserved_adapter) do
+            described_class.new(
+              ConnectionConfig.new(
+                adapter: adapter_name,
+                database_name: source_db_file.path,
+                host: nil,
+                port: nil,
+                user: nil,
+                password: nil,
+              ),
+              logger
+            )
+          end
+          let(:extracted_rows) { reserved_adapter.execute(build_reserved_word_select_ast).to_a }
+
+          before do
+            db = ::SQLite3::Database.new(source_db_file.path)
+            db.execute(reserved_ddl)
+            db.execute(%(INSERT INTO "order" (id, "from", "to") VALUES (1, 1, 'x')))
+            db.execute(%(INSERT INTO "order" (id, "from", "to") VALUES (2, 2, 'y')))
+            db.close
+          end
+
+          context "extracting from the reserved-word table" do
+            it "returns the scoped row with the reserved columns masked" do
+              expect(extracted_rows).to eq([[1, 1, "masked-1"]])
+            end
+          end
+
+          context "restoring the generated INSERT into a fresh database" do
+            let(:restore_db_file) { Tempfile.new(["reserved_restore", ".sqlite3"]) }
+            let(:restore_db) { ::SQLite3::Database.new(restore_db_file.path) }
+
+            before do
+              restore_db.execute(reserved_ddl)
+              restore_db.execute_batch(reserved_adapter.to_bulk_insert(extracted_rows, reserved_word_table))
+            end
+
+            after { restore_db.close }
+
+            it "round-trips the extracted rows" do
+              expect(restore_db.execute(%(SELECT id, "from", "to" FROM "order"))).to eq([[1, 1, "masked-1"]])
+            end
+          end
+
+          context "applying the generated DELETE to the source database" do
+            before do
+              db = ::SQLite3::Database.new(source_db_file.path)
+              db.execute_batch(reserved_adapter.to_bulk_delete(build_reserved_word_select_ast, reserved_word_table))
+              db.close
+            end
+
+            it "removes only the scoped row" do
+              db = ::SQLite3::Database.new(source_db_file.path)
+              expect(db.execute(%(SELECT id FROM "order"))).to eq([[2]])
+              db.close
+            end
+          end
+        end
+      end
     end
   end
 end

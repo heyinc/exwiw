@@ -33,6 +33,12 @@ module Exwiw
     end
 
     class Base
+      # Gives every adapter #qualified_name & co. so shared helpers below
+      # (#null_preserving) can use them; the quote-char/reserved-word hooks
+      # raise NotImplementedError until a SQL adapter includes its
+      # IdentifierQuoting dialect submodule (Mysql / Postgresql / Sqlite).
+      include IdentifierQuoting
+
       attr_reader :connection_config
 
       def initialize(connection_config, logger)
@@ -249,10 +255,11 @@ module Exwiw
       # column itself (`column.name`) — not any other column the template may
       # reference — so only true NULL is preserved; an empty string is a real
       # value and is still masked. The column reference uses the same
-      # `<from_table>.<col>` form as the Plain branch. Shared by the SQL
+      # `<from_table>.<col>` form as the Plain branch (qualified_name comes
+      # from IdentifierQuoting, included in Base). Shared by the SQL
       # adapters' #compile_column_name ReplaceWith handling.
       private def null_preserving(ast, column, masked_expr)
-        "CASE WHEN #{ast.from_table_name}.#{column.name} IS NOT NULL THEN #{masked_expr} ELSE NULL END"
+        "CASE WHEN #{qualified_name(ast.from_table_name, column.name)} IS NOT NULL THEN #{masked_expr} ELSE NULL END"
       end
 
       # Split an outer query's WHERE clauses into the scope id-set clauses to

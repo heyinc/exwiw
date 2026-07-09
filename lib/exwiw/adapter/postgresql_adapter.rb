@@ -3,6 +3,7 @@
 module Exwiw
   module Adapter
     class PostgresqlAdapter < Base
+      include IdentifierQuoting::Postgresql
       include SqlBulkInsert
 
       # A lazy, streaming stand-in for the materialized rows #execute used to
@@ -158,25 +159,26 @@ module Exwiw
         @logger.info("  Wrote full-database schema to #{output_path} (#{ordered_tables.size} table(s) in scope for data).")
       end
 
-      # The INSERT header for this adapter. PostgreSQL uses bare identifiers.
+      # The INSERT header for this adapter. PostgreSQL uses bare identifiers,
+      # quoted only when required (reserved word / unsafe characters).
       # #to_bulk_insert / #write_inserts (SqlBulkInsert) append the value tuples
       # and the trailing `;`.
       private def insert_header(table)
-        table_name = table.name
+        table_name = quote_table_name(table.name)
         if table.rails_managed?
           "INSERT INTO #{table_name} VALUES\n"
         else
-          column_names = table.columns.map(&:name).join(', ')
+          column_names = table.columns.map { |c| quote_identifier(c.name) }.join(', ')
           "INSERT INTO #{table_name} (#{column_names}) VALUES\n"
         end
       end
 
       def to_copy_from_stdin(results, table)
         header = if table.rails_managed?
-                   "COPY #{table.name} FROM stdin;"
+                   "COPY #{quote_table_name(table.name)} FROM stdin;"
                  else
-                   column_names = table.columns.map(&:name).join(', ')
-                   "COPY #{table.name} (#{column_names}) FROM stdin;"
+                   column_names = table.columns.map { |c| quote_identifier(c.name) }.join(', ')
+                   "COPY #{quote_table_name(table.name)} (#{column_names}) FROM stdin;"
                  end
         lines = [header]
         results.each do |row|
@@ -203,8 +205,14 @@ module Exwiw
         pk = table.primary_key
         return nil if pk.nil? || pk.empty?
 
+        # pg_get_serial_sequence parses its first argument with identifier
+        # rules (unquoted parts are case-folded), so pass the same
+        # conditionally quoted form the extraction queries use — a bare
+        # 'Order' would fold to the nonexistent relation 'order' even though
+        # the quoted extraction just succeeded. The second argument is taken
+        # literally (no folding), so the raw column name is correct.
         seq_name = connection
-          .exec_params("SELECT pg_get_serial_sequence($1, $2)", [table.name, pk])
+          .exec_params("SELECT pg_get_serial_sequence($1, $2)", [quote_table_name(table.name), pk])
           .values.dig(0, 0)
         return nil if seq_name.nil?
 
@@ -219,7 +227,7 @@ module Exwiw
       def to_bulk_delete(select_query_ast, table)
         raise NotImplementedError unless select_query_ast.is_a?(Exwiw::QueryAst::Select)
 
-        sql = "DELETE FROM #{select_query_ast.from_table_name}"
+        sql = "DELETE FROM #{quote_table_name(select_query_ast.from_table_name)}"
 
         if select_query_ast.join_clauses.empty?
           # Ignore filter option, because bulk delete is for cleaning before import,
@@ -264,7 +272,7 @@ module Exwiw
           column_pg_type(inner_table, inner_column)
         ) ? 'text' : nil
         subquery_sql = compile_ast(subquery_ast, select_cast_to: cast_to)
-        outer_expr = "#{outer_table}.#{foreign_key}"
+        outer_expr = qualified_name(outer_table, foreign_key)
         outer_expr = "#{outer_expr}::text" if cast_to
         sql += "\nWHERE #{outer_expr} IN (#{subquery_sql})"
 
@@ -295,17 +303,17 @@ module Exwiw
         sql += if query_ast.select_all
                  # A lifted scope JOIN brings a derived table into FROM, so a bare
                  # `*` would also project its column. Qualify to this table's own.
-                 scope_clauses.any? ? "#{query_ast.from_table_name}.*" : "*"
+                 scope_clauses.any? ? "#{quote_table_name(query_ast.from_table_name)}.*" : "*"
                else
                  cols = query_ast.columns.map { |col| compile_column_name(query_ast, col) }
                  cols = cols.map { |c| "#{c}::#{select_cast_to}" } if select_cast_to
                  cols.join(', ')
                end
-        sql += " FROM #{query_ast.from_table_name}"
+        sql += " FROM #{quote_table_name(query_ast.from_table_name)}"
 
         query_ast.join_clauses.each do |join|
-          fk_expr = "#{join.base_table_name}.#{join.foreign_key}"
-          pk_expr = "#{join.join_table_name}.#{join.primary_key}"
+          fk_expr = qualified_name(join.base_table_name, join.foreign_key)
+          pk_expr = qualified_name(join.join_table_name, join.primary_key)
           if types_need_cast?(
             column_pg_type(join.base_table_name, join.foreign_key),
             column_pg_type(join.join_table_name, join.primary_key)
@@ -313,7 +321,7 @@ module Exwiw
             fk_expr = "#{fk_expr}::text"
             pk_expr = "#{pk_expr}::text"
           end
-          sql += " JOIN #{join.join_table_name} ON #{fk_expr} = #{pk_expr}"
+          sql += " JOIN #{quote_table_name(join.join_table_name)} ON #{fk_expr} = #{pk_expr}"
 
           join.where_clauses.each do |where|
             compiled_where_condition = compile_where_condition(where, join.join_table_name)
@@ -354,13 +362,13 @@ module Exwiw
       # outer key is cast to match.
       private def compile_scope_join(from_table_name, where_clause, idx)
         subquery = where_clause.value
-        projection = subquery_projection_name(subquery)
+        projection = quote_identifier(subquery_projection_name(subquery))
         src_alias = "exwiw_scope_src_#{idx}"
         ids_alias = "exwiw_scope_ids_#{idx}"
 
         inner_sql = compile_subquery(subquery, outer_table: from_table_name, outer_column: where_clause.column_name)
         cast_to = subquery_cast_to(subquery, from_table_name, where_clause.column_name)
-        outer_key = "#{from_table_name}.#{where_clause.column_name}"
+        outer_key = qualified_name(from_table_name, where_clause.column_name)
         outer_key = "#{outer_key}::#{cast_to}" if cast_to
 
         "JOIN (SELECT DISTINCT #{src_alias}.#{projection} AS exwiw_scope_id " \
@@ -372,7 +380,7 @@ module Exwiw
         # Use as it is if it's a raw query
         return where_clause if where_clause.is_a?(String)
 
-        key = "#{table_name}.#{where_clause.column_name}"
+        key = qualified_name(table_name, where_clause.column_name)
 
         if where_clause.operator == :eq
           values = where_clause.value.map { |v| escape_value(v) }
@@ -411,11 +419,11 @@ module Exwiw
         end
 
         inner_values = subquery.where_values.map { |v| escape_value(v) }
-        select_expr = "#{subquery.table_name}.#{subquery.select_column}"
+        select_expr = qualified_name(subquery.table_name, subquery.select_column)
         select_expr = "#{select_expr}::#{cast_to}" if cast_to
         "SELECT #{select_expr} " \
-          "FROM #{subquery.table_name} " \
-          "WHERE #{subquery.table_name}.#{subquery.where_column} IN (#{inner_values.join(', ')})"
+          "FROM #{quote_table_name(subquery.table_name)} " \
+          "WHERE #{qualified_name(subquery.table_name, subquery.where_column)} IN (#{inner_values.join(', ')})"
       end
 
       private def subquery_select_target(subquery)
@@ -498,14 +506,14 @@ module Exwiw
       private def compile_column_name(ast, column)
         case column
         when Exwiw::QueryAst::ColumnValue::Plain
-          "#{ast.from_table_name}.#{column.name}"
+          qualified_name(ast.from_table_name, column.name)
         when Exwiw::QueryAst::ColumnValue::RawSql
           column.value
         when Exwiw::QueryAst::ColumnValue::ReplaceWith
           parts = column.value.scan(/[^{}]+|\{[^{}]*\}/).map do |part|
             if part.start_with?('{')
               name = part[1..-2]
-              "#{ast.from_table_name}.#{name}"
+              qualified_name(ast.from_table_name, name)
             else
               "'#{part}'"
             end
