@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.11] - 2026-07-09
+
 ### Added
 
 - **Reserved-word and special-character identifiers are now quoted (SQL adapters).** Table and column names that are reserved words (`order`, `from`, `group`, …) or contain characters invalid as a bare identifier are conditionally quoted — backticks on mysql, double quotes on postgresql/sqlite — across every emission path: SELECT projection and masking expressions, FROM/JOIN, WHERE, subqueries, materialized scope JOINs, INSERT / COPY headers and DELETE. Previously only the mysql INSERT header was quoted ([#83](https://github.com/heyinc/exwiw/pull/83)), so a reserved table name broke the extraction SELECT everywhere, a reserved column broke postgresql/sqlite INSERTs, and sqlite rejected even table-qualified reserved columns. Ordinary names stay bare, so output for existing configs is byte-identical (mysql INSERT headers keep their always-backtick form from 0.4.5). Dotted table names are treated as schema qualification and quoted per part (`billing.order` → `` billing.`order` ``), preserving Rails multi-schema `table_name`s. The reserved-word lists cover MySQL 8.4 and 9.x (including 9's `LIBRARY`) plus MariaDB-specific words, PostgreSQL's fully reserved key words, and — for sqlite — exactly the keywords that fail to parse bare in exwiw's emission positions, so fallback-accepted names like `key` are not churned. The lists are enforced by specs that probe the live mysql/postgresql servers' own keyword catalogs and re-derive the sqlite set empirically.
