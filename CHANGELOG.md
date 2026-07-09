@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`replace_with_fake_data` name types now produce a coherent identity, and gained kana types.** The person-family types (`human_name`, `first_name`, `last_name`) previously drew from three independent faker pools, so a single seed's first name, last name, and full name were unrelated people. They now share one per-locale pool of whole people keyed by the seed, so for a given seed `human_name` always equals `last_name` + `first_name` (ordered per locale: `姓 名` for `ja`, `First Last` otherwise). Three kana types are added — `human_name_kana`, `first_name_kana`, `last_name_kana` — for the reading of the same person. Because faker's `ja` locale has kanji names with no readings, exwiw bundles its own paired (kanji, katakana) dataset (`Exwiw::JapaneseNames`) and builds the `ja` name pool from it, so kana matches the kanji and a `ja`-name-only config needs no faker at all. Kana types require `locale: ja` (they raise a clear error otherwise). The person pool is sized independently of the other types at 20,000 (`PERSON_POOL_SIZE`), and for `ja` is filled with 20,000 *distinct* people enumerated from a 142×142 name dataset (rather than sampled with replacement, which left ~37% of slots duplicated), so the name space is large and evenly used. Determinism for the `ja` name family is now pinned to exwiw's bundled dataset version rather than the faker version; other types and locales are unchanged.
+
 ## [0.9.8] - 2026-07-09
 
 ### Added

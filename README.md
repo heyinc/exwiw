@@ -850,34 +850,57 @@ fake value, across tables, runs, and adapters:
   because their text forms differ per adapter. A `NULL` seed value hashes `""`
   (still deterministic).
 - Like `replace_with`, it **preserves NULL** in the target column.
-- `locale` (optional) sets the faker locale used to generate the candidate
-  values, e.g. `{ "seed": "id", "type": "human_name", "locale": "ja" }` produces
-  Japanese names.
+- `locale` (optional) sets the locale used to build the candidate values, e.g.
+  `{ "seed": "id", "type": "human_name", "locale": "ja" }` produces Japanese
+  names.
 - Supported `type`s:
 
-  | type | example output |
-  |------|----------------|
-  | `human_name` | `Adrianna Kilback` |
-  | `first_name` | `Adrianna` |
-  | `last_name` | `Kilback` |
-  | `phone_number` | `(555) 123-4567` |
-  | `address` | `282 Kevin Brook, Imogeneborough, CA 58517` |
-  | `company_name` | `Hirthe-Ritchie` |
-  | `email` | `cliff.fay.9d6b804eff5a3f57@example.com` |
-  | `username` | `cliff.fay_9d6b804eff5a3f57` |
+  | type | example output (en) | example output (`locale: ja`) |
+  |------|----------------|----------------|
+  | `human_name` | `Adrianna Kilback` | `山田 太郎` |
+  | `first_name` | `Adrianna` | `太郎` |
+  | `last_name` | `Kilback` | `山田` |
+  | `human_name_kana` | — (ja only) | `ヤマダ タロウ` |
+  | `first_name_kana` | — (ja only) | `タロウ` |
+  | `last_name_kana` | — (ja only) | `ヤマダ` |
+  | `phone_number` | `(555) 123-4567` | |
+  | `address` | `282 Kevin Brook, Imogeneborough, CA 58517` | |
+  | `company_name` | `Hirthe-Ritchie` | |
+  | `email` | `cliff.fay.9d6b804eff5a3f57@example.com` | |
+  | `username` | `cliff.fay_9d6b804eff5a3f57` | |
 
-- Values are drawn from a pool of 10,000 pre-generated candidates per
-  (type, locale), so distinct seeds can share a fake value. The
+- **Coherent identity across the name family.** The person-family types
+  (`human_name`, `first_name`, `last_name` and their `*_kana` counterparts) all
+  draw from a single shared pool of people per locale, keyed by the same seed —
+  so for one seed value the last name, first name, full name, and every kana
+  reading belong to the **same person**: `human_name` always equals
+  `last_name` + `first_name`, and `human_name_kana` matches `human_name`. Full
+  names are ordered per locale (`姓 名` for `ja`, `First Last` otherwise).
+- **Kana (`*_kana`) types require `locale: ja`.** faker's `ja` locale ships
+  kanji names with no reading, so exwiw bundles its own paired (kanji, katakana)
+  dataset for `ja`; this is what lets a fake person carry a kana reading that
+  actually matches its kanji. Requesting a `*_kana` type with any other locale
+  raises a clear error at build time.
+- Values are drawn from a pre-generated pool per (type, locale), so distinct
+  seeds can share a fake value. The name family uses one shared **person** pool
+  of 20,000 identities — for `ja` these are 20,000 *distinct* people enumerated
+  from the bundled (kanji, kana) dataset (142 surnames × 142 given names); the
+  other types use an independent 10,000-candidate pool. The
   uniqueness-sensitive types (`email`, `username`) additionally embed a 64-bit
   hex token derived from the seed hash, so they stay collision-free under a
   unique index even at millions of rows (collision probability at 5M distinct
   seeds ≈ 7e-7) and always use the `example.com` domain.
-- **Determinism caveat**: values are stable for a given faker gem version +
-  locale. Upgrading faker (or changing `locale`) regenerates the pool and maps
+- **Determinism caveat**: values are stable for a given locale plus the version
+  of the value source — the faker gem for the non-`ja` name family and the
+  independent types, and exwiw's bundled dataset for the `ja` name family.
+  Upgrading that source (or changing `locale`) regenerates the pool and maps
   seeds to different values. The seed→value mapping itself never changes within
   one version.
 - The faker gem is **not** a runtime dependency of exwiw — add `gem "faker"` to
-  your Gemfile to use this mode (exwiw raises a clear error otherwise).
+  your Gemfile to use this mode (exwiw raises a clear error otherwise). A config
+  that uses **only** `ja` person types needs no faker (that pool is built
+  entirely from the bundled dataset); faker is required for every other type
+  and locale.
 - Exclusive with the other masking keys on the same column. SQL adapters only
   (the MongoDB adapter rejects the key on load, see
   [Unknown keys are rejected](#unknown-keys-are-rejected)), and invisible to
