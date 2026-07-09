@@ -244,10 +244,11 @@ module Exwiw
       fake_data = column.replace_with_fake_data
       return unless fake_data
 
-      unless RowTransformer::FAKE_TYPES.key?(fake_data.type)
+      supported_types = RowTransformer::PERSON_TYPES.keys + RowTransformer::FAKE_TYPES.keys
+      unless supported_types.include?(fake_data.type)
         raise ArgumentError,
               "Table '#{name}' column '#{column.name}': unknown replace_with_fake_data type '#{fake_data.type}' " \
-              "(supported: #{RowTransformer::FAKE_TYPES.keys.join(', ')})."
+              "(supported: #{supported_types.join(', ')})."
       end
 
       seed_column = fake_data.seed.delete_prefix("#{name}.")

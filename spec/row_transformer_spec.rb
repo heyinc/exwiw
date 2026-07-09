@@ -151,6 +151,60 @@ module Exwiw
           RowTransformer.build(table)
         }.to raise_error(ArgumentError, /seed 'legacy' does not resolve to an extracted column/)
       end
+
+      it 'rejects an unknown fake-data type at load' do
+        expect {
+          build_table([{ name: 'id' }, { name: 'x', replace_with_fake_data: { seed: 'id', type: 'nope' } }])
+        }.to raise_error(ArgumentError, /unknown replace_with_fake_data type 'nope'/)
+      end
+    end
+
+    describe 'person-family coherence and kana' do
+      it 'derives every name column of one seed from the same person (ja full name is "姓 名")' do
+        transformer = build_transformer([
+          { name: 'id' },
+          { name: 'family', replace_with_fake_data: { seed: 'id', type: 'last_name', locale: 'ja' } },
+          { name: 'given', replace_with_fake_data: { seed: 'id', type: 'first_name', locale: 'ja' } },
+          { name: 'full', replace_with_fake_data: { seed: 'id', type: 'human_name', locale: 'ja' } },
+        ])
+        _id, family, given, full = transformer.wrap([['1', 'x', 'y', 'z']]).to_a[0]
+        expect(full).to eq("#{family} #{given}")
+      end
+
+      it 'produces kana matching the kanji person for the same seed' do
+        transformer = build_transformer([
+          { name: 'id' },
+          { name: 'family', replace_with_fake_data: { seed: 'id', type: 'last_name', locale: 'ja' } },
+          { name: 'family_kana', replace_with_fake_data: { seed: 'id', type: 'last_name_kana', locale: 'ja' } },
+          { name: 'given_kana', replace_with_fake_data: { seed: 'id', type: 'first_name_kana', locale: 'ja' } },
+          { name: 'full_kana', replace_with_fake_data: { seed: 'id', type: 'human_name_kana', locale: 'ja' } },
+        ])
+        _id, family, family_kana, given_kana, full_kana = transformer.wrap([['1', 'a', 'b', 'c', 'd']]).to_a[0]
+        pair = JapaneseNames::SURNAMES.find { |kanji, _kana| kanji == family }
+        expect(family_kana).to eq(pair[1])
+        expect(family_kana).to match(/\A\p{Katakana}+\z/)
+        expect(full_kana).to eq("#{family_kana} #{given_kana}")
+      end
+
+      it 'orders a non-ja full name as "First Last"' do
+        transformer = build_transformer([
+          { name: 'id' },
+          { name: 'family', replace_with_fake_data: { seed: 'id', type: 'last_name' } },
+          { name: 'given', replace_with_fake_data: { seed: 'id', type: 'first_name' } },
+          { name: 'full', replace_with_fake_data: { seed: 'id', type: 'human_name' } },
+        ])
+        _id, family, given, full = transformer.wrap([['1', 'x', 'y', 'z']]).to_a[0]
+        expect(full).to eq("#{given} #{family}")
+      end
+
+      it 'raises when a kana type is used with a non-ja locale' do
+        expect {
+          build_transformer([
+            { name: 'id' },
+            { name: 'k', replace_with_fake_data: { seed: 'id', type: 'last_name_kana' } },
+          ])
+        }.to raise_error(ArgumentError, /only available with locale: ja/)
+      end
     end
 
     describe RowTransformer::TransformedResult do
