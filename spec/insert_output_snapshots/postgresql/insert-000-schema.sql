@@ -24,7 +24,7 @@ SET row_security = off;
 -- Name: btree_gist; Type: EXTENSION; Schema: -; Owner: -
 --
 
-DO $$ BEGIN CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public; EXCEPTION WHEN feature_not_supported OR invalid_schema_name THEN RAISE WARNING 'exwiw: skipped CREATE EXTENSION btree_gist (SQLSTATE %): %', SQLSTATE, SQLERRM; END $$;
+DO $$ BEGIN CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public; EXCEPTION WHEN feature_not_supported OR invalid_schema_name OR internal_error THEN RAISE WARNING 'exwiw: skipped CREATE EXTENSION btree_gist (SQLSTATE %): %', SQLSTATE, SQLERRM; END $$;
 
 
 --
