@@ -881,9 +881,11 @@ fake value, across tables, runs, and adapters:
   dataset for `ja`; this is what lets a fake person carry a kana reading that
   actually matches its kanji. Requesting a `*_kana` type with any other locale
   raises a clear error at build time.
-- Values are drawn from a pool of 10,000 pre-generated candidates per
-  (type, locale) — a shared person pool for the name family, an independent
-  pool for the other types — so distinct seeds can share a fake value. The
+- Values are drawn from a pre-generated pool per (type, locale), so distinct
+  seeds can share a fake value. The name family uses one shared **person** pool
+  of 20,000 identities — for `ja` these are 20,000 *distinct* people enumerated
+  from the bundled (kanji, kana) dataset (142 surnames × 142 given names); the
+  other types use an independent 10,000-candidate pool. The
   uniqueness-sensitive types (`email`, `username`) additionally embed a 64-bit
   hex token derived from the seed hash, so they stay collision-free under a
   unique index even at millions of rows (collision probability at 5M distinct

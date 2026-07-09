@@ -205,6 +205,13 @@ module Exwiw
           ])
         }.to raise_error(ArgumentError, /only available with locale: ja/)
       end
+
+      it 'fills the ja person pool with PERSON_POOL_SIZE distinct people' do
+        pool = RowTransformer.person_pool('ja')
+        expect(pool.size).to eq(RowTransformer::PERSON_POOL_SIZE)
+        distinct = pool.map { |p| [p.last_name, p.first_name] }.uniq.size
+        expect(distinct).to eq(RowTransformer::PERSON_POOL_SIZE)
+      end
     end
 
     describe RowTransformer::TransformedResult do

@@ -12,10 +12,11 @@ module Exwiw
   # - last_name / first_name / full name (and their kana) for a single seed all
   #   come from the same person (a coherent identity).
   #
-  # The kanji sets mirror faker's `ja` name list (100 surnames, 100 given names)
-  # so coverage matches faker; exwiw adds the readings. 100 x 100 = 10,000
-  # combinations equals the person pool size (RowTransformer::POOL_SIZE), so the
-  # pool spans the full name space rather than repeating a small subset.
+  # The kanji sets extend faker's `ja` name list (its top 100 surnames / 100
+  # given names) with common additions; exwiw supplies the readings. 142 x 142
+  # = 20,164 combinations exceeds the person pool size
+  # (RowTransformer::PERSON_POOL_SIZE = 20,000), so the ja pool is filled with
+  # that many DISTINCT people rather than repeating a small subset.
   #
   # Readings are katakana (matching the katakana convention of typical `*_kana`
   # columns). They are plausible common readings, not the only possible reading
@@ -122,6 +123,48 @@ module Exwiw
       %w[野口 ノグチ],
       %w[野村 ノムラ],
       %w[新井 アライ],
+%w[北村 キタムラ],
+%w[平田 ヒラタ],
+%w[森本 モリモト],
+%w[荒木 アラキ],
+%w[大西 オオニシ],
+%w[菅野 カンノ],
+%w[小池 コイケ],
+%w[桜井 サクライ],
+%w[高野 タカノ],
+%w[川口 カワグチ],
+%w[大久保 オオクボ],
+%w[中田 ナカタ],
+%w[川崎 カワサキ],
+%w[飯田 イイダ],
+%w[星野 ホシノ],
+%w[岩田 イワタ],
+%w[大森 オオモリ],
+%w[松岡 マツオカ],
+%w[沢田 サワダ],
+%w[内藤 ナイトウ],
+%w[松浦 マツウラ],
+%w[西田 ニシダ],
+%w[白石 シライシ],
+%w[浜田 ハマダ],
+%w[早川 ハヤカワ],
+%w[永井 ナガイ],
+%w[松村 マツムラ],
+%w[三宅 ミヤケ],
+%w[福島 フクシマ],
+%w[大橋 オオハシ],
+%w[中西 ナカニシ],
+%w[吉川 ヨシカワ],
+%w[服部 ハットリ],
+%w[尾崎 オザキ],
+%w[水野 ミズノ],
+%w[香川 カガワ],
+%w[荒井 アライ],
+%w[田口 タグチ],
+%w[江口 エグチ],
+%w[秋山 アキヤマ],
+%w[黒田 クロダ],
+%w[今村 イマムラ],
     ].freeze
 
     GIVEN_NAMES = [
@@ -225,6 +268,48 @@ module Exwiw
       %w[美緒 ミオ],
       %w[千夏 チナツ],
       %w[真希 マキ],
+%w[陽向 ヒナタ],
+%w[大介 ダイスケ],
+%w[涼介 リョウスケ],
+%w[悠介 ユウスケ],
+%w[拓也 タクヤ],
+%w[和也 カズヤ],
+%w[直人 ナオト],
+%w[雄太 ユウタ],
+%w[翔平 ショウヘイ],
+%w[健太郎 ケンタロウ],
+%w[慎太郎 シンタロウ],
+%w[竜也 タツヤ],
+%w[圭 ケイ],
+%w[樹里 ジュリ],
+%w[花子 ハナコ],
+%w[由美 ユミ],
+%w[由美子 ユミコ],
+%w[美穂子 ミホコ],
+%w[直子 ナオコ],
+%w[京子 キョウコ],
+%w[順子 ジュンコ],
+%w[洋子 ヨウコ],
+%w[幸子 サチコ],
+%w[美和 ミワ],
+%w[理沙 リサ],
+%w[麻衣 マイ],
+%w[早紀 サキ],
+%w[春香 ハルカ],
+%w[沙織 サオリ],
+%w[香織 カオリ],
+%w[友美 トモミ],
+%w[恵子 ケイコ],
+%w[真由美 マユミ],
+%w[里奈 リナ],
+%w[彩香 アヤカ],
+%w[亜美 アミ],
+%w[春菜 ハルナ],
+%w[千秋 チアキ],
+%w[桃子 モモコ],
+%w[美里 ミサト],
+%w[結子 ユウコ],
+%w[陽介 ヨウスケ],
     ].freeze
   end
 end

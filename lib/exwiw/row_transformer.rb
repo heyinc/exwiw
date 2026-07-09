@@ -33,6 +33,13 @@ module Exwiw
     # given faker gem version + locale.
     POOL_RANDOM_SEED = 715_517
 
+    # The person pool (PERSON_TYPES) is sized independently of POOL_SIZE — at
+    # twice the size — so the coherent-identity name space is larger without
+    # disturbing the independent types' seed->value mappings. The ja pool is
+    # filled with distinct people (see .build_japanese_person_pool), so
+    # JapaneseNames must supply at least this many (surname, given) combinations.
+    PERSON_POOL_SIZE = POOL_SIZE * 2
+
     # A coherent fake identity. All person-family types (PERSON_TYPES) draw
     # from one shared pool of these per locale, and a seed picks the same pool
     # index for every such column — so last_name / first_name / full name (and
@@ -196,7 +203,7 @@ module Exwiw
       previous_random = Faker::Config.random
       Faker::Config.locale = locale if locale
       Faker::Config.random = random
-      Array.new(POOL_SIZE) { Person.new(Faker::Name.last_name, Faker::Name.first_name, nil, nil).freeze }.freeze
+      Array.new(PERSON_POOL_SIZE) { Person.new(Faker::Name.last_name, Faker::Name.first_name, nil, nil).freeze }.freeze
     ensure
       unless locale.to_s == "ja"
         Faker::Config.locale = previous_locale
@@ -204,14 +211,24 @@ module Exwiw
       end
     end
 
+    # Fill the ja pool with DISTINCT people: enumerate every (surname, given)
+    # combination, shuffle deterministically, and take PERSON_POOL_SIZE. Unlike
+    # sampling with replacement (which wastes ~37% of slots to duplicates), this
+    # gives PERSON_POOL_SIZE distinct identities — so JapaneseNames must supply
+    # at least that many combinations.
     def self.build_japanese_person_pool(random)
       surnames = JapaneseNames::SURNAMES
       given_names = JapaneseNames::GIVEN_NAMES
-      Array.new(POOL_SIZE) do
-        last = surnames[random.rand(surnames.size)]
-        first = given_names[random.rand(given_names.size)]
-        Person.new(last[0], first[0], last[1], first[1]).freeze
-      end.freeze
+      combinations = surnames.size * given_names.size
+      if combinations < PERSON_POOL_SIZE
+        raise "JapaneseNames has #{combinations} (surname, given) combinations, " \
+              "need at least PERSON_POOL_SIZE=#{PERSON_POOL_SIZE}"
+      end
+
+      people = surnames.flat_map do |last|
+        given_names.map { |first| Person.new(last[0], first[0], last[1], first[1]).freeze }
+      end
+      people.shuffle(random: random).first(PERSON_POOL_SIZE).freeze
     end
 
     def initialize(table)
@@ -342,7 +359,7 @@ module Exwiw
         next nil if row[column_index].nil?
 
         digest = Digest::SHA256.digest(row[seed_index].to_s)
-        person = pool[digest[0, 8].unpack1("Q>") % POOL_SIZE]
+        person = pool[digest[0, 8].unpack1("Q>") % PERSON_POOL_SIZE]
         extractor.call(person, locale)
       end
     end
