@@ -6,6 +6,13 @@ module Exwiw
 
     attribute :name, String
     attribute :replace_with, optional(String), skip_serializing_if_nil: true
+    # Ruby-process-side masking: replace the value with a deterministic fake
+    # value derived from a seed field (see FakeData / RowTransformer). Unlike the
+    # SQL adapters — where replace_with runs in the database and fake data needs
+    # a separate streaming transform — the MongoDB adapter already masks
+    # document-side, so this is applied inside the collection's mask plan
+    # (MongodbAdapter#apply_mask_plan!), after `replace_with`.
+    attribute :replace_with_fake_data, Serdes::OptionalType.new(FakeData), skip_serializing_if_nil: true
     # The Mongoid model's Ruby accessor when the stored document key (`name`)
     # was renamed via `field :ctry, as: :country`. Purely informational — exwiw
     # masks/projects by `name` (the storage key) — but surfacing the accessor
