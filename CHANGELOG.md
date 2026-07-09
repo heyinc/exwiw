@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`rake exwiw:schema:generate_mongoid` now emits one embedded config per `(parent collection, path)` occurrence of a shared embedded class.** Previously the generator grouped models by Mongoid `collection_name` and emitted a single config bound to one `embedded_in`, so an embedded class embedded at more than one place (a value object reused across parents, or embedded under several keys of one parent) got a config for only one occurrence — per-field masking (`replace_with` / `ignore`) declared for that class applied at that single location while every other occurrence dumped raw. The runtime already applies each embedded config independently by `(embedded_in.collection_name, path)`, so the generator now discovers every occurrence by scanning all models' `embeds_one` / `embeds_many` relations and emits one config per occurrence. The occurrence matching the class's declared `embedded_in` keeps the plain collection name (so an existing single-occurrence config is never renamed when a second occurrence later appears, and single-occurrence output is byte-for-byte unchanged); each additional occurrence gets a `name` disambiguated by its parent collection and path. Each occurrence merges against its own file on regeneration, preserving hand-edited masks per occurrence. (The MongoDB/Mongoid path has no `schema:tidy`, and regeneration never deletes a config it did not regenerate, so occurrence configs are not pruned.)
+
 ## [0.9.8] - 2026-07-09
 
 ### Added
