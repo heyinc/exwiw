@@ -306,4 +306,96 @@ module AstFactory
       )
     end
   end
+
+  # A table whose name (`order`) and column names (`from`, `to`) are SQL
+  # reserved words in mysql, postgresql and sqlite alike, with a masking
+  # template that references a reserved-word column. Exercises the adapters'
+  # conditional identifier quoting (IdentifierQuoting): bare, these names are
+  # syntax errors — in every dialect's INSERT column list, and in sqlite even
+  # when table-qualified. `id` stays a safe name on purpose, to assert safe
+  # identifiers remain unquoted alongside quoted ones. Adapter-agnostic (the
+  # config is built inline, not loaded per adapter).
+  def reserved_word_table
+    Exwiw::TableConfig.from_symbol_keys(
+      name: "order",
+      primary_key: "id",
+      belongs_tos: [],
+      columns: [
+        { name: "id" },
+        { name: "from" },
+        { name: "to", replace_with: "masked-{from}" },
+      ],
+    )
+  end
+
+  def build_reserved_word_select_ast
+    table = reserved_word_table
+
+    QueryAst::Select.new.tap do |ast|
+      ast.from(table.name)
+      ast.select(table.columns)
+      ast.where(
+        QueryAst::WhereClause.new(
+          column_name: "from",
+          operator: :eq,
+          value: [1],
+        )
+      )
+    end
+  end
+
+  # Reserved words in every JOIN position: the joined-to table (`group`), the
+  # base table's foreign key (`references`) and a filter column (`from`).
+  def build_reserved_word_join_ast
+    table = reserved_word_table
+
+    QueryAst::Select.new.tap do |ast|
+      ast.from(table.name)
+      ast.select(table.columns)
+      ast.join(
+        QueryAst::JoinClause.new(
+          base_table_name: "order",
+          foreign_key: "references",
+          join_table_name: "group",
+          primary_key: "id",
+          where_clauses: [
+            QueryAst::WhereClause.new(
+              column_name: "from",
+              operator: :eq,
+              value: [1],
+            ),
+          ],
+        )
+      )
+    end
+  end
+
+  # A scope id-set clause (SelectSubquery lifted into a materialized
+  # derived-table JOIN) whose outer key, projected column and both table names
+  # are reserved words. Exercises quoting in #compile_scope_join: the
+  # select_all-with-scope `<table>.*` qualification, the projection reference
+  # inside the derived table, and the outer ON key.
+  def build_reserved_word_scope_ast
+    group_table = Exwiw::TableConfig.from_symbol_keys(
+      name: "group",
+      primary_key: "id",
+      belongs_tos: [],
+      columns: [{ name: "from" }],
+    )
+    inner = QueryAst::Select.new
+    inner.from(group_table.name)
+    inner.select(group_table.columns)
+
+    QueryAst::Select.new.tap do |ast|
+      ast.from("order")
+      ast.select_all!
+      ast.where(
+        QueryAst::WhereClause.new(
+          column_name: "from",
+          operator: :in_subquery,
+          value: QueryAst::SelectSubquery.new(query: inner),
+        )
+      )
+    end
+  end
 end
