@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A whole-database schema restore no longer aborts when a preload-required extension (e.g. pglogical) is absent on the target.** `wrap_create_extension_in_do_block` already skipped a `CREATE EXTENSION` the target cannot provide for `feature_not_supported` (0A000) and `invalid_schema_name` (3F000), but an extension that must be loaded via `shared_preload_libraries` raises a bare `elog(ERROR, "<name> is not in shared_preload_libraries")`, which carries the default SQLSTATE `XX000` (`internal_error`) — not caught, so the whole `insert-000-schema.sql` restore aborted (observed restoring a pglogical-carrying production dump into a plain RDS mirage target). `internal_error` is now caught alongside the other two and re-raised as a WARNING, so the extension is skipped and the restore continues. `insufficient_privilege` (42501) is still deliberately NOT caught.
+
 ## [0.9.9] - 2026-07-09
 
 ### Changed

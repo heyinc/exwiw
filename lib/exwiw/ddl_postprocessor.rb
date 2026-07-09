@@ -86,12 +86,18 @@ module Exwiw
     # A bare `CREATE EXTENSION ...;` (as a full-database pg_dump emits, unlike a
     # `--table` dump, which omits extensions) has no graceful skip: a restore
     # target that cannot create the extension aborts the whole restore. Wrap
-    # each in a DO block that catches only the two "cannot provide it here"
-    # cases — feature_not_supported (0A000, binaries absent) and
-    # invalid_schema_name (3F000, required schema absent) — and re-raises them
-    # as a WARNING so the skip surfaces in the restore logs. insufficient_
-    # privilege (42501) is deliberately NOT caught: a restore role lacking
-    # CREATE privilege is a misconfiguration to fix, not to skip silently.
+    # each in a DO block that catches only the "cannot provide it here" cases and
+    # re-raises them as a WARNING so the skip surfaces in the restore logs:
+    #   - feature_not_supported (0A000, binaries absent)
+    #   - invalid_schema_name (3F000, required schema absent)
+    #   - internal_error (XX000): an extension that must be preloaded via
+    #     shared_preload_libraries raises a bare `elog(ERROR, "<name> is not in
+    #     shared_preload_libraries")` (default SQLSTATE XX000) when it is not
+    #     preloaded on the target — e.g. pglogical restored into a plain RDS. Like
+    #     the other two, this is the target being unable to provide the extension,
+    #     not a broken dump, so the restore should skip it rather than abort.
+    # insufficient_privilege (42501) is deliberately NOT caught: a restore role
+    # lacking CREATE privilege is a misconfiguration to fix, not to skip silently.
     CREATE_EXTENSION_RE = /^[ \t]*CREATE\s+EXTENSION\b(?:\s+IF\s+NOT\s+EXISTS)?\s+(?<name>"[^"]+"|[^\s;]+)[^;]*;/i.freeze
 
     def wrap_create_extension_in_do_block(sql)
@@ -101,7 +107,7 @@ module Exwiw
         warning = "exwiw: skipped CREATE EXTENSION #{extname} (SQLSTATE %): %"
         warning_literal = "'#{warning.gsub("'", "''")}'"
         "DO $$ BEGIN #{stmt} " \
-          "EXCEPTION WHEN feature_not_supported OR invalid_schema_name THEN " \
+          "EXCEPTION WHEN feature_not_supported OR invalid_schema_name OR internal_error THEN " \
           "RAISE WARNING #{warning_literal}, SQLSTATE, SQLERRM; END $$;"
       end
     end
