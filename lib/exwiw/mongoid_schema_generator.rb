@@ -69,9 +69,30 @@ module Exwiw
     # called directly without an output dir, in which case nothing is honored.
     def build_collections(existing_by_name = {})
       models = expand_with_descendants(concrete_models)
+      embedding_index = build_embedding_index(models)
       models
         .group_by { |model| model.collection_name.to_s }
-        .map { |collection_name, group| build_collection_for(collection_name, group, existing_by_name[collection_name]) }
+        .flat_map do |collection_name, group|
+          build_configs_for(collection_name, group, existing_by_name, embedding_index)
+        end
+    end
+
+    # Returns the config(s) for one collection group. Usually a single config;
+    # an embedded class embedded at two or more distinct (parent, path)
+    # occurrences yields one config per occurrence (see
+    # #build_multi_occurrence_configs). Every other shape — top-level
+    # collections, and embedded collections with a single or zero discoverable
+    # occurrence — keeps the exact historical single-config behavior, so
+    # existing file names, snapshots, and the fail-loud error handling for
+    # unrepresentable embeddings are unchanged.
+    private def build_configs_for(collection_name, models, existing_by_name, embedding_index)
+      occurrences = embedding_index[collection_name]
+
+      if models.any?(&:embedded?) && occurrences.size >= 2
+        build_multi_occurrence_configs(collection_name, models, occurrences, existing_by_name)
+      else
+        [build_collection_for(collection_name, models, existing_by_name[collection_name])]
+      end
     end
 
     # Loads the configs already on disk so the generator can honor an explicit
@@ -162,6 +183,123 @@ module Exwiw
       end
 
       MongodbCollectionConfig.from_symbol_keys(attrs)
+    end
+
+    # Emit one embedded config per (parent collection, document path) occurrence
+    # of an embedded class that is embedded at two or more distinct places (e.g.
+    # a shared `Address` value object embedded at both `orders/billing_address`
+    # and `shipments/address`). The generator otherwise groups models by
+    # collection name and would emit a SINGLE config bound to one `embedded_in`,
+    # leaving the other occurrences with no config — so per-field masking
+    # (`replace_with` / `ignore`) declared for that class applies at only one
+    # location while the rest dump raw. The runtime already applies every
+    # embedded config keyed by (embedded_in.collection_name, path)
+    # independently, so emitting one config per occurrence closes the gap.
+    #
+    # Backward compatibility: the occurrence matching the class's declared
+    # `embedded_in` keeps the collection's own name (so a config that was
+    # previously single-occurrence keeps its file name and `embedded_in` on the
+    # next regen, and only NEW files are added for the extra occurrences); each
+    # additional occurrence gets a name disambiguated by its parent collection
+    # and path so the files never collide. Each occurrence merges independently
+    # against its own on-disk file in #write_files, preserving hand-edited masks
+    # per occurrence across regeneration.
+    private def build_multi_occurrence_configs(collection_name, models, occurrences, existing_by_name)
+      ordered = models.sort_by { |model| [model.fields.size, model.name] }
+      fields = aggregate_fields(ordered)
+
+      sorted = occurrences.sort_by { |occurrence| [occurrence[:collection_name], occurrence[:path]] }
+      primary = primary_occurrence(models, sorted)
+
+      sorted.map do |occurrence|
+        config_name =
+          occurrence == primary ? collection_name : disambiguated_name(collection_name, occurrence)
+        build_embedded_occurrence_config(config_name, fields, occurrence, existing_by_name[config_name])
+      end
+    end
+
+    # The occurrence that keeps the collection's own (undisambiguated) name. It
+    # is the one matching the class's declared `embedded_in` (so an existing
+    # single-occurrence config is never renamed when a second occurrence
+    # appears). When the declared `embedded_in` cannot be resolved to a single
+    # occurrence (e.g. a polymorphic embedded_in, which #embedded_in_for raises
+    # on) there is no pre-existing config to preserve, so the deterministically
+    # first sorted occurrence is used.
+    private def primary_occurrence(models, sorted_occurrences)
+      declared =
+        begin
+          embedded_in_for(models.find(&:embedded?))
+        rescue StandardError
+          nil
+        end
+
+      if declared
+        match = sorted_occurrences.find do |occurrence|
+          occurrence[:collection_name] == declared[:collection_name] && occurrence[:path] == declared[:path]
+        end
+        return match if match
+      end
+
+      sorted_occurrences.first
+    end
+
+    # A collision-free config name for a non-primary occurrence, derived from the
+    # embedded collection name plus the occurrence's parent collection and path
+    # (dots in a multi-segment path flattened to underscores). Only the file name
+    # / config identity changes; the runtime addresses the subdocuments purely by
+    # `embedded_in.collection_name` + `path`, never by this name.
+    private def disambiguated_name(collection_name, occurrence)
+      "#{collection_name}__#{occurrence[:collection_name]}__#{occurrence[:path].tr('.', '_')}"
+    end
+
+    private def build_embedded_occurrence_config(config_name, fields, occurrence, existing)
+      # Honor an explicit on-disk ignore per occurrence, exactly as
+      # #build_collection_for does for the single-config case.
+      return existing if existing&.ignore
+
+      MongodbCollectionConfig.from_symbol_keys(
+        name: config_name,
+        primary_key: "_id",
+        belongs_tos: [],
+        embedded_in: { collection_name: occurrence[:collection_name], path: occurrence[:path] },
+        fields: fields,
+      )
+    end
+
+    # Maps an embedded collection name -> every (parent collection, document
+    # path) occurrence it is embedded at, discovered by scanning ALL models'
+    # `embeds_one` / `embeds_many` relations (the inverse of a single child's
+    # `embedded_in`). Scanning the parents is what lets the generator represent a
+    # class embedded at several distinct paths: the immediate embedding model's
+    # collection_name is the parent (matching how a single-occurrence embedded
+    # config names its immediate parent) and `store_as` is the path. STI
+    # base+subclass pairs can surface the same relation twice, so duplicate
+    # occurrences are collapsed. A relation whose target class no longer resolves
+    # is skipped rather than aborting the whole index.
+    private def build_embedding_index(models)
+      index = Hash.new { |hash, key| hash[key] = [] }
+
+      models.each do |model|
+        model.relations.each_value do |rel|
+          next unless rel.is_a?(::Mongoid::Association::Embedded::EmbedsMany) ||
+                      rel.is_a?(::Mongoid::Association::Embedded::EmbedsOne)
+
+          child_collection = embedded_child_collection_name(rel)
+          next unless child_collection
+
+          occurrence = { collection_name: model.collection_name.to_s, path: rel.store_as }
+          occurrences = index[child_collection]
+          occurrences << occurrence unless occurrences.include?(occurrence)
+        end
+      end
+
+      index
+    end
+
+    private def embedded_child_collection_name(rel)
+      rel.klass.collection_name.to_s
+    rescue NameError, ::Mongoid::Errors::MongoidError
+      nil
     end
 
     # Mongoid registers only the base class of an inheritance hierarchy in

@@ -909,5 +909,148 @@ module Exwiw
         )
       end
     end
+
+    # A shared embedded class embedded at more than one (parent, path) occurrence.
+    # These models are kept OUT of MODELS/SEED and exercised in isolation.
+    describe "an embedded class embedded at multiple (parent, path) occurrences" do
+      let(:multi_models) do
+        [MongoidDummy::SalesOrder, MongoidDummy::Shipment, MongoidDummy::PostalAddress]
+      end
+
+      # Documents the pre-fix gap: PostalAddress has ONE Mongoid collection
+      # ("postal_addresses"), so grouping by collection name and deriving a single
+      # `embedded_in` from the class's own `embedded_in` can only cover ONE of its
+      # two occurrences (sales_orders/billing_address); the shipments/address
+      # occurrence would get no config and dump raw. NOTE: the MongoDB/Mongoid path
+      # has no `schema:tidy` (only the ActiveRecord SchemaGenerator does), and
+      # #write_files never deletes files it did not generate, so the durability
+      # risk here is not tidy pruning a hand-authored second config — it is that
+      # the generator never emits the second occurrence at all, so masking there is
+      # silently absent. This block proves the generator now emits every occurrence.
+      it "emits one config per occurrence with distinct names and embedded_in" do
+        collections = described_class.new(models: multi_models, output_dir: output_dir).build_collections
+        by_name = collections.each_with_object({}) { |c, h| h[c.name] = c }
+
+        # The occurrence matching the class's declared embedded_in keeps the plain
+        # collection name (backward compatible); the other is disambiguated.
+        primary = by_name.fetch("postal_addresses")
+        secondary = by_name.fetch("postal_addresses__shipments__address")
+
+        expect(primary.embedded?).to eq(true)
+        expect(primary.embedded_in.collection_name).to eq("sales_orders")
+        expect(primary.embedded_in.path).to eq("billing_address")
+
+        expect(secondary.embedded?).to eq(true)
+        expect(secondary.embedded_in.collection_name).to eq("shipments")
+        expect(secondary.embedded_in.path).to eq("address")
+
+        # Both occurrences carry the same introspected field set and (being
+        # embedded) an empty belongs_tos.
+        expect(primary.fields.map(&:name)).to include("_id", "city", "zip")
+        expect(secondary.fields.map(&:name)).to include("_id", "city", "zip")
+        expect(primary.belongs_tos).to be_empty
+        expect(secondary.belongs_tos).to be_empty
+      end
+
+      it "keeps the plain collection name (no disambiguation) for a single occurrence" do
+        # With only the sales_orders parent present, PostalAddress is embedded at
+        # exactly one place, so the historical single-config behavior is unchanged:
+        # the config is named "postal_addresses", with no disambiguated sibling.
+        collections = described_class.new(
+          models: [MongoidDummy::SalesOrder, MongoidDummy::PostalAddress], output_dir: output_dir,
+        ).build_collections
+        names = collections.map(&:name)
+
+        expect(names).to include("postal_addresses")
+        expect(names.grep(/\Apostal_addresses__/)).to be_empty
+      end
+
+      it "writes a JSON file per occurrence" do
+        described_class.new(models: multi_models, output_dir: output_dir).generate!
+
+        files = Dir[File.join(output_dir, "*.json")].map { |p| File.basename(p) }
+        expect(files).to include(
+          "sales_orders.json",
+          "shipments.json",
+          "postal_addresses.json",
+          "postal_addresses__shipments__address.json",
+        )
+      end
+
+      it "preserves hand-edited masks on both occurrences and keeps both files across regeneration" do
+        # Mongoid has no `schema:tidy`; regeneration is the only reconciliation.
+        # It must keep BOTH occurrence files and preserve each one's independent
+        # hand-edited masking while re-deriving the structural embedded_in.
+        gen = described_class.new(models: multi_models, output_dir: output_dir)
+        gen.generate!
+
+        primary_path = File.join(output_dir, "postal_addresses.json")
+        secondary_path = File.join(output_dir, "postal_addresses__shipments__address.json")
+
+        set_mask = lambda do |path, template|
+          config = JSON.parse(File.read(path))
+          config["fields"].find { |f| f["name"] == "city" }["replace_with"] = template
+          File.write(path, JSON.pretty_generate(config) + "\n")
+        end
+        set_mask.call(primary_path, "masked-billing-{_id}")
+        set_mask.call(secondary_path, "masked-shipment-{_id}")
+
+        described_class.new(models: multi_models, output_dir: output_dir).generate!
+
+        expect(File.exist?(primary_path)).to be(true)
+        expect(File.exist?(secondary_path)).to be(true)
+
+        primary = JSON.parse(File.read(primary_path))
+        secondary = JSON.parse(File.read(secondary_path))
+        expect(primary["fields"].find { |f| f["name"] == "city" }["replace_with"]).to eq("masked-billing-{_id}")
+        expect(secondary["fields"].find { |f| f["name"] == "city" }["replace_with"]).to eq("masked-shipment-{_id}")
+        # Structural embedded_in re-derived and intact on each occurrence.
+        expect(primary["embedded_in"]).to eq("collection_name" => "sales_orders", "path" => "billing_address")
+        expect(secondary["embedded_in"]).to eq("collection_name" => "shipments", "path" => "address")
+      end
+
+      it "drives independent masking of both occurrences through MongodbAdapter" do
+        # End-to-end proof that the per-occurrence configs are consumable: masking a
+        # sales_orders document masks BOTH the billing_address (sales_orders/
+        # billing_address) and the nested shipments[].address (shipments/address),
+        # each with its own template — exactly the coverage the single-config
+        # behavior could not provide.
+        logger = Logger.new(nil)
+        connection_config = ConnectionConfig.new(
+          adapter: "mongodb", database_name: "exwiw_test",
+          host: "127.0.0.1", port: 27017, user: nil, password: nil,
+        )
+        adapter = Adapter::MongodbAdapter.new(connection_config, logger)
+
+        config_by_name = described_class.new(models: multi_models, output_dir: output_dir)
+          .build_collections
+          .each_with_object({}) { |c, h| h[c.name] = c }
+        config_by_name.fetch("postal_addresses")
+          .fields.find { |f| f.name == "city" }.replace_with = "masked-billing-{_id}"
+        config_by_name.fetch("postal_addresses__shipments__address")
+          .fields.find { |f| f.name == "city" }.replace_with = "masked-shipment-{_id}"
+
+        sales_orders_config = config_by_name.fetch("sales_orders")
+        dump_target = Exwiw::DumpTarget.new(table_name: "sales_orders", ids: [1])
+        adapter.build_query(sales_orders_config, dump_target, config_by_name)
+
+        doc = {
+          "_id" => 1,
+          "number" => "SO-1",
+          "billing_address" => { "_id" => 11, "city" => "Tokyo", "zip" => "100-0001" },
+          "shipments" => [
+            {
+              "_id" => 21,
+              "tracking_code" => "T-1",
+              "address" => { "_id" => 31, "city" => "Osaka", "zip" => "530-0001" },
+            },
+          ],
+        }
+        masked = JSON.parse(adapter.to_bulk_insert([doc], sales_orders_config))
+
+        expect(masked.fetch("billing_address")["city"]).to eq("masked-billing-11")
+        expect(masked.fetch("shipments").first.fetch("address")["city"]).to eq("masked-shipment-31")
+      end
+    end
   end
 end

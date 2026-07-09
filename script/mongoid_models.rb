@@ -487,6 +487,56 @@ module MongoidDummy
     belongs_to :entity, class_name: "MongoidDummy::UuidReferencedParent", primary_key: :uuid
   end
 
+  # A shared embedded value object (PostalAddress) embedded at TWO distinct
+  # (parent collection, document path) occurrences:
+  #
+  # - SalesOrder embeds_one :billing_address     -> sales_orders / billing_address
+  # - Shipment  embeds_one :address              -> shipments    / address
+  #   (Shipment is itself embedded in SalesOrder, so shipments is an embedded
+  #   parent collection — the immediate embedding model's collection_name is the
+  #   parent regardless of whether that model is itself embedded)
+  #
+  # Because Mongoid registers a single `collection_name` ("postal_addresses")
+  # for the class, the generator's collection grouping would otherwise emit ONE
+  # config bound to a single `embedded_in`, leaving the other occurrence with no
+  # config: per-field masking declared for PostalAddress would apply at only one
+  # location while the other dumped raw. The generator must instead emit one
+  # config per occurrence, disambiguated by path. Kept OUT of `MODELS`/`SEED`
+  # (so the collection-count / snapshot contracts above are unaffected) and
+  # exercised in isolation by the spec.
+  class PostalAddress
+    include Mongoid::Document
+    store_in collection: "postal_addresses"
+
+    field :city, type: String
+    field :zip, type: String
+
+    embedded_in :sales_order, class_name: "MongoidDummy::SalesOrder"
+  end
+
+  class SalesOrder
+    include Mongoid::Document
+    store_in collection: "sales_orders"
+
+    field :number, type: String
+
+    embeds_one :billing_address, class_name: "MongoidDummy::PostalAddress"
+    embeds_many :shipments, class_name: "MongoidDummy::Shipment"
+  end
+
+  class Shipment
+    include Mongoid::Document
+    store_in collection: "shipments"
+
+    field :tracking_code, type: String
+
+    embedded_in :sales_order, class_name: "MongoidDummy::SalesOrder"
+
+    # The SECOND occurrence of the shared PostalAddress, under a different parent
+    # collection ("shipments") and path ("address").
+    embeds_one :address, class_name: "MongoidDummy::PostalAddress"
+  end
+
   # All concrete document models in this dummy app, in a deterministic order.
   #
   # Mongoid only registers the *base* class of an inheritance hierarchy in
