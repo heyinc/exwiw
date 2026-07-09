@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Reserved-word and special-character identifiers are now quoted (SQL adapters).** Table and column names that are reserved words (`order`, `from`, `group`, …) or contain characters invalid as a bare identifier are conditionally quoted — backticks on mysql, double quotes on postgresql/sqlite — across every emission path: SELECT projection and masking expressions, FROM/JOIN, WHERE, subqueries, materialized scope JOINs, INSERT / COPY headers and DELETE. Previously only the mysql INSERT header was quoted ([#83](https://github.com/heyinc/exwiw/pull/83)), so a reserved table name broke the extraction SELECT everywhere, a reserved column broke postgresql/sqlite INSERTs, and sqlite rejected even table-qualified reserved columns. Ordinary names stay bare, so output for existing configs is byte-identical (mysql INSERT headers keep their always-backtick form from 0.4.5). Dotted table names are treated as schema qualification and quoted per part (`billing.order` → `` billing.`order` ``), preserving Rails multi-schema `table_name`s. The reserved-word lists cover MySQL 8.4 and 9.x (including 9's `LIBRARY`) plus MariaDB-specific words, PostgreSQL's fully reserved key words, and — for sqlite — exactly the keywords that fail to parse bare in exwiw's emission positions, so fallback-accepted names like `key` are not churned. The lists are enforced by specs that probe the live mysql/postgresql servers' own keyword catalogs and re-derive the sqlite set empirically.
+
+### Fixed
+
+- **PostgreSQL: post-import sequence sync now works for reserved or mixed-case table names.** `post_insert_sql` passed the raw table name to `pg_get_serial_sequence`, which parses its first argument with identifier rules and case-folds it — so a table like `"Order"` (now extractable thanks to identifier quoting) failed with `relation "order" does not exist` right after a successful data pass. The conditionally quoted name is passed instead; ordinary lowercase names are unaffected.
+
 ## [0.9.10] - 2026-07-09
 
 ### Fixed
@@ -23,6 +31,7 @@
 ### Changed
 
 - **Unknown keys in schema config JSON are now rejected on load instead of being silently dropped.** Serdes deserialization is lenient, so a key that matched no declared attribute was discarded without a word — turning a typo (`reverse_scop`, `bulk_insert_chunk_sise`) or a key another adapter supports but this one does not (`raw_sql`/`map` on a MongoDB field; `reverse_scope` on a MongoDB collection before this release) into a silent no-op: the dump ran and the requested masking/scoping simply never happened. `TableConfig.from` / `MongodbCollectionConfig.from` now validate the raw hash against the declared attributes — including the nested `belongs_tos` / `columns` / `fields` / `reverse_scope` / `embedded_in` / `replace_with_fake_data` entries — and raise `Exwiw::UnknownConfigKeyError` (an `ArgumentError` subclass) naming the key(s), the table/collection, the nested position, and the allowed keys; `export`/`explain` prepend the offending file path. This is a deliberate hard error with no opt-out: every declared key still passes — including the documentation-only `comment` on table/collection configs and their `belongs_tos`/`columns`/`fields` entries, which remains the supported place for free-form notes — so a config that only uses supported keys is unaffected, while anything now rejected was already being ignored. If a config carries stray keys, remove them or fold them into `comment`.
+>>>>>>> 71a0958eea6e031d2beeb7349bea35cb460414ca
 
 ## [0.9.7] - 2026-07-08
 
