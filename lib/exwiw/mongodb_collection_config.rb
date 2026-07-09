@@ -39,7 +39,30 @@ module Exwiw
     # `path`.
     attribute :embedded_in, optional(EmbeddedIn), skip_serializing_if_nil: true
 
+    # `reverse_scope` opts a collection into multi-referencer reverse scoping,
+    # mirroring the SQL TableConfig key (see Exwiw::ReverseScope): a
+    # global-identity collection referenced by many scoped collections is
+    # constrained to the union of the ids those referencers actually point at,
+    # instead of being dumped in full. Unlike the SQL adapters (which emit a
+    # UNION subquery), the mongodb adapter captures each `via` arm's column
+    # values at runtime while the referencer collection streams, so the
+    # reverse-scoped collection must be processed AFTER its referencers — see
+    # DetermineTableProcessingOrder (runtime_reverse_scope) and
+    # MongodbAdapter#reverse_scope_filter. User-configured and never emitted by
+    # MongoidSchemaGenerator; preserved across regeneration (see #merge).
+    attribute :reverse_scope, Serdes::OptionalType.new(ReverseScope), skip_serializing_if_nil: true
+
     def self.from(obj)
+      # Reject unknown keys before deserializing: Serdes silently drops them,
+      # which would turn a typo'd key — or a key only the SQL adapters support,
+      # like a field-level `raw_sql` — into a silent no-op (see
+      # Exwiw::StrictKeys). `comment` is a declared attribute here and on the
+      # nested belongs_to/field entries, so free-form notes stay accepted.
+      if obj.is_a?(Hash)
+        collection_name = obj["name"] || obj[:name]
+        StrictKeys.validate!(self, obj, owner: "collection '#{collection_name}'")
+      end
+
       instance = super
       instance.__send__(:validate_embedded!)
       instance.__send__(:validate_belongs_tos!)
@@ -89,6 +112,8 @@ module Exwiw
         # is kept.
         merged.comment = passed.comment || comment
         merged.embedded_in = passed.embedded_in
+        # User-owned, never regenerated: carry over from the existing config.
+        merged.reverse_scope = reverse_scope
 
         # Structural facts of each belongs_to come from the freshly generated
         # config (including a generator-derived `references`), but the user-owned
@@ -124,6 +149,12 @@ module Exwiw
 
     private def validate_embedded!
       return unless embedded?
+
+      if reverse_scope
+        raise ArgumentError,
+              "MongodbCollectionConfig '#{name}' is embedded_in '#{embedded_in.collection_name}'; " \
+              "reverse_scope must not be defined (an embedded config is never dumped on its own)."
+      end
       return if belongs_tos.empty?
 
       raise ArgumentError,
