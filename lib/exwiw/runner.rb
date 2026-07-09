@@ -297,7 +297,7 @@ module Exwiw
           klass.from(json).reject_ignored_members!
         rescue UnknownConfigKeyError => e
           # `.from` knows the table, not the file; point at the offending file.
-          raise UnknownConfigKeyError, "#{file}: #{e.message}"
+          raise UnknownConfigKeyError, "#{file}: #{e.message}", e.backtrace
         end
       end
     end
