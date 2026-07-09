@@ -173,9 +173,108 @@ module Exwiw
           }
         end
 
-        it 'silently ignores raw_sql since MongodbField does not declare it' do
+        it 'raises: MongodbField does not declare raw_sql (it was previously a silent no-op)' do
+          expect { described_class.from(json) }.to raise_error(
+            UnknownConfigKeyError,
+            /Unknown key 'raw_sql' in collection 'users' \(in fields\[0\]\)/,
+          )
+        end
+      end
+
+      context 'strict unknown-key validation' do
+        let(:base_json) do
+          {
+            "name" => "users",
+            "primary_key" => "_id",
+            "belongs_tos" => [{ "table_name" => "shops", "foreign_key" => "shop_id" }],
+            "fields" => [{ "name" => "_id" }],
+          }
+        end
+
+        it 'rejects an unknown top-level key, naming the key and the collection' do
+          expect { described_class.from(base_json.merge("reverse_scop" => { "via" => [] })) }.to raise_error(
+            UnknownConfigKeyError,
+            /Unknown key 'reverse_scop' in collection 'users'\. Allowed keys: .*reverse_scope/,
+          )
+        end
+
+        it 'rejects an unknown key inside a belongs_to entry with its position' do
+          json = base_json.merge(
+            "belongs_tos" => [{ "table_name" => "shops", "foreign_key" => "shop_id", "foreign_keu" => "x" }],
+          )
+          expect { described_class.from(json) }.to raise_error(
+            UnknownConfigKeyError,
+            /Unknown key 'foreign_keu' in collection 'users' \(in belongs_tos\[0\]\)/,
+          )
+        end
+
+        it 'rejects an unknown key inside a reverse_scope via arm' do
+          json = base_json.merge(
+            "belongs_tos" => [],
+            "reverse_scope" => { "via" => [{ "table" => "articles", "column" => "user_id", "colunm" => "typo" }] },
+          )
+          expect { described_class.from(json) }.to raise_error(
+            UnknownConfigKeyError,
+            /Unknown key 'colunm' in collection 'users' \(in reverse_scope\.via\[0\]\)/,
+          )
+        end
+
+        it 'keeps accepting comment everywhere it is declared (documentation key)' do
+          json = base_json.merge(
+            "comment" => "collection note",
+            "belongs_tos" => [{ "table_name" => "shops", "foreign_key" => "shop_id", "comment" => "bt note" }],
+            "fields" => [{ "name" => "_id", "comment" => "field note" }],
+          )
+          expect { described_class.from(json) }.not_to raise_error
+        end
+      end
+
+      context 'with reverse_scope' do
+        let(:json) do
+          {
+            "name" => "accounts",
+            "primary_key" => "_id",
+            "reverse_scope" => {
+              "via" => [
+                { "table" => "articles", "column" => "author_account_id" },
+                { "table" => "invitations", "column" => "invitee_account_id" },
+              ],
+            },
+            "belongs_tos" => [],
+            "fields" => [{ "name" => "_id" }],
+          }
+        end
+
+        it 'loads the via arms and round-trips them through to_hash' do
           config = described_class.from(json)
-          expect(config.fields.first.to_hash).to eq({ "name" => "raw" })
+          expect(config.reverse_scope.via.map { |v| [v.table, v.column] }).to eq([
+            %w[articles author_account_id],
+            %w[invitations invitee_account_id],
+          ])
+          expect(config.to_hash["reverse_scope"]).to eq(json["reverse_scope"])
+        end
+
+        it 'is omitted from to_hash when not set' do
+          config = described_class.from(json.except("reverse_scope"))
+          expect(config.reverse_scope).to be_nil
+          expect(config.to_hash).not_to have_key("reverse_scope")
+        end
+      end
+
+      context 'when reverse_scope is set on an embedded config' do
+        let(:json) do
+          {
+            "name" => "posts",
+            "primary_key" => "_id",
+            "embedded_in" => { "collection_name" => "users", "path" => "posts" },
+            "reverse_scope" => { "via" => [{ "table" => "articles", "column" => "post_id" }] },
+            "belongs_tos" => [],
+            "fields" => [{ "name" => "_id" }],
+          }
+        end
+
+        it 'raises (an embedded config is never dumped on its own)' do
+          expect { described_class.from(json) }.to raise_error(ArgumentError, /reverse_scope must not be defined/)
         end
       end
     end
@@ -222,6 +321,14 @@ module Exwiw
         current.query_timeout_ms = 120_000
         merged = current.merge(passed)
         expect(merged.query_timeout_ms).to eq(120_000)
+      end
+
+      it 'carries the user-owned reverse_scope forward (the generator never emits it)' do
+        current.reverse_scope = ReverseScope.from(
+          'via' => [{ 'table' => 'articles', 'column' => 'author_account_id' }],
+        )
+        merged = current.merge(passed)
+        expect(merged.reverse_scope.via.map { |v| [v.table, v.column] }).to eq([%w[articles author_account_id]])
       end
     end
 

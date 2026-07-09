@@ -48,6 +48,15 @@ module Exwiw
     attribute :reverse_scope, Serdes::OptionalType.new(ReverseScope), skip_serializing_if_nil: true
 
     def self.from(hash)
+      # Reject unknown keys before deserializing: Serdes silently drops them,
+      # which would turn a typo'd or unsupported key into a silent no-op (see
+      # Exwiw::StrictKeys). `comment` is a declared attribute here and on the
+      # nested belongs_to/column entries, so free-form notes stay accepted.
+      if hash.is_a?(Hash)
+        table_name = hash["name"] || hash[:name]
+        StrictKeys.validate!(self, hash, owner: "table '#{table_name}'")
+      end
+
       config = super
       config.send(:validate_after_load!)
       config
@@ -244,10 +253,11 @@ module Exwiw
       fake_data = column.replace_with_fake_data
       return unless fake_data
 
-      unless RowTransformer::FAKE_TYPES.key?(fake_data.type)
+      supported_types = RowTransformer::PERSON_TYPES.keys + RowTransformer::FAKE_TYPES.keys
+      unless supported_types.include?(fake_data.type)
         raise ArgumentError,
               "Table '#{name}' column '#{column.name}': unknown replace_with_fake_data type '#{fake_data.type}' " \
-              "(supported: #{RowTransformer::FAKE_TYPES.keys.join(', ')})."
+              "(supported: #{supported_types.join(', ')})."
       end
 
       seed_column = fake_data.seed.delete_prefix("#{name}.")

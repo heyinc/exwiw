@@ -451,12 +451,12 @@ This is an example of the one table schema:
     "primary_key": "id",
     "filter": "users.id > 0",
     "bulk_insert_chunk_size": 1000,
-    "belongs_to": [{
-        "name": "companies",
+    "belongs_tos": [{
+        "table_name": "companies",
         "foreign_key": "company_id"
     }],
     "columns": [{
-        "name": "id",
+        "name": "id"
     }, {
         "name": "email",
         "replace_with": "user{id}@example.com"
@@ -467,6 +467,12 @@ This is an example of the one table schema:
 ```
 
 `--schema-dir` will use all json files in the specified directory.
+
+#### Unknown keys are rejected
+
+Loading a table/collection config with a key that no declared attribute accepts is an **error** (`Exwiw::UnknownConfigKeyError`, an `ArgumentError` subclass) naming the key, the table/collection, the offending file, and the allowed keys. This also applies to the nested `belongs_tos` / `columns` / `fields` / `reverse_scope` / `embedded_in` / `replace_with_fake_data` entries. Previously such keys were silently dropped, which turned a typo (`reverse_scop`) — or a key another adapter supports but this one does not (e.g. `raw_sql` on a MongoDB field) — into a silent no-op: the config loaded, the dump ran, and the requested masking/scoping simply never happened.
+
+For free-form annotations, use the `comment` key — it is a declared, documentation-only attribute on table/collection configs and on their `belongs_tos` / `columns` / `fields` entries, so it always passes (see [Ignore / annotate a column or `belongs_to`](#ignore--annotate-a-column-or-belongs_to)).
 
 ### Output format
 
@@ -680,6 +686,7 @@ Notes:
 - **NULLs are excluded** per arm (`IS NOT NULL`).
 - **Satellites need no config.** A table that `belongs_to` the reverse-scoped table (e.g. `end_users.id → users.id`, or `identities.user_id → users.id`) tightens to the kept ids automatically through the normal cascade — only the reverse-scoped table itself declares `reverse_scope`. The cascade is **multi-hop**, so a table several `belongs_to` hops below the reverse-scoped table (e.g. `end_user_profiles → end_users → users`) also tightens automatically, with no config of its own.
 - Works in both single-target and scope-column mode. In single-target mode there is no scope-column pre-flight (`validate_scope!`), so a satellite the cascade cannot resolve to a single scopable parent (e.g. it `belongs_to` two scopable hubs) is dumped in full with a warning rather than aborting. Polymorphic foreign keys are not eligible as anchors (the named `column` is always a concrete column).
+- **The MongoDB adapter supports `reverse_scope` too** — same config shape and semantics, but the id set is captured at runtime instead of being emitted as a `UNION` subquery. See [`reverse_scope` on collections](#reverse_scope-on-collections) under MongoDB notes.
 
 ### Why a JOIN, not `IN (subquery)`
 
@@ -806,9 +813,10 @@ which is equivalent to `"replace_with": "user{id}@example.com"`.
   automatic NULL preservation** — the proc receives `nil` and decides.
 - `map` is exclusive with the other masking keys on the same column
   (`raw_sql` / `replace_with` / `replace_with_fake_data`).
-- SQL adapters only. The MongoDB adapter silently drops the key (like
-  `raw_sql`). Because the transform runs in the exwiw process, it is invisible
-  to `explain`.
+- SQL adapters only. On the MongoDB adapter the key is rejected on load, like
+  `raw_sql` (see [Unknown keys are rejected](#unknown-keys-are-rejected)).
+  Because the transform runs in the exwiw process, it is invisible to
+  `explain`.
 
 **Security note**: `map` executes arbitrary Ruby from the schema config. Treat
 config files with the same trust as your Gemfile — only load trusted configs.
@@ -842,36 +850,61 @@ fake value, across tables, runs, and adapters:
   because their text forms differ per adapter. A `NULL` seed value hashes `""`
   (still deterministic).
 - Like `replace_with`, it **preserves NULL** in the target column.
-- `locale` (optional) sets the faker locale used to generate the candidate
-  values, e.g. `{ "seed": "id", "type": "human_name", "locale": "ja" }` produces
-  Japanese names.
+- `locale` (optional) sets the locale used to build the candidate values, e.g.
+  `{ "seed": "id", "type": "human_name", "locale": "ja" }` produces Japanese
+  names.
 - Supported `type`s:
 
-  | type | example output |
-  |------|----------------|
-  | `human_name` | `Adrianna Kilback` |
-  | `first_name` | `Adrianna` |
-  | `last_name` | `Kilback` |
-  | `phone_number` | `(555) 123-4567` |
-  | `address` | `282 Kevin Brook, Imogeneborough, CA 58517` |
-  | `company_name` | `Hirthe-Ritchie` |
-  | `email` | `cliff.fay.9d6b804eff5a3f57@example.com` |
-  | `username` | `cliff.fay_9d6b804eff5a3f57` |
+  | type | example output (en) | example output (`locale: ja`) |
+  |------|----------------|----------------|
+  | `human_name` | `Adrianna Kilback` | `山田 太郎` |
+  | `first_name` | `Adrianna` | `太郎` |
+  | `last_name` | `Kilback` | `山田` |
+  | `human_name_kana` | — (ja only) | `ヤマダ タロウ` |
+  | `first_name_kana` | — (ja only) | `タロウ` |
+  | `last_name_kana` | — (ja only) | `ヤマダ` |
+  | `phone_number` | `(555) 123-4567` | |
+  | `address` | `282 Kevin Brook, Imogeneborough, CA 58517` | |
+  | `company_name` | `Hirthe-Ritchie` | |
+  | `email` | `cliff.fay.9d6b804eff5a3f57@example.com` | |
+  | `username` | `cliff.fay_9d6b804eff5a3f57` | |
 
-- Values are drawn from a pool of 10,000 pre-generated candidates per
-  (type, locale), so distinct seeds can share a fake value. The
+- **Coherent identity across the name family.** The person-family types
+  (`human_name`, `first_name`, `last_name` and their `*_kana` counterparts) all
+  draw from a single shared pool of people per locale, keyed by the same seed —
+  so for one seed value the last name, first name, full name, and every kana
+  reading belong to the **same person**: `human_name` always equals
+  `last_name` + `first_name`, and `human_name_kana` matches `human_name`. Full
+  names are ordered per locale (`姓 名` for `ja`, `First Last` otherwise).
+- **Kana (`*_kana`) types require `locale: ja`.** faker's `ja` locale ships
+  kanji names with no reading, so exwiw bundles its own paired (kanji, katakana)
+  dataset for `ja`; this is what lets a fake person carry a kana reading that
+  actually matches its kanji. Requesting a `*_kana` type with any other locale
+  raises a clear error at build time.
+- Values are drawn from a pre-generated pool per (type, locale), so distinct
+  seeds can share a fake value. The name family uses one shared **person** pool
+  of 20,000 identities — for `ja` these are 20,000 *distinct* people enumerated
+  from the bundled (kanji, kana) dataset (142 surnames × 142 given names); the
+  other types use an independent 10,000-candidate pool. The
   uniqueness-sensitive types (`email`, `username`) additionally embed a 64-bit
   hex token derived from the seed hash, so they stay collision-free under a
   unique index even at millions of rows (collision probability at 5M distinct
   seeds ≈ 7e-7) and always use the `example.com` domain.
-- **Determinism caveat**: values are stable for a given faker gem version +
-  locale. Upgrading faker (or changing `locale`) regenerates the pool and maps
+- **Determinism caveat**: values are stable for a given locale plus the version
+  of the value source — the faker gem for the non-`ja` name family and the
+  independent types, and exwiw's bundled dataset for the `ja` name family.
+  Upgrading that source (or changing `locale`) regenerates the pool and maps
   seeds to different values. The seed→value mapping itself never changes within
   one version.
 - The faker gem is **not** a runtime dependency of exwiw — add `gem "faker"` to
-  your Gemfile to use this mode (exwiw raises a clear error otherwise).
+  your Gemfile to use this mode (exwiw raises a clear error otherwise). A config
+  that uses **only** `ja` person types needs no faker (that pool is built
+  entirely from the bundled dataset); faker is required for every other type
+  and locale.
 - Exclusive with the other masking keys on the same column. SQL adapters only
-  (the MongoDB adapter silently drops the key), and invisible to `explain`.
+  (the MongoDB adapter rejects the key on load, see
+  [Unknown keys are rejected](#unknown-keys-are-rejected)), and invisible to
+  `explain`.
 
 **Performance**: this is a per-row Ruby transform, measured at ~1.5–1.6µs/row
 per fake column (so ≈ +8s per 5M rows per column; ~+40% against a local sqlite
@@ -906,8 +939,38 @@ The MongoDB adapter is experimental. To use it:
   mongosh "mongodb://localhost/app_dev" dump/insert-000-schema.js
   ```
 - Unlike SQL adapters, the MongoDB adapter does not emit `delete-*.jsonl` files (drop the database / collection yourself before importing if needed).
-- `raw_sql`, `map`, and `replace_with_fake_data` are not supported (the `MongodbField` schema does not declare them; such keys in scenario JSON are silently dropped on load). Use `replace_with` for masking.
+- `raw_sql`, `map`, and `replace_with_fake_data` are not supported (the `MongodbField` schema does not declare them; such keys in a config are rejected on load — see [Unknown keys are rejected](#unknown-keys-are-rejected)). Use `replace_with` for masking.
 - The MongoDB adapter does not support the collection-level `filter` field (it raises `NotImplementedError` if set, since the SQL-string filter cannot be applied to MongoDB).
+
+#### `reverse_scope` on collections
+
+[Multi-referencer reverse scoping](#reverse-scope-for-multi-referencer-tables-reverse_scope) works on `MongodbCollectionConfig` with the same config shape and the same semantics as the SQL adapters — a global-identity collection (say `accounts`) with no `belongs_to` path to the dump target, but referenced by several scoped collections, is constrained to the union of the ids those referencers actually point at instead of being dumped in full:
+
+```json
+{
+  "name": "accounts",
+  "primary_key": "_id",
+  "reverse_scope": {
+    "via": [
+      { "table": "articles", "column": "author_account_id" },
+      { "table": "invitations", "column": "invitee_account_id" }
+    ]
+  },
+  "belongs_tos": [],
+  "fields": [{ "name": "_id" }, { "name": "name" }]
+}
+```
+
+Where the SQL adapters emit a `UNION` subquery, MongoDB has no cross-collection joins, so the adapter captures each arm's column values **at runtime** while the referencer collection streams (the same mechanism that already propagates parent ids to children), then filters the reverse-scoped collection with `{"_id": {"$in": [<union of captured ids>]}}`. Consequences of that runtime capture:
+
+- **Processing order**: a reverse-scoped collection is dumped **after** all of its `via` referencers (an arm's own `belongs_to` back to the reverse-scoped collection is inverted rather than kept — the declaration states ids flow referencer → collection). If the arms form a genuine ordering cycle with the `belongs_to` graph, the export aborts with an error naming the cycle members. SQL processing order is unchanged (its INSERT output must stay loadable in foreign-key order).
+- **Arm hygiene mirrors SQL**: an arm whose referencer is unknown, embedded, not dumped, or itself unscoped (no path to the dump target and no `reverse_scope` of its own) is **skipped with a warning** — an unscoped referencer's ids span every scope and would silently widen the dump. Per-arm `null`/absent foreign keys are dropped (the SQL `IS NOT NULL`), an array-valued foreign-key column contributes one id per element, and captured values keep their native BSON types (an `ObjectId` foreign key matches an `ObjectId` `_id` with no coercion).
+- **Precedence mirrors SQL**: a collection with its own `belongs_to` path to the dump target is scoped by that path; a `reverse_scope` declared on it is ignored.
+- **Satellites need no config**, as in SQL: a collection that `belongs_to` the reverse-scoped collection tightens to the kept ids automatically through the ordinary captured-parent-id mechanism.
+- **`--parallel-workers` falls back to serial** (with a warning) when any collection declares `reverse_scope` — the parallel schedule does not express the referencers-first ordering constraint yet.
+- **`exwiw explain`** shows the real `{"_id": {"$in": [...]}}` filter shape with a placeholder id, like the other runtime-captured scopes.
+
+Masking (`replace_with`) and `fields` behavior on a reverse-scoped collection are unchanged. Like the SQL key, `reverse_scope` is user-owned: `exwiw:mongoid:schema:generate` never emits it and regeneration preserves a hand-added value.
 
 #### Embedded documents
 

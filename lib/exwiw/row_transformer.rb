@@ -2,6 +2,8 @@
 
 require "digest"
 
+require_relative "japanese_names"
+
 module Exwiw
   # Applies the Ruby-process-side masking modes — `map` and
   # `replace_with_fake_data` — to the rows streamed out of a SQL adapter's
@@ -31,16 +33,46 @@ module Exwiw
     # given faker gem version + locale.
     POOL_RANDOM_SEED = 715_517
 
-    # Supported `replace_with_fake_data` types. `pool` builds one candidate
-    # value (called POOL_SIZE times under a seeded Faker random). Types with
-    # `compose` are uniqueness-sensitive: the pooled base alone would collide
-    # under a unique index at scale, so the final value composes the base with
-    # a 64-bit hex token derived from the same seed digest (collision
-    # probability at 5M distinct seeds ≈ 7e-7).
+    # The person pool (PERSON_TYPES) is sized independently of POOL_SIZE — at
+    # twice the size — so the coherent-identity name space is larger without
+    # disturbing the independent types' seed->value mappings. The ja pool is
+    # filled with distinct people (see .build_japanese_person_pool), so
+    # JapaneseNames must supply at least this many (surname, given) combinations.
+    PERSON_POOL_SIZE = POOL_SIZE * 2
+
+    # A coherent fake identity. All person-family types (PERSON_TYPES) draw
+    # from one shared pool of these per locale, and a seed picks the same pool
+    # index for every such column — so last_name / first_name / full name (and
+    # their kana) for one seed all belong to the same person. kana fields are
+    # only populated for the `ja` locale (faker has no readings; exwiw bundles
+    # a paired dataset — see JapaneseNames); they are nil otherwise.
+    Person = Struct.new(:last_name, :first_name, :last_name_kana, :first_name_kana)
+
+    # Person-family types: they share the per-locale person pool (built by
+    # .person_pool), and each extractor derives its value from the picked
+    # Person. Full-name ordering is locale-aware ("姓 名" for ja, "First Last"
+    # elsewhere). This is what keeps a single seed's name columns consistent.
+    PERSON_TYPES = {
+      "human_name"      => ->(p, locale) { join_full_name(p.last_name, p.first_name, locale) },
+      "last_name"       => ->(p, _locale) { p.last_name },
+      "first_name"      => ->(p, _locale) { p.first_name },
+      "human_name_kana" => ->(p, locale) { join_full_name(p.last_name_kana, p.first_name_kana, locale) },
+      "last_name_kana"  => ->(p, _locale) { p.last_name_kana },
+      "first_name_kana" => ->(p, _locale) { p.first_name_kana },
+    }.freeze
+
+    # Person-family types whose value is a kana reading, only available for the
+    # `ja` locale (the person pool carries nil kana for other locales, so these
+    # are rejected at build time with a clear error).
+    KANA_TYPES = %w[human_name_kana last_name_kana first_name_kana].freeze
+
+    # Independent (non-person) types. `pool` builds one candidate value (called
+    # POOL_SIZE times under a seeded Faker random). Types with `compose` are
+    # uniqueness-sensitive: the pooled base alone would collide under a unique
+    # index at scale, so the final value composes the base with a 64-bit hex
+    # token derived from the same seed digest (collision probability at 5M
+    # distinct seeds ≈ 7e-7).
     FAKE_TYPES = {
-      "human_name"   => { pool: -> { Faker::Name.name } },
-      "first_name"   => { pool: -> { Faker::Name.first_name } },
-      "last_name"    => { pool: -> { Faker::Name.last_name } },
       "phone_number" => { pool: -> { Faker::PhoneNumber.phone_number } },
       "address"      => { pool: -> { Faker::Address.full_address } },
       "company_name" => { pool: -> { Faker::Company.name } },
@@ -49,6 +81,13 @@ module Exwiw
       "username"     => { pool: -> { Faker::Internet.username(specifier: 5..12) },
                           compose: ->(base, token) { "#{base}_#{token}" } },
     }.freeze
+
+    # "姓 名" for Japanese, "First Last" otherwise. A nil part (e.g. missing
+    # kana) collapses so the result never has a dangling separator.
+    def self.join_full_name(last, first, locale)
+      parts = locale.to_s == "ja" ? [last, first] : [first, last]
+      parts.compact.join(" ")
+    end
 
     # The `r` a map proc receives: read-only access to the current row's
     # values by column name (`r['id']`). One instance is reused across all
@@ -118,6 +157,15 @@ module Exwiw
             "Add `gem \"faker\"` to your Gemfile (it is not a runtime dependency of exwiw)."
     end
 
+    # Whether a (type, locale) draws any value from faker. The `ja` person pool
+    # is built entirely from exwiw's bundled dataset, so a config that only
+    # uses `ja` person types needs no faker at all.
+    def self.type_needs_faker?(type, locale)
+      return true if FAKE_TYPES.key?(type)
+
+      PERSON_TYPES.key?(type) && locale.to_s != "ja"
+    end
+
     # Pools are memoized per (type, locale): every column sharing a type+locale
     # sees the same pool, which is what makes equal seed values map to equal
     # fake values across tables and runs.
@@ -138,6 +186,51 @@ module Exwiw
       Faker::Config.random = previous_random
     end
 
+    # One pool of coherent Person records per locale, shared by every
+    # person-family type. Memoized so equal seeds map to equal people across
+    # tables and runs. `ja` is built from exwiw's bundled (kanji, kana) dataset
+    # so kana matches kanji; other locales use faker (no kana).
+    def self.person_pool(locale)
+      @person_pools ||= {}
+      @person_pools[locale] ||= build_person_pool(locale)
+    end
+
+    def self.build_person_pool(locale)
+      random = Random.new(POOL_RANDOM_SEED)
+      return build_japanese_person_pool(random) if locale.to_s == "ja"
+
+      previous_locale = Faker::Config.locale
+      previous_random = Faker::Config.random
+      Faker::Config.locale = locale if locale
+      Faker::Config.random = random
+      Array.new(PERSON_POOL_SIZE) { Person.new(Faker::Name.last_name, Faker::Name.first_name, nil, nil).freeze }.freeze
+    ensure
+      unless locale.to_s == "ja"
+        Faker::Config.locale = previous_locale
+        Faker::Config.random = previous_random
+      end
+    end
+
+    # Fill the ja pool with DISTINCT people: enumerate every (surname, given)
+    # combination, shuffle deterministically, and take PERSON_POOL_SIZE. Unlike
+    # sampling with replacement (which wastes ~37% of slots to duplicates), this
+    # gives PERSON_POOL_SIZE distinct identities — so JapaneseNames must supply
+    # at least that many combinations.
+    def self.build_japanese_person_pool(random)
+      surnames = JapaneseNames::SURNAMES
+      given_names = JapaneseNames::GIVEN_NAMES
+      combinations = surnames.size * given_names.size
+      if combinations < PERSON_POOL_SIZE
+        raise "JapaneseNames has #{combinations} (surname, given) combinations, " \
+              "need at least PERSON_POOL_SIZE=#{PERSON_POOL_SIZE}"
+      end
+
+      people = surnames.flat_map do |last|
+        given_names.map { |first| Person.new(last[0], first[0], last[1], first[1]).freeze }
+      end
+      people.shuffle(random: random).first(PERSON_POOL_SIZE).freeze
+    end
+
     def initialize(table)
       @table_name = table.name
       @name_to_index = {}
@@ -145,7 +238,11 @@ module Exwiw
       @name_to_index.freeze
       @row_accessor = Row.new(@table_name, @name_to_index)
 
-      self.class.require_faker! if table.columns.any?(&:replace_with_fake_data)
+      needs_faker = table.columns.any? do |column|
+        fd = column.replace_with_fake_data
+        fd && self.class.type_needs_faker?(fd.type, fd.locale)
+      end
+      self.class.require_faker! if needs_faker
 
       @transforms = table.columns.each_with_index.filter_map do |column, index|
         if column.map
@@ -210,11 +307,26 @@ module Exwiw
 
     private def compile_fake(column, column_index)
       fake_data = column.replace_with_fake_data
-      spec = FAKE_TYPES.fetch(fake_data.type)
+      type = fake_data.type
+      unless PERSON_TYPES.key?(type) || FAKE_TYPES.key?(type)
+        raise ArgumentError,
+              "replace_with_fake_data for column '#{@table_name}.#{column.name}': " \
+              "unknown type '#{type}'. Supported: #{(PERSON_TYPES.keys + FAKE_TYPES.keys).join(', ')}"
+      end
 
-      # Re-resolve the seed here, against the effective (post-ignore) columns:
-      # load-time validation sees the full column list, so a seed column that
-      # was ignore:true is only caught at dump time.
+      seed_index = resolve_seed_index(fake_data, column)
+
+      if PERSON_TYPES.key?(type)
+        compile_person_fake(fake_data, column, column_index, seed_index)
+      else
+        compile_independent_fake(fake_data, column_index, seed_index)
+      end
+    end
+
+    # Re-resolve the seed here, against the effective (post-ignore) columns:
+    # load-time validation sees the full column list, so a seed column that was
+    # ignore:true is only caught at dump time.
+    private def resolve_seed_index(fake_data, column)
       seed_column = fake_data.seed.delete_prefix("#{@table_name}.")
       seed_index = @name_to_index[seed_column]
       unless seed_index
@@ -223,14 +335,44 @@ module Exwiw
               "seed '#{fake_data.seed}' does not resolve to an extracted column " \
               "(is it ignore:true?)"
       end
+      seed_index
+    end
 
+    # Person-family type: pick a coherent Person from the per-locale pool. The
+    # digest[0,8] index is shared with every other person column, so one seed's
+    # name columns all belong to the same person.
+    private def compile_person_fake(fake_data, column, column_index, seed_index)
+      type = fake_data.type
+      locale = fake_data.locale
+      pool = self.class.person_pool(locale)
+      extractor = PERSON_TYPES.fetch(type)
+
+      if KANA_TYPES.include?(type) && pool.first.last_name_kana.nil?
+        raise ArgumentError,
+              "replace_with_fake_data for column '#{@table_name}.#{column.name}': " \
+              "type '#{type}' needs kana readings, which are only available with locale: ja " \
+              "(got locale: #{locale.inspect})"
+      end
+
+      # NULL-preserving like replace_with: a NULL target stays NULL.
+      lambda do |row|
+        next nil if row[column_index].nil?
+
+        digest = Digest::SHA256.digest(row[seed_index].to_s)
+        person = pool[digest[0, 8].unpack1("Q>") % PERSON_POOL_SIZE]
+        extractor.call(person, locale)
+      end
+    end
+
+    # Independent type: pick a value from its own (type, locale) pool.
+    private def compile_independent_fake(fake_data, column_index, seed_index)
       pool = self.class.fake_pool(fake_data.type, fake_data.locale)
-      compose = spec[:compose]
+      compose = FAKE_TYPES.fetch(fake_data.type)[:compose]
 
-      # NULL-preserving like replace_with: a NULL target stays NULL. A nil
-      # seed value hashes "" (deterministic). Seed values are normalized with
-      # to_s so sqlite's native Integer 123 and pg/mysql's string "123" pick
-      # the same fake value.
+      # NULL-preserving like replace_with: a NULL target stays NULL. A nil seed
+      # value hashes "" (deterministic). Seed values are normalized with to_s so
+      # sqlite's native Integer 123 and pg/mysql's string "123" pick the same
+      # fake value.
       lambda do |row|
         next nil if row[column_index].nil?
 

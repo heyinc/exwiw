@@ -47,12 +47,14 @@ module Exwiw
             expect(sql).to include('EXCEPTION WHEN duplicate_object')
           end
           # A whole-database dump emits CREATE EXTENSION itself; the post-processor
-          # wraps it best-effort: feature_not_supported (binaries absent) and
-          # invalid_schema_name (required schema absent) are skipped with a WARNING
-          # so a restore target that cannot create the extension is not fatal; but a
-          # privilege error must still abort, so insufficient_privilege is NOT caught.
+          # wraps it best-effort: feature_not_supported (binaries absent),
+          # invalid_schema_name (required schema absent) and internal_error (a
+          # preload-required extension such as pglogical raising "not in
+          # shared_preload_libraries") are skipped with a WARNING so a restore
+          # target that cannot create the extension is not fatal; but a privilege
+          # error must still abort, so insufficient_privilege is NOT caught.
           expect(sql).to match(/DO \$\$ BEGIN CREATE EXTENSION IF NOT EXISTS btree_gist\b/)
-          expect(sql).to match(/EXCEPTION WHEN feature_not_supported OR invalid_schema_name THEN RAISE WARNING '[^']*btree_gist[^']*', SQLSTATE, SQLERRM; END \$\$;/)
+          expect(sql).to match(/EXCEPTION WHEN feature_not_supported OR invalid_schema_name OR internal_error THEN RAISE WARNING '[^']*btree_gist[^']*', SQLSTATE, SQLERRM; END \$\$;/)
           expect(sql).not_to include('insufficient_privilege')
           ext_pos = sql.index("DO $$ BEGIN CREATE EXTENSION")
           table_pos = sql.index("CREATE TABLE")

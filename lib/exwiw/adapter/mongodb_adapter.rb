@@ -413,16 +413,32 @@ module Exwiw
       # The distinct set of this collection's fields that downstream children
       # constrain on (each child belongs_to's `references`, defaulting to this
       # collection's primary_key), with primary_key always included so the
-      # historical primary-key-keyed propagation keeps working.
+      # historical primary-key-keyed propagation keeps working. A collection
+      # named as a `reverse_scope.via` referencer additionally captures the
+      # arm's foreign-key column, so the reverse-scoped collection (processed
+      # later) can constrain itself to the ids this collection points at.
       private def propagation_keys_for(config, config_by_name)
         referenced = config_by_name.each_value.flat_map do |child|
           next [] if child.embedded?
 
-          child.belongs_tos
+          keys = child.belongs_tos
             .select { |relation| relation.table_name == config.name }
             .map { |relation| relation.references || config.primary_key }
+
+          reverse_scope_arms_of(child).each do |via|
+            keys << via.column if via.table == config.name
+          end
+
+          keys
         end
         ([config.primary_key] + referenced).uniq
+      end
+
+      # The `reverse_scope.via` arms of `config`, or [] when it declares none.
+      private def reverse_scope_arms_of(config)
+        return [] unless config.respond_to?(:reverse_scope)
+
+        config.reverse_scope&.via || []
       end
 
       # Build the scoping filter for a non-target collection from its belongs_to
@@ -476,6 +492,24 @@ module Exwiw
       private def related_collection_filter(config, config_by_name, dump_target)
         genuine = genuine_scope_set(config_by_name, dump_target.table_name)
 
+        # Opt-in multi-referencer reverse scope (MongodbCollectionConfig
+        # #reverse_scope), mirroring the SQL adapters' semantics: it applies only
+        # to a collection with no belongs_to path to the dump target (exactly
+        # when SQL's reverse extraction is attempted — a genuinely scoped
+        # collection keeps its belongs_to scope and reverse_scope is ignored),
+        # and when it applies it IS the scope filter, replacing the
+        # reference-parent strict-AND fallback. When no arm survives, fall
+        # through to the historical behavior, as SQL falls back to dump-all.
+        if !genuine.include?(config.name) && reverse_scope_arms_of(config).any?
+          filter = reverse_scope_filter(config, config_by_name, genuine)
+          return filter unless filter.nil?
+        elsif genuine.include?(config.name) && reverse_scope_arms_of(config).any?
+          @logger.debug(
+            "  Collection '#{config.name}' declares reverse_scope but is genuinely scoped " \
+            "via belongs_to; reverse_scope is ignored (same precedence as the SQL adapters)."
+          )
+        end
+
         genuine_clauses = []
         reference_clauses = []
         config.belongs_tos.each do |relation|
@@ -507,6 +541,88 @@ module Exwiw
           "Constraining it to match no rows to avoid an unscoped full-collection dump."
         )
         { config.primary_key => { "$in" => [] } }
+      end
+
+      # Build the `pk $in <union of referenced ids>` filter for a reverse-scoped
+      # collection (MongodbCollectionConfig#reverse_scope). Each `via` arm names
+      # a referencer collection and the foreign-key column on it that points at
+      # this collection's primary key; the referencer was dumped earlier under
+      # its own scope (DetermineTableProcessingOrder orders every arm before the
+      # reverse-scoped collection) and #execute captured the arm column's values
+      # into @state, so the union here holds only in-scope ids. Values are used
+      # exactly as captured (native BSON — ObjectId FKs stay ObjectIds, string
+      # FKs stay strings), array-valued columns are flattened (one referenced id
+      # per element), and nil/absent FKs are dropped, mirroring the SQL arms'
+      # `IS NOT NULL`.
+      #
+      # An arm is skipped with a warning when its referencer is unknown,
+      # embedded, produced no captured state (not dumped — e.g. ignore:true), or
+      # is itself unscoped (neither genuinely scoped nor reverse-scoped): an
+      # unscoped referencer's captured ids span every scope and would silently
+      # widen the dump, exactly the case the SQL adapters skip. Returns nil when
+      # no arm survives, letting the caller fall through to the historical
+      # behavior (SQL parity: dump-all fallback).
+      #
+      # In `explain` placeholder mode there is no captured state; a placeholder
+      # id keeps the real filter shape (`pk $in [...]`) so index selection is
+      # reported correctly.
+      private def reverse_scope_filter(config, config_by_name, genuine)
+        ids = []
+        any_arm = false
+
+        reverse_scope_arms_of(config).each do |via|
+          referencer = config_by_name[via.table]
+          if referencer.nil? || referencer.embedded?
+            @logger.warn(
+              "  #{config.name}.reverse_scope references #{referencer.nil? ? 'unknown' : 'embedded'} " \
+              "collection '#{via.table}'; skipping arm."
+            )
+            next
+          end
+
+          unless genuine.include?(via.table) || reverse_scope_arms_of(referencer).any?
+            @logger.warn(
+              "  #{config.name}.reverse_scope arm '#{via.table}.#{via.column}' is not scoped; " \
+              "skipping it (an unscoped arm would union ids from every scope back). " \
+              "Make '#{via.table}' scopable or remove it from reverse_scope.via."
+            )
+            next
+          end
+
+          if @explain_placeholder
+            any_arm = true
+            ids << explain_placeholder_id
+            next
+          end
+
+          captured = @state[via.table]
+          if captured.nil?
+            @logger.warn(
+              "  #{config.name}.reverse_scope arm '#{via.table}.#{via.column}' has no captured " \
+              "state ('#{via.table}' was not dumped before '#{config.name}'); skipping arm."
+            )
+            next
+          end
+
+          any_arm = true
+          values = captured[via.column]
+          if values.nil?
+            @logger.warn(
+              "  #{config.name}.reverse_scope arm column '#{via.table}.#{via.column}' was not " \
+              "captured while dumping '#{via.table}'; treating the arm as empty."
+            )
+            next
+          end
+
+          ids.concat(values)
+        end
+
+        return nil unless any_arm
+
+        ids = ids.flat_map { |value| value.is_a?(Array) ? value : [value] }
+        ids.compact!
+        ids.uniq!
+        { config.primary_key => { "$in" => ids } }
       end
 
       # The set of collection names *genuinely scoped* by the dump target: the

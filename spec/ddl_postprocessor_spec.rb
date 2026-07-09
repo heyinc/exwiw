@@ -162,7 +162,14 @@ module Exwiw
         sql = 'CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public;'
         out = described_class.wrap_create_extension_in_do_block(sql)
         expect(out).to include('DO $$ BEGIN CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public;')
-        expect(out).to match(/EXCEPTION WHEN feature_not_supported OR invalid_schema_name THEN RAISE WARNING '[^']*btree_gist[^']*', SQLSTATE, SQLERRM; END \$\$;/)
+        expect(out).to match(/EXCEPTION WHEN feature_not_supported OR invalid_schema_name OR internal_error THEN RAISE WARNING '[^']*btree_gist[^']*', SQLSTATE, SQLERRM; END \$\$;/)
+      end
+
+      it 'catches internal_error (XX000), so an extension that must be preloaded (e.g. pglogical) is skipped, not fatal' do
+        sql = 'CREATE EXTENSION IF NOT EXISTS pglogical WITH SCHEMA pglogical;'
+        out = described_class.wrap_create_extension_in_do_block(sql)
+        expect(out).to include('internal_error')
+        expect(out).to include('skipped CREATE EXTENSION pglogical')
       end
 
       it 'does NOT catch insufficient_privilege' do
