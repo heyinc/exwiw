@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **New config key `fail_fast_strategies` aborts a doomed export up front.** The config file (`exwiw.yml`) accepts a list of fail-fast strategy names; when a strategy's condition holds, the export aborts **before anything is written** — in particular before the output dir is cleaned, so the previous dump stays intact. The first strategy is `target_has_no_matched_records`: fail when the target table/collection matches no record for the given `--ids`. Every other table is scoped off the target, so such a run would silently produce an all-empty dump (typically a wrong id or the wrong database); the check costs one `COUNT` / `count_documents` probe on the target's extraction filter before the extraction loop starts. It requires a target table/collection — in dump-all / scope-column mode the strategy is skipped with a warning so a committed config does not block a deliberate dump-all run. Unknown strategy names in the config are rejected on startup, and the key is ignored by `explain` (which extracts nothing) so one config can serve both subcommands.
+
 ## [0.9.12] - 2026-07-09
 
 ## [0.9.11] - 2026-07-09

@@ -301,6 +301,8 @@ after_insert_hook: hooks/seed.rb
 log_level: info              # debug | info
 # target_table / ids / ids_field / scope_column may also be set here
 # mongodb_query_timeout_ms: 30000   # global query timeout (mongodb only)
+# fail_fast_strategies:             # abort the export up front when a condition holds
+#   - target_has_no_matched_records
 ```
 
 With the file above, only the connection details need to be supplied on the CLI:
@@ -316,7 +318,8 @@ Notes:
 - **Database connection settings stay on the CLI/environment.** `host`, `port`, `user`, `database`, `uri`, and `password` are **rejected** in the config file (exwiw exits with an error). `adapter` is the one connection-related key that *is* allowed in the file.
 - **Relative paths in the config (`schema_dir`, `output_dir`, `after_insert_hook`) are resolved relative to the config file's own directory**, not the current working directory. So with the config at the project root, `schema_dir: exwiw/schema` reads naturally, and an absolute `--config=/path/to/exwiw.yml` works no matter where you run from. (CLI path flags remain relative to the current directory — each source resolves relative to where it is written.) Absolute paths are used as-is.
 - Unknown keys are rejected so a typo surfaces immediately.
-- Export-only keys (`output_dir`, `output_format`, `insert_only`, `after_insert_hook`) are ignored when running `explain`, so a single config file can be shared by both subcommands.
+- Export-only keys (`output_dir`, `output_format`, `insert_only`, `after_insert_hook`, `fail_fast_strategies`) are ignored when running `explain`, so a single config file can be shared by both subcommands.
+- `fail_fast_strategies` lists conditions under which the export aborts **before anything is written** (the previous dump is left intact). Currently one strategy exists: `target_has_no_matched_records` — fail when the target table/collection matches no record for the given `--ids` (every other table is scoped off the target, so the whole dump would be empty; typically a wrong id or the wrong database). The check runs a single cheap `COUNT` on the target before extraction starts. It requires a target table/collection; in dump-all / scope-column mode it is skipped with a warning. Unknown strategy names are rejected on startup.
 - `explain_verbosity` sets the mongodb `explain` verbosity (`queryPlanner` | `executionStats` | `allPlansExecution`, default `queryPlanner`); the `EXWIW_MONGODB_EXPLAIN_VERBOSITY` env var overrides it. Ignored by the SQL adapters and by `export`. See [`exwiw explain`](#mongodb-explain-verbosity).
 - `mongodb_query_timeout_ms` sets the global, server-enforced query timeout (mongodb only); the `--mongodb-query-timeout-ms` CLI flag overrides it. Ignored by the SQL adapters. See [MongoDB notes](#mongodb-notes).
 

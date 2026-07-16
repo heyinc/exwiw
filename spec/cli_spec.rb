@@ -511,6 +511,28 @@ module Exwiw
         expect(cli.instance_variable_get(:@ids)).to eq(['1', '2'])
       end
 
+      it 'parses fail_fast_strategies given as a YAML list' do
+        path = write_config("schema_dir: e2e/sqlite-schema\nfail_fast_strategies:\n  - target_has_no_matched_records\n")
+        cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3', "--config=#{path}"])
+        cli.send(:apply_config_file!)
+        expect(cli.instance_variable_get(:@fail_fast_strategies)).to eq(['target_has_no_matched_records'])
+      end
+
+      it 'rejects an unknown fail_fast_strategies value' do
+        path = write_config("schema_dir: e2e/sqlite-schema\nfail_fast_strategies:\n  - no_such_strategy\n")
+        cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3', "--config=#{path}"])
+        expect { cli.send(:apply_config_file!) }.to raise_error(SystemExit)
+          .and output(/Unknown fail_fast_strategies value\(s\): no_such_strategy/).to_stderr
+      end
+
+      it 'ignores fail_fast_strategies for the explain subcommand' do
+        schema = File.expand_path('e2e/sqlite-schema')
+        path = write_config("schema_dir: #{schema}\nfail_fast_strategies:\n  - target_has_no_matched_records\n")
+        cli = CLI.new(['explain', '--adapter=sqlite', '--database=tmp/test.sqlite3', "--config=#{path}"])
+        expect { cli.send(:validate_options!) }.not_to raise_error
+        expect(cli.instance_variable_get(:@fail_fast_strategies)).to be_nil
+      end
+
       it 'rejects database connection keys in the config file' do
         path = write_config("host: db.example.com\nschema_dir: e2e/sqlite-schema\n")
         cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3', "--config=#{path}"])

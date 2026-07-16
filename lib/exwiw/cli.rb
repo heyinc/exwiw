@@ -21,7 +21,8 @@ module Exwiw
 
     # Keys accepted in the config file. Anything outside this set is rejected so
     # a typo surfaces immediately instead of being silently ignored. These mirror
-    # the non-connection CLI options (plus `adapter`).
+    # the non-connection CLI options (plus `adapter` and the config-file-only
+    # `explain_verbosity` / `fail_fast_strategies`).
     ALLOWED_CONFIG_KEYS = %w[
       adapter
       schema_dir
@@ -36,6 +37,7 @@ module Exwiw
       ids_field
       scope_column
       parallel_workers
+      fail_fast_strategies
       explain_verbosity
       mongodb_query_timeout_ms
     ].freeze
@@ -53,7 +55,7 @@ module Exwiw
 
     # Keys that only make sense for `export`. They are skipped when merging config
     # for `explain` so a shared config file does not trip validate_explain_only!.
-    EXPORT_ONLY_CONFIG_KEYS = %w[output_dir output_format insert_only after_insert_hook parallel_workers].freeze
+    EXPORT_ONLY_CONFIG_KEYS = %w[output_dir output_format insert_only after_insert_hook parallel_workers fail_fast_strategies].freeze
 
     def self.start(argv)
       new(argv).run
@@ -90,6 +92,7 @@ module Exwiw
       @insert_only = nil
       @after_insert_hook_path = nil
       @parallel_workers = nil
+      @fail_fast_strategies = nil
       @mongodb_query_timeout_ms = nil
       @explain_verbosity = nil
       # nil (not :info) so we can tell "user passed --log-level" from the default,
@@ -139,6 +142,7 @@ module Exwiw
           insert_only: @insert_only,
           after_insert_hook_path: @after_insert_hook_path,
           parallel_workers: @parallel_workers,
+          fail_fast_strategies: @fail_fast_strategies || [],
           cli_options: build_cli_options_hash,
           logger: logger,
         ).run
@@ -335,6 +339,7 @@ module Exwiw
       @ids_field ||= config["ids_field"]
       @scope_column ||= config["scope_column"]
       @parallel_workers ||= parse_parallel_workers(config["parallel_workers"]) if config.key?("parallel_workers")
+      @fail_fast_strategies ||= parse_fail_fast_strategies(config["fail_fast_strategies"]) if config.key?("fail_fast_strategies")
       @mongodb_query_timeout_ms ||= parse_mongodb_query_timeout_ms(config["mongodb_query_timeout_ms"]) if config.key?("mongodb_query_timeout_ms")
       @explain_verbosity ||= config["explain_verbosity"]
     end
@@ -460,6 +465,21 @@ module Exwiw
     rescue ArgumentError, TypeError
       $stderr.puts "config 'parallel_workers' must be an integer (got #{value.inspect})"
       exit 1
+    end
+
+    # Validate the config-file `fail_fast_strategies` list against the strategy
+    # names the Runner knows. An unknown name is a config typo, so fail fast
+    # rather than silently dropping it. A single string is accepted too (a
+    # one-strategy YAML scalar or "a,b", matching how `ids` is parsed).
+    private def parse_fail_fast_strategies(value)
+      strategies = (value.is_a?(String) ? value.split(",") : Array(value)).map(&:to_s)
+      unknown = strategies - Runner::FAIL_FAST_STRATEGIES
+      unless unknown.empty?
+        $stderr.puts "Unknown fail_fast_strategies value(s): #{unknown.join(', ')}. " \
+                     "Allowed values: #{Runner::FAIL_FAST_STRATEGIES.join(', ')}"
+        exit 1
+      end
+      strategies
     end
 
     # `--mongodb-query-timeout-ms` sets the global, server-enforced CSOT timeout

@@ -3,7 +3,23 @@
 require "fileutils"
 
 module Exwiw
+  # Raised when a configured fail-fast strategy's condition holds. Checked
+  # before any output is written, so the previous dump stays intact.
+  FailFastError = Class.new(StandardError)
+
   class Runner
+    # Values accepted in the config file's `fail_fast_strategies` list. Each
+    # names a condition under which the export aborts up front instead of
+    # producing an output that is technically valid but almost certainly not
+    # what the user wanted.
+    #
+    # target_has_no_matched_records: the target table/collection matched no
+    # record for the given --ids. Every other table is scoped off the target,
+    # so the whole dump would be empty — typically a wrong id or the wrong
+    # database.
+    FAIL_FAST_TARGET_HAS_NO_MATCHED_RECORDS = "target_has_no_matched_records"
+    FAIL_FAST_STRATEGIES = [FAIL_FAST_TARGET_HAS_NO_MATCHED_RECORDS].freeze
+
     def initialize(
       connection_config:,
       output_dir:,
@@ -14,6 +30,7 @@ module Exwiw
       insert_only: false,
       after_insert_hook_path: nil,
       parallel_workers: nil,
+      fail_fast_strategies: [],
       cli_options: {}
     )
       @connection_config = connection_config
@@ -24,6 +41,7 @@ module Exwiw
       @insert_only = insert_only
       @after_insert_hook_path = after_insert_hook_path
       @parallel_workers = parallel_workers
+      @fail_fast_strategies = fail_fast_strategies
       @cli_options = cli_options
       @logger = logger
     end
@@ -45,6 +63,8 @@ module Exwiw
       # Scope-column mode: abort if any extractable table cannot be scoped (no-op
       # otherwise). Done before extraction so nothing is dumped if it would leak.
       QueryAstBuilder.validate_scope!(dumpable_configs, table_by_name, @dump_target, @logger)
+
+      enforce_fail_fast_strategies!(adapter, table_by_name)
 
       @logger.info("Determining table processing order...")
       # runtime_reverse_scope: the mongodb adapter builds a reverse-scoped
@@ -194,6 +214,37 @@ module Exwiw
       end
 
       run_after_insert_hook(adapter, total_size)
+    end
+
+    # Enforce the opt-in `fail_fast_strategies` from the config file. Runs after
+    # all config validation but before clean_output_dir!, so a doomed export
+    # aborts while the previous dump is still intact — and before the (possibly
+    # long) extraction loop starts.
+    private def enforce_fail_fast_strategies!(adapter, table_by_name)
+      return unless @fail_fast_strategies.include?(FAIL_FAST_TARGET_HAS_NO_MATCHED_RECORDS)
+
+      # Dump-all / scope-column mode has no single target to probe. Warn rather
+      # than raise so a committed config carrying the strategy does not block a
+      # deliberate dump-all run.
+      if @dump_target.table_name.nil?
+        @logger.warn(
+          "fail_fast_strategies '#{FAIL_FAST_TARGET_HAS_NO_MATCHED_RECORDS}' ignored: " \
+          "it requires a target table/collection."
+        )
+        return
+      end
+
+      target = table_by_name.fetch(@dump_target.table_name)
+      query_ast = adapter.build_query(target, @dump_target, table_by_name)
+      # StreamingResult#size runs a dedicated COUNT / count_documents query, so
+      # no rows are fetched here; the extraction loop re-executes the query.
+      count = adapter.execute(query_ast).size
+      return unless count.zero?
+
+      raise FailFastError,
+            "fail fast (#{FAIL_FAST_TARGET_HAS_NO_MATCHED_RECORDS}): " \
+            "target '#{@dump_target.table_name}' matched no records for ids #{@dump_target.ids.inspect}. " \
+            "The whole dump would be empty, so the export was aborted before writing anything."
     end
 
     # Run the post-processing hook (no-op when none configured). `total_size` is

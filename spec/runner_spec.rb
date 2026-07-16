@@ -276,6 +276,58 @@ module Exwiw
       end
     end
 
+    describe 'with fail_fast_strategies target_has_no_matched_records' do
+      let(:log_io) { StringIO.new }
+      let(:runner) do
+        Runner.new(
+          connection_config: connection_config,
+          output_dir: output_dir,
+          schema_dir: schema_dir,
+          dump_target: dump_target,
+          fail_fast_strategies: [Runner::FAIL_FAST_TARGET_HAS_NO_MATCHED_RECORDS],
+          logger: ::Logger.new(log_io),
+        )
+      end
+
+      before do
+        FileUtils.cp('e2e/sqlite-schema/shops.json', File.join(schema_dir, 'shops.json'))
+      end
+
+      context 'when the target matches no records' do
+        let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['999999']) }
+
+        it 'raises FailFastError before cleaning the output dir' do
+          previous_dump = File.join(output_dir, 'insert-001-shops.sql')
+          File.write(previous_dump, 'previous dump')
+
+          expect { runner.run }.to raise_error(FailFastError, /target 'shops' matched no records/)
+
+          # Aborted before clean_output_dir!, so the previous dump is intact.
+          expect(File.read(previous_dump)).to eq('previous dump')
+        end
+      end
+
+      context 'when the target matches records' do
+        let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1']) }
+
+        it 'exports normally' do
+          expect { runner.run }.not_to raise_error
+
+          expect(Dir[File.join(output_dir, 'insert-*-shops.sql')]).not_to be_empty
+        end
+      end
+
+      context 'in dump-all mode (no target)' do
+        let(:dump_target) { DumpTarget.new(table_name: nil, ids: []) }
+
+        it 'warns and skips the strategy' do
+          expect { runner.run }.not_to raise_error
+
+          expect(log_io.string).to include("'target_has_no_matched_records' ignored")
+        end
+      end
+    end
+
     describe 'with after_insert_hook_path (.rb)' do
       let(:hook_path) { 'tmp/runner_spec_after_hook.rb' }
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1', '2']) }
