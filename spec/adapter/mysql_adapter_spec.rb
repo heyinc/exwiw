@@ -19,6 +19,103 @@ module Exwiw
       let(:logger) { Logger.new(nil) }
       let(:adapter) { described_class.new(connection_config, logger) }
 
+      describe "#execute scope id-set materialization" do
+        let(:recorded) { [] }
+        let(:session_sql_mode) { 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION' }
+        let(:fake_client) do
+          client = instance_double(MysqlClient)
+          allow(client).to receive(:query) do |sql|
+            recorded << sql
+            if sql == 'SELECT @@SESSION.sql_mode'
+              MysqlClient::Result.new(fields: ['@@SESSION.sql_mode'], rows: [[session_sql_mode]])
+            else
+              MysqlClient::Result.new(fields: ['COUNT(*)'], rows: [['42']])
+            end
+          end
+          client
+        end
+
+        before { allow(adapter).to receive(:connection).and_return(fake_client) }
+
+        def data_sql_of(streaming_result)
+          streaming_result.instance_variable_get(:@data_sql)
+        end
+
+        it "materializes a scope id-set once and joins the temp table in the data query" do
+          result = adapter.execute(build_reverse_scope_union_ast)
+
+          creates = recorded.grep(/\ACREATE TEMPORARY TABLE/)
+          expect(creates.size).to eq(1)
+          expect(creates.first).to include("SELECT customers.user_id FROM customers")
+          expect(recorded.grep(/\AALTER TABLE/).size).to eq(1)
+
+          expect(data_sql_of(result)).to include(
+            "JOIN exwiw_scope_id_set_0 AS exwiw_scope_ids_0 ON users.id = exwiw_scope_ids_0.exwiw_scope_id"
+          )
+          expect(data_sql_of(result)).not_to include("UNION")
+        end
+
+        it "reuses the materialized id-set across executes with the same scope" do
+          adapter.execute(build_reverse_scope_union_ast)
+          result = adapter.execute(build_reverse_scope_union_ast)
+
+          expect(recorded.grep(/\ACREATE TEMPORARY TABLE/).size).to eq(1)
+          expect(data_sql_of(result)).to include("JOIN exwiw_scope_id_set_0")
+        end
+
+        it "materializes nested scopes bottom-up, building outer sets from inner ones" do
+          result = adapter.execute(build_multi_hop_nested_in_ast)
+
+          creates = recorded.grep(/\ACREATE TEMPORARY TABLE/)
+          expect(creates.size).to eq(3)
+          expect(creates[0]).to include("FROM memberships")
+          expect(creates[1]).to include("JOIN exwiw_scope_id_set_0")
+          expect(creates[2]).to include("JOIN exwiw_scope_id_set_1")
+          expect(data_sql_of(result)).to include("JOIN exwiw_scope_id_set_2")
+        end
+
+        it "strips NO_ENGINE_SUBSTITUTION from the session sql_mode once, before the first CREATE" do
+          adapter.execute(build_reverse_scope_union_ast)
+          adapter.execute(build_reverse_scope_union_ast)
+
+          sets = recorded.grep(/\ASET SESSION sql_mode/)
+          expect(sets).to eq(["SET SESSION sql_mode = 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES'"])
+          expect(recorded.index(sets.first)).to be < recorded.index(recorded.grep(/\ACREATE TEMPORARY TABLE/).first)
+        end
+
+        context "when the session sql_mode has no NO_ENGINE_SUBSTITUTION" do
+          let(:session_sql_mode) { 'STRICT_TRANS_TABLES' }
+
+          it "does not touch the session sql_mode" do
+            adapter.execute(build_reverse_scope_union_ast)
+
+            expect(recorded.grep(/\ASET SESSION sql_mode/)).to be_empty
+          end
+        end
+
+        it "does not create temporary tables during explain" do
+          adapter.explain(build_reverse_scope_union_ast)
+
+          expect(recorded.grep(/\ACREATE TEMPORARY TABLE/)).to be_empty
+          expect(recorded.grep(/\AEXPLAIN/).first).to include("SELECT DISTINCT exwiw_scope_src_0.user_id")
+        end
+
+        it "falls back to inline scope subqueries when temp table creation fails" do
+          allow(fake_client).to receive(:query) do |sql|
+            recorded << sql
+            raise "CREATE TEMPORARY TABLES command denied" if sql.start_with?("CREATE TEMPORARY TABLE")
+
+            MysqlClient::Result.new(fields: ['COUNT(*)'], rows: [['42']])
+          end
+
+          result = adapter.execute(build_reverse_scope_union_ast)
+          expect(data_sql_of(result)).to include("JOIN (SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id")
+
+          adapter.execute(build_reverse_scope_union_ast)
+          expect(recorded.grep(/\ACREATE TEMPORARY TABLE/).size).to eq(1)
+        end
+      end
+
       describe "#dump_schema" do
         let(:schema_path) { Tempfile.new(['mysql_schema', '.sql']).path }
 

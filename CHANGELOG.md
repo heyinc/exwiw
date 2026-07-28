@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **The mysql adapter materializes each scope id-set into a session `TEMPORARY TABLE` and reuses it across tables.** Previously the same scope subquery (e.g. the dump target's users id-set, including a multi-arm `reverse_scope` UNION) was embedded — and re-evaluated by the server — in every descendant table's extraction query, which dominated export time on large tenants. During `export`, each distinct id-set is now computed once (`CREATE TEMPORARY TABLE ... AS SELECT DISTINCT ...`, indexed), and descendant queries JOIN the temp table; nested scopes are materialized bottom-up so outer sets build from already-materialized inner ones. The dumped rows are identical. `explain` still compiles the inline form and executes nothing. Read-only replicas are supported: `NO_ENGINE_SUBSTITUTION` is stripped from the session `sql_mode` before the first CREATE, so e.g. Aurora MySQL 3 reader instances (which cannot create InnoDB temp tables) substitute a permitted engine instead of failing with ERROR 3161. If temp table creation still fails (e.g. the DB user lacks `CREATE TEMPORARY TABLES`), materialization is disabled for the run with a warning and extraction falls back to the previous inline subqueries. postgresql/sqlite adapters are unchanged.
+
 ## [0.9.12] - 2026-07-09
 
 ## [0.9.11] - 2026-07-09
