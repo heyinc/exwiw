@@ -353,8 +353,10 @@ module Exwiw
       private def create_scope_id_table(select_sql)
         name = "exwiw_scope_id_set_#{@scope_id_tables.size}"
         connection.query("CREATE TEMPORARY TABLE #{quote_table_name(name)} AS #{select_sql}")
+        # ROW_COUNT() reads the CTAS insert count in O(1); a COUNT(*) would
+        # re-scan the whole id-set just for this log line.
+        count = connection.query("SELECT ROW_COUNT()").rows.dig(0, 0)
         connection.query("ALTER TABLE #{quote_table_name(name)} ADD INDEX `index_exwiw_scope_id` (exwiw_scope_id)")
-        count = connection.query("SELECT COUNT(*) FROM #{quote_table_name(name)}").rows.dig(0, 0)
         @logger.info("  Materialized scope id set #{name} (#{count} ids).")
         name
       end
