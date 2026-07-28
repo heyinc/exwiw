@@ -346,6 +346,10 @@ module Exwiw
         end
       end
 
+      # If a step after CREATE fails, the temp table stays in the session until
+      # disconnect, but it is never referenced: the name is only cached (and thus
+      # only joined) after all three statements succeed, and the caller disables
+      # materialization for the rest of the run.
       private def create_scope_id_table(select_sql)
         name = "exwiw_scope_id_set_#{@scope_id_tables.size}"
         connection.query("CREATE TEMPORARY TABLE #{quote_table_name(name)} AS #{select_sql}")
