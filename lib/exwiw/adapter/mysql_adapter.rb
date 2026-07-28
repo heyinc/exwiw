@@ -59,11 +59,15 @@ module Exwiw
       end
 
       def execute(query_ast)
-        data_sql = commented_sql(query_ast)
+        data_sql = nil
+        count_sql = nil
         # Count via the same FROM/JOIN/WHERE (projection replaced by COUNT(*)) so
         # the Runner can skip empty tables and log the row count without draining
         # the stream. See StreamingResult for why this is not a subquery wrap.
-        count_sql = "#{sql_query_comment(query_ast)} #{compile_ast(query_ast, count_only: true)}"
+        with_scope_materialization do
+          data_sql = commented_sql(query_ast)
+          count_sql = "#{sql_query_comment(query_ast)} #{compile_ast(query_ast, count_only: true)}"
+        end
 
         @logger.debug("  Executing SQL (streaming): \n#{data_sql}")
         StreamingResult.new(client: connection, data_sql: data_sql, count_sql: count_sql)
@@ -292,14 +296,63 @@ module Exwiw
       # to `<col> IN (subquery)`.
       private def compile_scope_join(from_table_name, where_clause, idx)
         subquery = where_clause.value
-        projection = quote_identifier(subquery_projection_name(subquery))
-        src_alias = "exwiw_scope_src_#{idx}"
         ids_alias = "exwiw_scope_ids_#{idx}"
         outer_key = qualified_name(from_table_name, where_clause.column_name)
+
+        if (scope_table = materialized_scope_table(subquery))
+          return "JOIN #{quote_table_name(scope_table)} AS #{ids_alias} " \
+            "ON #{outer_key} = #{ids_alias}.exwiw_scope_id"
+        end
+
+        projection = quote_identifier(subquery_projection_name(subquery))
+        src_alias = "exwiw_scope_src_#{idx}"
 
         "JOIN (SELECT DISTINCT #{src_alias}.#{projection} AS exwiw_scope_id " \
           "FROM (#{compile_subquery(subquery)}) AS #{src_alias}) AS #{ids_alias} " \
           "ON #{outer_key} = #{ids_alias}.exwiw_scope_id"
+      end
+
+      # The same scope subquery (e.g. the target-tenant users id-set) is embedded
+      # in every descendant table's extraction query, so the source DB would
+      # re-evaluate it once per table — the dominant cost on large tenants.
+      # During #execute, materialize each distinct id-set once into a session
+      # TEMPORARY TABLE and JOIN that instead. Keyed by the compiled SELECT, so
+      # nested scopes reuse already-materialized parents. #explain and
+      # #describe_query compile without the flag and stay side-effect free.
+      private def with_scope_materialization
+        @materialize_scopes = true
+        yield
+      ensure
+        @materialize_scopes = false
+      end
+
+      private def materialized_scope_table(subquery)
+        return nil unless @materialize_scopes
+        return nil if @scope_materialization_disabled
+
+        select_sql = "SELECT DISTINCT exwiw_scope_src.#{quote_identifier(subquery_projection_name(subquery))} " \
+          "AS exwiw_scope_id FROM (#{compile_subquery(subquery)}) AS exwiw_scope_src"
+
+        @scope_id_tables ||= {}
+        begin
+          @scope_id_tables[select_sql] ||= create_scope_id_table(select_sql)
+        rescue StandardError => e
+          # e.g. the DB user lacks CREATE TEMPORARY TABLES; keep extracting with
+          # the inline (per-query) scope subqueries instead of failing the run.
+          @scope_materialization_disabled = true
+          @logger.warn("Disabling scope id-set materialization (#{e.class}: #{e.message}); " \
+            "falling back to inline scope subqueries.")
+          nil
+        end
+      end
+
+      private def create_scope_id_table(select_sql)
+        name = "exwiw_scope_id_set_#{@scope_id_tables.size}"
+        connection.query("CREATE TEMPORARY TABLE #{quote_table_name(name)} AS #{select_sql}")
+        connection.query("ALTER TABLE #{quote_table_name(name)} ADD INDEX `index_exwiw_scope_id` (exwiw_scope_id)")
+        count = connection.query("SELECT COUNT(*) FROM #{quote_table_name(name)}").rows.dig(0, 0)
+        @logger.info("  Materialized scope id set #{name} (#{count} ids).")
+        name
       end
 
       private def compile_where_condition(where_clause, table_name)
