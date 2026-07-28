@@ -21,11 +21,16 @@ module Exwiw
 
       describe "#execute scope id-set materialization" do
         let(:recorded) { [] }
+        let(:session_sql_mode) { 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION' }
         let(:fake_client) do
           client = instance_double(MysqlClient)
           allow(client).to receive(:query) do |sql|
             recorded << sql
-            MysqlClient::Result.new(fields: ['COUNT(*)'], rows: [['42']])
+            if sql == 'SELECT @@SESSION.sql_mode'
+              MysqlClient::Result.new(fields: ['@@SESSION.sql_mode'], rows: [[session_sql_mode]])
+            else
+              MysqlClient::Result.new(fields: ['COUNT(*)'], rows: [['42']])
+            end
           end
           client
         end
@@ -67,6 +72,25 @@ module Exwiw
           expect(creates[1]).to include("JOIN exwiw_scope_id_set_0")
           expect(creates[2]).to include("JOIN exwiw_scope_id_set_1")
           expect(data_sql_of(result)).to include("JOIN exwiw_scope_id_set_2")
+        end
+
+        it "strips NO_ENGINE_SUBSTITUTION from the session sql_mode once, before the first CREATE" do
+          adapter.execute(build_reverse_scope_union_ast)
+          adapter.execute(build_reverse_scope_union_ast)
+
+          sets = recorded.grep(/\ASET SESSION sql_mode/)
+          expect(sets).to eq(["SET SESSION sql_mode = 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES'"])
+          expect(recorded.index(sets.first)).to be < recorded.index(recorded.grep(/\ACREATE TEMPORARY TABLE/).first)
+        end
+
+        context "when the session sql_mode has no NO_ENGINE_SUBSTITUTION" do
+          let(:session_sql_mode) { 'STRICT_TRANS_TABLES' }
+
+          it "does not touch the session sql_mode" do
+            adapter.execute(build_reverse_scope_union_ast)
+
+            expect(recorded.grep(/\ASET SESSION sql_mode/)).to be_empty
+          end
         end
 
         it "does not create temporary tables during explain" do

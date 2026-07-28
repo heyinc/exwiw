@@ -335,6 +335,7 @@ module Exwiw
 
         @scope_id_tables ||= {}
         begin
+          prepare_scope_session
           @scope_id_tables[select_sql] ||= create_scope_id_table(select_sql)
         rescue StandardError => e
           # e.g. the DB user lacks CREATE TEMPORARY TABLES; keep extracting with
@@ -344,6 +345,20 @@ module Exwiw
             "falling back to inline scope subqueries.")
           nil
         end
+      end
+
+      # Read-only replicas (e.g. Aurora MySQL 3 reader instances) cannot create
+      # InnoDB temporary tables: with NO_ENGINE_SUBSTITUTION in sql_mode the
+      # CREATE fails outright (ERROR 3161) instead of substituting a permitted
+      # engine such as MyISAM. Strip that flag once per session — it only
+      # governs DDL engine fallback, not query semantics.
+      private def prepare_scope_session
+        return if @scope_session_prepared
+
+        mode = connection.query("SELECT @@SESSION.sql_mode").rows.dig(0, 0).to_s
+        cleaned = mode.split(',').reject { |part| part == 'NO_ENGINE_SUBSTITUTION' }.join(',')
+        connection.query("SET SESSION sql_mode = '#{cleaned}'") unless cleaned == mode
+        @scope_session_prepared = true
       end
 
       # If a step after CREATE fails, the temp table stays in the session until
