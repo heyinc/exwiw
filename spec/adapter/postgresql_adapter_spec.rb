@@ -742,6 +742,22 @@ module Exwiw
               expect { connection.exec(post_insert) }.not_to raise_error
             end
           end
+
+          context "when the relation is gone by the time of the sequence probe (concurrent DDL on the source)" do
+            let(:vanished_table) do
+              Exwiw::TableConfig.from_symbol_keys(
+                name: "vanished_during_extract",
+                primary_key: "id",
+                belongs_tos: [],
+                columns: [{ name: "id" }],
+              )
+            end
+
+            it "skips the sequence sync with a warning instead of failing" do
+              expect(logger).to receive(:warn).with(/Skipping sequence sync for 'vanished_during_extract'/)
+              expect(adapter.post_insert_sql(vanished_table)).to be_nil
+            end
+          end
         end
       end
     end

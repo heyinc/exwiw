@@ -222,6 +222,15 @@ module Exwiw
         is_called_sql = (is_called == 't' || is_called == true) ? 'true' : 'false'
 
         "SELECT pg_catalog.setval('#{escape_single_quote(seq_name)}', #{last_value}, #{is_called_sql});"
+      rescue PG::UndefinedTable => e
+        # The relation resolved during the extraction query but can vanish
+        # before this probe: when extracting from a hot-standby replica, a
+        # primary-side DROP/RENAME replays queued behind the extraction
+        # query's lock and lands exactly between the two statements. The rows
+        # were already dumped from a consistent per-statement snapshot, so
+        # skip the sequence sync instead of failing the whole export.
+        @logger.warn("  Skipping sequence sync for '#{table.name}': #{e.message.lines.first&.strip}")
+        nil
       end
 
       def to_bulk_delete(select_query_ast, table)

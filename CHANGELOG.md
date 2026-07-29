@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **The postgresql adapter no longer fails the whole export when a relation disappears between its extraction query and the sequence-sync probe.** When extracting from a hot-standby replica, a primary-side `DROP`/`RENAME` replays queued behind the extraction query's lock and lands exactly between the two statements, making `post_insert_sql`'s `pg_get_serial_sequence` fail with `PG::UndefinedTable` even though the rows were already dumped from a consistent snapshot. The sequence sync is now skipped with a warning instead.
+
 ## [0.9.14] - 2026-07-29
 
 ### Changed
