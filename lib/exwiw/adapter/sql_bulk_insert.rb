@@ -18,8 +18,8 @@ module Exwiw
       # Array#map + Array#join (the same C-level path #to_bulk_insert uses) so it
       # stays close to whole-string speed — far faster than a naive row-at-a-time
       # IO#print (see script/bench_sql_dump.rb / docs/sql-dump-optimization-notes.md).
-      # Mirrors MongoDB's default chunk size: bounded work per flush, but the SQL
-      # adapters still emit ONE statement (byte-identical to the un-chunked build).
+      # Bounded work per flush WITHIN a single statement: flush boundaries never
+      # split a statement — statement boundaries come from bulk_insert_chunk_size.
       STREAM_FLUSH_ROWS = 2_000
 
       # Build the whole INSERT statement as a single String. Kept for callers

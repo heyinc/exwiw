@@ -165,9 +165,9 @@ module Exwiw
       # untouched, so the cursor is walked exactly once. The chunk boundaries and
       # "\n" separators reproduce the each_slice output byte-for-byte.
       #
-      # chunk_size is always positive for callers of this default (MongoDB); the
-      # SQL adapters pass nil and override #write_inserts, so the unbounded
-      # nil-branch buffer is never reached here in practice.
+      # chunk_size is always positive for callers of this default (MongoDB,
+      # whose adapter default is 1_000); the SQL adapters override
+      # #write_inserts (SqlBulkInsert) with their own chunked writer.
       def write_inserts(io, results, table, chunk_size)
         statement_count = 0
         record_count = 0

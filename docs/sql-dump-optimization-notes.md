@@ -35,7 +35,7 @@ The Runner drives, per table:
 
 2. **to_bulk_insert** — SQL adapters set **no** `default_bulk_insert_chunk_size`
    (it was `nil` at measurement time; since then the default is 10_000 —
-   large tables emit multiple bounded INSERT statements), so at the time the Runner treats the whole table as one chunk and
+   large tables emit multiple bounded INSERT statements), so at measurement time the Runner treated the whole table as one chunk and
    `to_bulk_insert` builds the **entire** `INSERT INTO ... VALUES (...),(...);`
    as one giant String — first an `Array` of N per-row tuple strings, then the
    joined result — held simultaneously with the result set from step 1.
