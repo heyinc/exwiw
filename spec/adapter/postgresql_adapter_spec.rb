@@ -753,6 +753,12 @@ module Exwiw
               )
             end
 
+            before do
+              connection.exec(%(CREATE TEMP TABLE vanished_during_extract (id serial PRIMARY KEY)))
+              connection.exec(%(SELECT id FROM vanished_during_extract))
+              connection.exec(%(DROP TABLE vanished_during_extract))
+            end
+
             it "skips the sequence sync with a warning instead of failing" do
               expect(logger).to receive(:warn).with(/Skipping sequence sync for 'vanished_during_extract'/)
               expect(adapter.post_insert_sql(vanished_table)).to be_nil
