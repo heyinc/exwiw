@@ -10,8 +10,8 @@
 #                         memory (pg: PG::Result#values, mysql2: res.to_a.map,
 #                         sqlite3: Database#execute). For a large table this is
 #                         a Ruby array-of-arrays as big as the table.
-#   2. to_bulk_insert  -- SQL adapters set NO default_bulk_insert_chunk_size, so
-#                         the Runner builds the whole table's INSERT as ONE giant
+#   2. to_bulk_insert  -- measured when SQL adapters set NO default chunk size
+#                         (the default is now 10_000), so the Runner built the whole table's INSERT as ONE giant
 #                         string before writing (one chunk = all rows), held in
 #                         memory simultaneously with the result set above.
 #
