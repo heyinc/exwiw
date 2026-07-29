@@ -18,8 +18,8 @@ module Exwiw
       # Array#map + Array#join (the same C-level path #to_bulk_insert uses) so it
       # stays close to whole-string speed — far faster than a naive row-at-a-time
       # IO#print (see script/bench_sql_dump.rb / docs/sql-dump-optimization-notes.md).
-      # Mirrors MongoDB's default chunk size: bounded work per flush, but the SQL
-      # adapters still emit ONE statement (byte-identical to the un-chunked build).
+      # Bounded work per flush WITHIN a single statement: flush boundaries never
+      # split a statement — statement boundaries come from bulk_insert_chunk_size.
       STREAM_FLUSH_ROWS = 2_000
 
       # Build the whole INSERT statement as a single String. Kept for callers
@@ -37,15 +37,28 @@ module Exwiw
       # resident at a time rather than the entire table's INSERT string. Returns
       # [statement_count, record_count]; record_count is tallied during the single
       # streaming drain so the Runner needs no separate SELECT COUNT(*) pass.
+      # Chunks are buffered off `#each` rather than `results.each_slice(...)`:
+      # each_slice consults the receiver's `#size` (verified on CRuby for both
+      # the block and enumerator forms), which on a streaming result issues a
+      # redundant `SELECT COUNT(*)` — a second full pass over the same filter.
+      # Manual buffering walks the cursor exactly once.
       def write_inserts(io, results, table, chunk_size)
-        chunks = chunk_size ? results.each_slice(chunk_size) : [results]
+        return [1, stream_single_insert(io, results, table)] unless chunk_size
+
         statement_count = 0
         record_count = 0
-        chunks.each do |chunk_rows|
+        buffer = []
+        flush = lambda do
           io.print("\n") if statement_count.positive?
-          record_count += stream_single_insert(io, chunk_rows, table)
+          record_count += stream_single_insert(io, buffer, table)
           statement_count += 1
+          buffer.clear
         end
+        results.each do |row|
+          buffer << row
+          flush.call if buffer.size >= chunk_size
+        end
+        flush.call unless buffer.empty?
         [statement_count, record_count]
       end
 

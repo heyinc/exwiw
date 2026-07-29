@@ -753,7 +753,7 @@ Unlike rails-managed entries, `columns` and `belongs_tos` are retained so the en
 
 `bulk_insert_chunk_size` splits the generated `INSERT` statement into multiple statements, each containing at most the specified number of rows. This is useful when the number of records per table is large enough to hit limits like MySQL's `max_allowed_packet`.
 
-If omitted, all records for a table are emitted as a single `INSERT` statement.
+If omitted, the adapter default applies: 10,000 rows per statement for the SQL adapters (1,000 documents per chunk for MongoDB). Tables at or below the chunk size still produce a single `INSERT` statement. To force a single statement regardless of table size, set a value larger than the table's row count.
 
 ### Filter
 

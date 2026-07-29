@@ -120,13 +120,14 @@ module Exwiw
       end
 
       # Default bulk-insert chunk size when a table config does not set one.
-      # The Runner streams each chunk straight to the output file, so a non-nil
-      # value here bounds how much serialized output (and how many transient
-      # intermediate objects) live in memory at once. SQL adapters keep nil
-      # (one statement per table, as before); adapters whose output is large
-      # and built per-row (e.g. MongoDB JSONL) override with a positive value.
+      # The Runner streams each chunk straight to the output file, so this
+      # bounds how much serialized output lives in memory at once — and, for
+      # SQL adapters, bounds the size of each INSERT statement: a single
+      # statement covering a multi-million-row table exceeds the target
+      # server's max_allowed_packet at import time ("MySQL server has gone
+      # away"). Table configs can override per table.
       def default_bulk_insert_chunk_size
-        nil
+        10_000
       end
 
       # Write the bulk INSERT/JSONL output for `results` to the open `io`,
@@ -164,9 +165,9 @@ module Exwiw
       # untouched, so the cursor is walked exactly once. The chunk boundaries and
       # "\n" separators reproduce the each_slice output byte-for-byte.
       #
-      # chunk_size is always positive for callers of this default (MongoDB); the
-      # SQL adapters pass nil and override #write_inserts, so the unbounded
-      # nil-branch buffer is never reached here in practice.
+      # chunk_size is always positive for callers of this default (MongoDB,
+      # whose adapter default is 1_000); the SQL adapters override
+      # #write_inserts (SqlBulkInsert) with their own chunked writer.
       def write_inserts(io, results, table, chunk_size)
         statement_count = 0
         record_count = 0
