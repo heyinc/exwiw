@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.14] - 2026-07-29
+
 ### Changed
 
 - **SQL adapters now default `bulk_insert_chunk_size` to 10_000** (previously nil = one INSERT statement per table). A single statement covering a multi-million-row table exceeds the import target's `max_allowed_packet` and aborts the load with "MySQL server has gone away". Output for tables at or below 10,000 rows is byte-identical; larger tables now emit multiple bounded INSERT statements. Set `bulk_insert_chunk_size` in a table config to override.
