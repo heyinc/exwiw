@@ -19,6 +19,41 @@ module Exwiw
       let(:logger) { Logger.new(nil) }
       let(:adapter) { described_class.new(connection_config, logger) }
 
+      describe "#write_inserts default chunking" do
+        let(:table) { shops_table(adapter_name) }
+        let(:io) { StringIO.new }
+
+        it "defaults bulk_insert_chunk_size to 10_000" do
+          expect(adapter.default_bulk_insert_chunk_size).to eq(10_000)
+        end
+
+        it "splits statements at the default chunk boundary" do
+          rows = Array.new(10_001) { |i| [i.to_s] }
+          statement_count, record_count = adapter.write_inserts(io, rows, table, adapter.default_bulk_insert_chunk_size)
+
+          expect([statement_count, record_count]).to eq([2, 10_001])
+          expect(io.string.scan(/INSERT INTO/).size).to eq(2)
+        end
+
+        it "keeps a single statement at exactly the chunk size" do
+          rows = Array.new(10_000) { |i| [i.to_s] }
+          statement_count, record_count = adapter.write_inserts(io, rows, table, adapter.default_bulk_insert_chunk_size)
+
+          expect([statement_count, record_count]).to eq([1, 10_000])
+        end
+
+        it "never consults #size on the streamed results when chunking" do
+          size_free = Class.new do
+            include Enumerable
+            def each = 25.times { |i| yield [i.to_s] }
+            def size = raise("size must not be called on a streaming result")
+          end.new
+
+          statement_count, record_count = adapter.write_inserts(io, size_free, table, 10)
+          expect([statement_count, record_count]).to eq([3, 25])
+        end
+      end
+
       describe "#execute scope id-set materialization" do
         let(:recorded) { [] }
         let(:session_sql_mode) { 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION' }
