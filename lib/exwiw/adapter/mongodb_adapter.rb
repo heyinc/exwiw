@@ -524,7 +524,7 @@ module Exwiw
           target << [relation.foreign_key, values]
         end
 
-        if genuine_clauses.empty? && config.belongs_tos.any? { |r| genuine.include?(r.table_name) }
+        if genuine_clauses.empty? && reference_clauses.any? && config.belongs_tos.any? { |r| genuine.include?(r.table_name) }
           @logger.warn(
             "  Collection '#{config.name}' is scoped by genuine parent(s) that captured no ids " \
             "for this dump target; constraining it to match no rows instead of falling back to " \
