@@ -844,6 +844,312 @@ RSpec.describe Exwiw::QueryAstBuilder do
     end
   end
 
+  describe 'polymorphic multi-arm scoping' do
+    # A polymorphic belongs_to is stored as one entry per concrete target table.
+    # Joining a single one of them (what the plain BFS picks) extracts only the
+    # rows of that one `type_value` and silently drops every other type, so a
+    # join table like active_storage_attachments came out with a single
+    # `record_type = '<one owner>'` filter. Every arm that reaches the scope must
+    # be extracted — and only those, so no other tenant's rows ride along.
+    let(:logger) { Logger.new(nil) }
+    let(:dump_target) { Exwiw::DumpTarget.new(ids: ['t1'], scope_column: 'tenant_id') }
+
+    # Carries the scope column itself; the terminus of every arm below.
+    let(:shops) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'shops', primary_key: 'id', belongs_tos: [],
+        columns: [{ name: 'id' }, { name: 'tenant_id' }]
+      )
+    end
+    let(:posts) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'posts', primary_key: 'id',
+        belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id' }],
+        columns: [{ name: 'id' }, { name: 'shop_id' }]
+      )
+    end
+    let(:pages) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'pages', primary_key: 'id',
+        belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id' }],
+        columns: [{ name: 'id' }, { name: 'shop_id' }]
+      )
+    end
+    # No scope column and no belongs_to path to one: unscopable on its own.
+    let(:widgets) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'widgets', primary_key: 'id', scope_exempt: true, belongs_tos: [],
+        columns: [{ name: 'id' }]
+      )
+    end
+    let(:post_arm) do
+      { table_name: 'posts', foreign_key: 'commentable_id',
+        foreign_type: 'commentable_type', type_value: 'Post' }
+    end
+    let(:page_arm) do
+      { table_name: 'pages', foreign_key: 'commentable_id',
+        foreign_type: 'commentable_type', type_value: 'Page' }
+    end
+    let(:comment_arms) { [post_arm, page_arm] }
+    let(:comments) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'comments', primary_key: 'id',
+        belongs_tos: comment_arms,
+        columns: [
+          { name: 'id' }, { name: 'commentable_type' },
+          { name: 'commentable_id' }, { name: 'body' }
+        ]
+      ).reject_ignored_members!
+    end
+    let(:all_tables) { [shops, posts, pages, widgets, comments] }
+    let(:table_by_name) { all_tables.each_with_object({}) { |t, h| h[t.name] = t } }
+
+    def build(name)
+      described_class.run(name, table_by_name, dump_target, logger)
+    end
+
+    def compiled(name)
+      sqlite_adapter.compile_ast(build(name))
+    end
+
+    def sqlite_adapter
+      Exwiw::Adapter::SqliteAdapter.new(
+        Exwiw::ConnectionConfig.new(
+          adapter: 'sqlite', database_name: 'tmp/test.sqlite3',
+          host: nil, port: nil, user: nil, password: nil
+        ),
+        logger,
+      )
+    end
+
+    # The single-arm SQL, i.e. exactly what every release before multi-arm
+    # support emitted. Asserted verbatim below so the one-arm shape can never
+    # drift into the (heavier) UNION form.
+    let(:single_arm_sql) do
+      'SELECT comments.id, comments.commentable_type, comments.commentable_id, comments.body ' \
+        'FROM comments ' \
+        "JOIN posts ON comments.commentable_id = posts.id AND comments.commentable_type = 'Post' " \
+        "JOIN shops ON posts.shop_id = shops.id AND shops.tenant_id = 't1'"
+    end
+
+    context 'with several arms that all reach the scope' do
+      it 'constrains the table to the UNION of every arm, one per type_value' do
+        ast = build('comments')
+
+        expect(ast.join_clauses).to eq([])
+        expect(ast.where_clauses.size).to eq(1)
+        clause = ast.where_clauses.first
+        expect(clause.column_name).to eq('id')
+        expect(clause.operator).to eq(:in_subquery)
+        expect(clause.value).to be_a(Exwiw::QueryAst::UnionSubquery)
+
+        arms = clause.value.queries
+        expect(arms.map(&:from_table_name)).to eq(%w[comments comments])
+        expect(arms.map { |q| q.columns.map(&:name) }).to eq([['id'], ['id']])
+        expect(arms.map { |q| q.join_clauses.map(&:join_table_name) }).to eq([
+          %w[posts shops],
+          %w[pages shops],
+        ])
+        # Each arm carries its own type filter on the source (base) table.
+        expect(arms.map { |q| q.join_clauses.first.base_where_clauses.map(&:to_h) }).to eq([
+          [{ column_name: 'commentable_type', operator: :eq, value: ['Post'] }],
+          [{ column_name: 'commentable_type', operator: :eq, value: ['Page'] }],
+        ])
+      end
+
+      it 'compiles to a materialized UNION id-set JOIN (sqlite)' do
+        expect(compiled('comments')).to eq(
+          'SELECT comments.id, comments.commentable_type, comments.commentable_id, comments.body ' \
+            'FROM comments ' \
+            'JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (' \
+            'SELECT comments.id FROM comments ' \
+            "JOIN posts ON comments.commentable_id = posts.id AND comments.commentable_type = 'Post' " \
+            "JOIN shops ON posts.shop_id = shops.id AND shops.tenant_id = 't1'" \
+            ' UNION ' \
+            'SELECT comments.id FROM comments ' \
+            "JOIN pages ON comments.commentable_id = pages.id AND comments.commentable_type = 'Page' " \
+            "JOIN shops ON pages.shop_id = shops.id AND shops.tenant_id = 't1'" \
+            ') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON comments.id = exwiw_scope_ids_0.exwiw_scope_id'
+        )
+      end
+
+      it 'terminates every arm in the scope filter (no unscoped arm)' do
+        sql = compiled('comments')
+        arms = sql[/FROM \((.*)\) AS exwiw_scope_src_0/m, 1].split(' UNION ')
+
+        expect(arms.size).to eq(2)
+        arms.each { |arm| expect(arm).to include("shops.tenant_id = 't1'") }
+      end
+
+      it 'classifies as :via_path and passes validate_scope!' do
+        expect(described_class.scope_category('comments', table_by_name, dump_target, logger)).to eq(:via_path)
+        expect {
+          described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+        }.not_to raise_error
+      end
+
+      it 'applies a table filter once, outside the arm union' do
+        comments.filter = 'comments.id > 0'
+        sql = compiled('comments')
+
+        expect(sql).to end_with("ON comments.id = exwiw_scope_ids_0.exwiw_scope_id WHERE comments.id > 0")
+        expect(sql.scan('comments.id > 0').size).to eq(1)
+      end
+
+      it 'projects the raw primary key in the arms even when it is masked' do
+        comments.columns.first.replace_with = 'masked-{id}'
+        sql = compiled('comments')
+
+        # Masked in the outer projection...
+        expect(sql).to start_with("SELECT CASE WHEN comments.id IS NOT NULL THEN ('masked-' || comments.id)")
+        # ...but the arms and the join key stay plain, or the ids would not match.
+        expect(sql.scan('SELECT comments.id FROM comments').size).to eq(2)
+        expect(sql).to end_with('ON comments.id = exwiw_scope_ids_0.exwiw_scope_id')
+      end
+    end
+
+    context 'with a single arm' do
+      let(:comment_arms) { [post_arm] }
+
+      it 'keeps the plain JOIN form (no UNION wrapper)' do
+        expect(compiled('comments')).to eq(single_arm_sql)
+      end
+    end
+
+    context 'when an arm is marked ignore:true' do
+      let(:comment_arms) { [post_arm, page_arm.merge(ignore: true)] }
+
+      it 'drops the ignored arm, leaving the single-arm form' do
+        sql = compiled('comments')
+
+        expect(sql).to eq(single_arm_sql)
+        expect(sql).not_to include('Page')
+      end
+    end
+
+    context 'when one arm cannot reach the scope' do
+      # `widgets` is scope_exempt (a full-dump reference table), so an arm
+      # pointing at it has no scope predicate to terminate in.
+      let(:widget_arm) do
+        { table_name: 'widgets', foreign_key: 'commentable_id',
+          foreign_type: 'commentable_type', type_value: 'Widget' }
+      end
+      let(:comment_arms) { [post_arm, page_arm, widget_arm] }
+
+      it 'drops that arm instead of widening the dump to every tenant' do
+        sql = compiled('comments')
+
+        expect(sql).to include("commentable_type = 'Post'")
+        expect(sql).to include("commentable_type = 'Page'")
+        expect(sql).not_to include('Widget')
+        expect(sql).not_to include('widgets')
+      end
+    end
+
+    context 'when an arm target is scoped without a join path of its own' do
+      # `accounts` carries no scope column and has no belongs_to; it is scoped
+      # only because `customers` references it (referenced_by). An arm pointing
+      # at it therefore has no join path, but its rows are still scoped — so the
+      # arm rides on the target's own extraction query rather than being dropped.
+      let(:accounts) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'accounts', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }]
+        )
+      end
+      let(:customers) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'customers', primary_key: 'id',
+          belongs_tos: [{ table_name: 'accounts', foreign_key: 'account_id' }],
+          columns: [{ name: 'id' }, { name: 'account_id' }, { name: 'tenant_id' }]
+        )
+      end
+      let(:account_arm) do
+        { table_name: 'accounts', foreign_key: 'commentable_id',
+          foreign_type: 'commentable_type', type_value: 'Account' }
+      end
+      let(:comment_arms) { [post_arm, account_arm] }
+      let(:all_tables) { [shops, posts, pages, widgets, comments, accounts, customers] }
+
+      it 'probes the target ids and still pins the type column' do
+        expect(compiled('comments')).to eq(
+          'SELECT comments.id, comments.commentable_type, comments.commentable_id, comments.body ' \
+            'FROM comments ' \
+            'JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (' \
+            'SELECT comments.id FROM comments ' \
+            "JOIN posts ON comments.commentable_id = posts.id AND comments.commentable_type = 'Post' " \
+            "JOIN shops ON posts.shop_id = shops.id AND shops.tenant_id = 't1'" \
+            ' UNION ' \
+            'SELECT comments.id FROM comments ' \
+            'JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (' \
+            'SELECT accounts.id FROM accounts ' \
+            'JOIN (SELECT DISTINCT exwiw_scope_src_0.account_id AS exwiw_scope_id FROM (' \
+            "SELECT customers.account_id FROM customers WHERE customers.tenant_id = 't1'" \
+            ') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON accounts.id = exwiw_scope_ids_0.exwiw_scope_id' \
+            ') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ' \
+            'ON comments.commentable_id = exwiw_scope_ids_0.exwiw_scope_id ' \
+            "WHERE comments.commentable_type = 'Account'" \
+            ') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON comments.id = exwiw_scope_ids_0.exwiw_scope_id'
+        )
+      end
+    end
+
+    context 'when an arm target is scoped through this very table' do
+      # The ActiveStorage shape: `blobs` has no scope of its own and is narrowed
+      # by referenced_by from `comments`, which also declares a polymorphic arm
+      # pointing back at it. Adopting that arm would make the two tables scope
+      # each other — `comments` would keep rows whose ids the `blobs` query never
+      # saw, leaving a dangling foreign key — so the arm is dropped.
+      let(:blobs) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'blobs', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }]
+        )
+      end
+      let(:blob_arm) do
+        { table_name: 'blobs', foreign_key: 'commentable_id',
+          foreign_type: 'commentable_type', type_value: 'Blob' }
+      end
+      # Mirrors the generated ActiveStorage config: the plain `blob_id` edge is
+      # declared first, then the polymorphic owner arms (one of which happens to
+      # point back at blobs).
+      let(:comment_arms) { [{ table_name: 'blobs', foreign_key: 'blob_id' }, post_arm, page_arm, blob_arm] }
+      let(:all_tables) { [shops, posts, pages, widgets, comments, blobs] }
+
+      it 'drops the mutually-dependent arm' do
+        sql = compiled('comments')
+
+        expect(sql).to include("commentable_type = 'Post'")
+        expect(sql).to include("commentable_type = 'Page'")
+        expect(sql).not_to include("commentable_type = 'Blob'")
+      end
+
+      it 'still narrows the referenced table to the ids this table keeps' do
+        sql = compiled('blobs')
+
+        expect(sql).to include('SELECT comments.blob_id FROM comments')
+        expect(sql).to include("commentable_type = 'Post'")
+        expect(sql).to include("commentable_type = 'Page'")
+      end
+    end
+
+    context 'when the shortest path leaves through a non-polymorphic hop' do
+      # `comments` can also be reached to the scope via a plain belongs_to that
+      # is shorter than any polymorphic arm. Nothing about that is ambiguous, so
+      # the historical single-JOIN form is kept — the union is strictly a
+      # polymorphic-arm remedy and must not widen ordinary tables.
+      let(:comment_arms) { [{ table_name: 'shops', foreign_key: 'shop_id' }, post_arm, page_arm] }
+
+      it 'keeps the single JOIN and adds no union' do
+        expect(compiled('comments')).to eq(
+          'SELECT comments.id, comments.commentable_type, comments.commentable_id, comments.body ' \
+            'FROM comments ' \
+            "JOIN shops ON comments.shop_id = shops.id AND shops.tenant_id = 't1'"
+        )
+      end
+    end
+  end
+
   describe 'multi-referencer reverse scope (reverse_scope.via)' do
     # A global-identity table (`users`) that carries no scope column and has no
     # belongs_to of its own is referenced by several scoped tables. With two or

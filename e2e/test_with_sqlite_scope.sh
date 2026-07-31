@@ -24,6 +24,7 @@ CREATE TABLE accounts (id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL, name 
 CREATE TABLE orders (id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL, amount INTEGER NOT NULL);
 CREATE TABLE order_lines (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, qty INTEGER NOT NULL);
 CREATE TABLE regions (id INTEGER PRIMARY KEY, code TEXT NOT NULL);
+CREATE TABLE attachments (id INTEGER PRIMARY KEY, attachable_type TEXT NOT NULL, attachable_id INTEGER NOT NULL, label TEXT NOT NULL);
 "
 
 # Target DB: schema + seed (tenant 1 and tenant 2). order_lines #3 belongs to
@@ -34,6 +35,17 @@ INSERT INTO accounts (id, tenant_id, name) VALUES (1, 1, 'acct-t1'), (2, 2, 'acc
 INSERT INTO orders (id, tenant_id, amount) VALUES (1, 1, 100), (2, 1, 200), (3, 2, 300);
 INSERT INTO order_lines (id, order_id, qty) VALUES (1, 1, 5), (2, 2, 6), (3, 3, 7);
 INSERT INTO regions (id, code) VALUES (1, 'JP'), (2, 'US');
+-- attachments: one per polymorphic arm for tenant 1 (1, 2, 5), the same two
+-- arms for tenant 2 (3, 4), and a row whose attachable_id collides with an
+-- in-scope order id but names the other type (6) -- only the type column tells
+-- it apart, and it must NOT be exported.
+INSERT INTO attachments (id, attachable_type, attachable_id, label) VALUES
+  (1, 'Account', 1, 'acct-t1'),
+  (2, 'Order', 1, 'order-t1'),
+  (3, 'Account', 2, 'acct-t2'),
+  (4, 'Order', 3, 'order-t2'),
+  (5, 'Order', 2, 'order2-t1'),
+  (6, 'Account', 3, 'dangling');
 "
 
 # Fresh DB: schema only.
@@ -92,5 +104,9 @@ check_ids order_lines "1,2"
 # regions: scope_exempt -> exported in full.
 check_count regions 2
 check_ids regions "1,2"
+# attachments: every polymorphic arm that reaches the scope, and only tenant 1
+# (1 = Account arm, 2/5 = Order arm; 3/4 are tenant 2 and 6 is a type mismatch).
+check_count attachments 3
+check_ids attachments "1,2,5"
 
 echo "✓ scope-column mode extracted only the scoped rows (plus the exempt table)"

@@ -2,6 +2,30 @@
 
 module Exwiw
   module QueryAst
+    # Whether `query` (a Select) reads `table_name` anywhere — as its FROM, as a
+    # join, or inside a nested scope subquery. Used to detect the two shapes a
+    # self-referencing scope subquery creates: a polymorphic arm whose target is
+    # scoped through the very table the arms belong to (QueryAstBuilder), and a
+    # DELETE whose subquery reads the table being deleted from, which MySQL
+    # rejects outright (MysqlAdapter).
+    def self.reads_table?(query, table_name)
+      return true if query.from_table_name == table_name
+      return true if query.join_clauses.any? { |j| j.join_table_name == table_name || j.base_table_name == table_name }
+
+      query.where_clauses.any? do |where_clause|
+        next false unless where_clause.is_a?(WhereClause)
+
+        case where_clause.value
+        when SelectSubquery
+          reads_table?(where_clause.value.query, table_name)
+        when UnionSubquery
+          where_clause.value.queries.any? { |q| reads_table?(q, table_name) }
+        else
+          false
+        end
+      end
+    end
+
     class JoinClause
       # `where_clauses` is compiled against this join's join_table_name (the
       # joined-to table). `base_where_clauses`, on the other hand, is compiled

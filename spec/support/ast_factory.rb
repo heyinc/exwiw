@@ -176,6 +176,61 @@ module AstFactory
     end
   end
 
+  # A polymorphic join table scoped through *both* of its arms: `comments`
+  # belongs_to `posts` and `pages` through one commentable_id/commentable_type
+  # pair, and each arm joins up to the tenant-scoped `shops`. This is what
+  # QueryAstBuilder emits for a multi-arm table (active_storage_attachments and
+  # friends) — the arms cannot be one INNER JOIN, so they are UNION'd into an
+  # id-set the table is constrained to. Built directly (not via the builder) so
+  # each adapter's rendering of it can be asserted in isolation.
+  # Adapter-agnostic.
+  def build_polymorphic_arm_union_ast
+    plain = ->(name) { Exwiw::TableColumn.from_symbol_keys(name: name) }
+
+    arm = lambda do |owner_table, type_value|
+      QueryAst::Select.new.tap do |q|
+        q.from("comments")
+        q.select([plain.call("id")])
+        q.join(
+          QueryAst::JoinClause.new(
+            base_table_name: "comments",
+            foreign_key: "commentable_id",
+            join_table_name: owner_table,
+            primary_key: "id",
+            where_clauses: [],
+            base_where_clauses: [
+              QueryAst::WhereClause.new(column_name: "commentable_type", operator: :eq, value: [type_value]),
+            ],
+          )
+        )
+        q.join(
+          QueryAst::JoinClause.new(
+            base_table_name: owner_table,
+            foreign_key: "shop_id",
+            join_table_name: "shops",
+            primary_key: "id",
+            where_clauses: [
+              QueryAst::WhereClause.new(column_name: "tenant_id", operator: :eq, value: ["t1"]),
+            ],
+            base_where_clauses: [],
+          )
+        )
+      end
+    end
+
+    QueryAst::Select.new.tap do |ast|
+      ast.from("comments")
+      ast.select([Exwiw::TableColumn.from_symbol_keys(name: "id")])
+      ast.where(
+        QueryAst::WhereClause.new(
+          column_name: "id",
+          operator: :in_subquery,
+          value: QueryAst::UnionSubquery.new(queries: [arm.call("posts", "Post"), arm.call("pages", "Page")]),
+        )
+      )
+    end
+  end
+
   # A multi-hop forward scope cascade: `projects` constrained to `teams`,
   # `teams` to `companies`, and `companies` to a reverse_scope UNION. This is the
   # shape the builder emits when a table sits two `belongs_to` hops below a

@@ -90,6 +90,21 @@ module Exwiw
           expect(data_sql_of(result)).not_to include("UNION")
         end
 
+        it "materializes a polymorphic multi-arm id-set once and joins the temp table" do
+          result = adapter.execute(build_polymorphic_arm_union_ast)
+
+          creates = recorded.grep(/\ACREATE TEMPORARY TABLE/)
+          expect(creates.size).to eq(1)
+          expect(creates.first).to include(" UNION ")
+          expect(creates.first).to include("comments.commentable_type = 'Post'")
+          expect(creates.first).to include("comments.commentable_type = 'Page'")
+
+          expect(data_sql_of(result)).to include(
+            "JOIN exwiw_scope_id_set_0 AS exwiw_scope_ids_0 ON comments.id = exwiw_scope_ids_0.exwiw_scope_id"
+          )
+          expect(data_sql_of(result)).not_to include("UNION")
+        end
+
         it "reuses the materialized id-set across executes with the same scope" do
           adapter.execute(build_reverse_scope_union_ast)
           result = adapter.execute(build_reverse_scope_union_ast)
@@ -377,6 +392,25 @@ module Exwiw
           end
         end
 
+        context "select query with a polymorphic multi-arm UNION subquery" do
+          let(:sql) { adapter.compile_ast(build_polymorphic_arm_union_ast) }
+
+          it "materializes each arm's join chain into one derived-table JOIN" do
+            expect(sql).to eq(
+              "SELECT comments.id FROM comments JOIN (" \
+              "SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (" \
+              "SELECT comments.id FROM comments " \
+              "JOIN posts ON comments.commentable_id = posts.id AND comments.commentable_type = 'Post' " \
+              "JOIN shops ON posts.shop_id = shops.id AND shops.tenant_id = 't1' " \
+              "UNION " \
+              "SELECT comments.id FROM comments " \
+              "JOIN pages ON comments.commentable_id = pages.id AND comments.commentable_type = 'Page' " \
+              "JOIN shops ON pages.shop_id = shops.id AND shops.tenant_id = 't1'" \
+              ") AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON comments.id = exwiw_scope_ids_0.exwiw_scope_id"
+            )
+          end
+        end
+
         context "select query with a three-level nested IN subquery (multi-hop forward cascade)" do
           let(:sql) { adapter.compile_ast(build_multi_hop_nested_in_ast) }
 
@@ -627,6 +661,42 @@ module Exwiw
       end
 
       describe "#to_bulk_delete" do
+        # MySQL rejects a subquery that reads the table being deleted from
+        # ("You can't specify target table 'x' for update in FROM clause"), which
+        # is exactly what a polymorphic multi-arm scope produces: each arm selects
+        # the join table's own primary key. Wrapping it in a derived table lifts
+        # the restriction; every other subquery shape is left untouched.
+        context "select query whose scope subquery reads the delete target" do
+          let(:bulk_delete_sql) do
+            adapter.to_bulk_delete(build_polymorphic_arm_union_ast, comments_arm_table)
+          end
+          let(:comments_arm_table) do
+            TableConfig.from_symbol_keys(
+              name: 'comments', primary_key: 'id', belongs_tos: [],
+              columns: [{ name: 'id' }]
+            )
+          end
+
+          it "wraps the subquery in a derived table" do
+            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
+              DELETE FROM comments
+              WHERE comments.id IN (SELECT * FROM (SELECT comments.id FROM comments JOIN posts ON comments.commentable_id = posts.id AND comments.commentable_type = 'Post' JOIN shops ON posts.shop_id = shops.id AND shops.tenant_id = 't1' UNION SELECT comments.id FROM comments JOIN pages ON comments.commentable_id = pages.id AND comments.commentable_type = 'Page' JOIN shops ON pages.shop_id = shops.id AND shops.tenant_id = 't1') AS exwiw_delete_src);
+            SQL
+          end
+        end
+
+        context "select query whose scope subquery reads another table" do
+          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_reverse_scope_union_ast, users_table(adapter_name)) }
+
+          it "leaves the subquery unwrapped" do
+            expect(bulk_delete_sql).not_to include("exwiw_delete_src")
+            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
+              DELETE FROM users
+              WHERE users.id IN (SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 1 AND customers.user_id IS NOT NULL UNION SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 1 AND staff.user_id IS NOT NULL);
+            SQL
+          end
+        end
+
         context "simple select query" do
           let(:bulk_delete_sql) { adapter.to_bulk_delete(build_select_shops_ast, shops_table(adapter_name)) }
 
@@ -815,6 +885,100 @@ module Exwiw
               ])
             end
           end
+        end
+      end
+
+      # End-to-end proof against the live mysql that a polymorphic join table
+      # scoped through several arms extracts every arm's rows and nothing from
+      # another tenant. This is also the multi-arm coverage for the mysql-only
+      # scope id-set materialization: #execute compiles the arm UNION into a
+      # session TEMPORARY TABLE and joins that instead of inlining the subquery.
+      #
+      # Ordinary (non-TEMPORARY) tables are used deliberately: the arm UNION
+      # names the join table once per arm, and MySQL cannot open a TEMPORARY
+      # table twice in one statement ("Can't reopen table").
+      describe "polymorphic multi-arm scope against a live database" do
+        let(:client) { adapter.send(:connection) }
+        let(:raw_connection) { client.send(:raw) }
+        let(:dump_target) { Exwiw::DumpTarget.new(ids: ['t1'], scope_column: 'tenant_id') }
+        let(:arm_shops) do
+          TableConfig.from_symbol_keys(
+            name: 'arm_shops', primary_key: 'id', belongs_tos: [],
+            columns: [{ name: 'id' }, { name: 'tenant_id' }]
+          )
+        end
+        let(:arm_posts) do
+          TableConfig.from_symbol_keys(
+            name: 'arm_posts', primary_key: 'id',
+            belongs_tos: [{ table_name: 'arm_shops', foreign_key: 'shop_id' }],
+            columns: [{ name: 'id' }, { name: 'shop_id' }]
+          )
+        end
+        let(:arm_pages) do
+          TableConfig.from_symbol_keys(
+            name: 'arm_pages', primary_key: 'id',
+            belongs_tos: [{ table_name: 'arm_shops', foreign_key: 'shop_id' }],
+            columns: [{ name: 'id' }, { name: 'shop_id' }]
+          )
+        end
+        let(:arm_comments) do
+          TableConfig.from_symbol_keys(
+            name: 'arm_comments', primary_key: 'id',
+            belongs_tos: [
+              { table_name: 'arm_posts', foreign_key: 'commentable_id',
+                foreign_type: 'commentable_type', type_value: 'Post' },
+              { table_name: 'arm_pages', foreign_key: 'commentable_id',
+                foreign_type: 'commentable_type', type_value: 'Page' },
+            ],
+            columns: [
+              { name: 'id' }, { name: 'commentable_type' },
+              { name: 'commentable_id' }, { name: 'body' }
+            ]
+          )
+        end
+        let(:table_by_name) do
+          [arm_shops, arm_posts, arm_pages, arm_comments].each_with_object({}) { |t, h| h[t.name] = t }
+        end
+        let(:comments_ast) { QueryAstBuilder.run('arm_comments', table_by_name, dump_target, logger) }
+
+        before do
+          raw_connection.query("DROP TABLE IF EXISTS arm_comments, arm_pages, arm_posts, arm_shops")
+          raw_connection.query("CREATE TABLE arm_shops (id INT PRIMARY KEY, tenant_id VARCHAR(8))")
+          raw_connection.query("CREATE TABLE arm_posts (id INT PRIMARY KEY, shop_id INT)")
+          raw_connection.query("CREATE TABLE arm_pages (id INT PRIMARY KEY, shop_id INT)")
+          raw_connection.query(
+            "CREATE TABLE arm_comments (id INT PRIMARY KEY, commentable_type VARCHAR(32), " \
+            "commentable_id INT, body VARCHAR(64))"
+          )
+          raw_connection.query("INSERT INTO arm_shops VALUES (1, 't1'), (2, 't2')")
+          raw_connection.query("INSERT INTO arm_posts VALUES (1, 1), (2, 2)")
+          raw_connection.query("INSERT INTO arm_pages VALUES (10, 1), (11, 2)")
+          raw_connection.query(<<~SQL)
+            INSERT INTO arm_comments VALUES
+              (1, 'Post', 1, 'on t1 post'),
+              (2, 'Page', 10, 'on t1 page'),
+              (3, 'Post', 2, 'on t2 post'),
+              (4, 'Page', 11, 'on t2 page'),
+              (5, 'Post', 10, 'dangling')
+          SQL
+        end
+
+        after do
+          raw_connection.query("DROP TABLE IF EXISTS arm_comments, arm_pages, arm_posts, arm_shops")
+        end
+
+        it "extracts every arm's rows and nothing from another tenant" do
+          rows = adapter.execute(comments_ast).to_a
+
+          expect(rows.map(&:first)).to eq(["1", "2"])
+          expect(rows.map { |row| row[1] }).to eq(%w[Post Page])
+          expect(rows.map(&:last)).to eq(['on t1 post', 'on t1 page'])
+        end
+
+        it "deletes exactly the rows the extraction keeps" do
+          raw_connection.query(adapter.to_bulk_delete(comments_ast, arm_comments).delete_suffix(";"))
+
+          expect(client.query("SELECT id FROM arm_comments ORDER BY id").rows).to eq([["3"], ["4"], ["5"]])
         end
       end
     end

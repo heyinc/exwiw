@@ -1,0 +1,24 @@
+{
+  "name": "attachments",
+  "primary_key": "id",
+  "belongs_tos": [{
+    "table_name": "accounts",
+    "foreign_key": "attachable_id",
+    "foreign_type": "attachable_type",
+    "type_value": "Account"
+  }, {
+    "table_name": "orders",
+    "foreign_key": "attachable_id",
+    "foreign_type": "attachable_type",
+    "type_value": "Order"
+  }],
+  "columns": [{
+    "name": "id"
+  }, {
+    "name": "attachable_type"
+  }, {
+    "name": "attachable_id"
+  }, {
+    "name": "label"
+  }]
+}

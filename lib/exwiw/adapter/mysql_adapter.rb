@@ -182,7 +182,7 @@ module Exwiw
             where_clauses.
             select { |where| where.is_a?(Exwiw::QueryAst::WhereClause) }.
             map do |where|
-            compile_where_condition(where, select_query_ast.from_table_name)
+            compile_delete_where_condition(where, select_query_ast.from_table_name)
           end
 
           if compiled_where_conditions.size > 0
@@ -374,6 +374,39 @@ module Exwiw
         connection.query("ALTER TABLE #{quote_table_name(name)} ADD INDEX `index_exwiw_scope_id` (exwiw_scope_id)")
         @logger.info("  Materialized scope id set #{name} (#{count} ids).")
         name
+      end
+
+      # A WHERE condition for the DELETE statement.
+      #
+      # MySQL refuses a subquery that reads the table being deleted from
+      # ("You can't specify target table 'x' for update in FROM clause"), and a
+      # polymorphic multi-arm scope produces exactly that: each arm selects the
+      # join table's own primary key, so the delete's `pk IN (…)` reads the
+      # delete target. Wrapping the subquery in a derived table lifts the
+      # restriction — MySQL materializes the derived table before the DELETE
+      # runs, so the rows deleted are the ones the SELECT matched.
+      #
+      # Only that self-referencing shape is wrapped; every other subquery
+      # (a scope id-set projected from *another* table, the ids_field probe)
+      # compiles exactly as before.
+      private def compile_delete_where_condition(where_clause, table_name)
+        if where_clause.operator == :in_subquery && delete_target_self_reference?(where_clause.value, table_name)
+          key = qualified_name(table_name, where_clause.column_name)
+          return "#{key} IN (SELECT * FROM (#{compile_subquery(where_clause.value)}) AS exwiw_delete_src)"
+        end
+
+        compile_where_condition(where_clause, table_name)
+      end
+
+      private def delete_target_self_reference?(subquery, table_name)
+        case subquery
+        when Exwiw::QueryAst::SelectSubquery
+          Exwiw::QueryAst.reads_table?(subquery.query, table_name)
+        when Exwiw::QueryAst::UnionSubquery
+          subquery.queries.any? { |query| Exwiw::QueryAst.reads_table?(query, table_name) }
+        else
+          false
+        end
       end
 
       private def compile_where_condition(where_clause, table_name)
