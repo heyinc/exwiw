@@ -995,6 +995,17 @@ RSpec.describe Exwiw::QueryAstBuilder do
         expect(sql).to end_with("ON comments.id = exwiw_scope_ids_0.exwiw_scope_id WHERE comments.id > 0")
         expect(sql.scan('comments.id > 0').size).to eq(1)
       end
+
+      it 'projects the raw primary key in the arms even when it is masked' do
+        comments.columns.first.replace_with = 'masked-{id}'
+        sql = compiled('comments')
+
+        # Masked in the outer projection...
+        expect(sql).to start_with("SELECT CASE WHEN comments.id IS NOT NULL THEN ('masked-' || comments.id)")
+        # ...but the arms and the join key stay plain, or the ids would not match.
+        expect(sql.scan('SELECT comments.id FROM comments').size).to eq(2)
+        expect(sql).to end_with('ON comments.id = exwiw_scope_ids_0.exwiw_scope_id')
+      end
     end
 
     context 'with a single arm' do
