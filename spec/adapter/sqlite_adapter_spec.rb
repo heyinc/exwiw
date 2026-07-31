@@ -169,6 +169,25 @@ module Exwiw
           end
         end
 
+        context "select query with a polymorphic multi-arm UNION subquery" do
+          let(:sql) { adapter.compile_ast(build_polymorphic_arm_union_ast) }
+
+          it "materializes each arm's join chain into one derived-table JOIN" do
+            expect(sql).to eq(
+              "SELECT comments.id FROM comments JOIN (" \
+              "SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (" \
+              "SELECT comments.id FROM comments " \
+              "JOIN posts ON comments.commentable_id = posts.id AND comments.commentable_type = 'Post' " \
+              "JOIN shops ON posts.shop_id = shops.id AND shops.tenant_id = 't1' " \
+              "UNION " \
+              "SELECT comments.id FROM comments " \
+              "JOIN pages ON comments.commentable_id = pages.id AND comments.commentable_type = 'Page' " \
+              "JOIN shops ON pages.shop_id = shops.id AND shops.tenant_id = 't1'" \
+              ") AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON comments.id = exwiw_scope_ids_0.exwiw_scope_id"
+            )
+          end
+        end
+
         context "select query with a three-level nested IN subquery (multi-hop forward cascade)" do
           let(:sql) { adapter.compile_ast(build_multi_hop_nested_in_ast) }
 
@@ -705,6 +724,127 @@ module Exwiw
               expect(db.execute(%(SELECT id FROM "order"))).to eq([[2]])
               db.close
             end
+          end
+        end
+      end
+
+      # End-to-end proof, against a real sqlite file, that a polymorphic join
+      # table scoped through several arms extracts every arm's rows AND nothing
+      # from another tenant. Before multi-arm support the same schema produced a
+      # single `commentable_type = 'Post'` filter, so the Page-owned comments
+      # were silently missing from the dump.
+      describe "polymorphic multi-arm scope against a live database" do
+        # Keep the Tempfile referenced: taking only #path lets GC finalize
+        # (unlink) it mid-example.
+        let(:poly_db_file) { Tempfile.new(["poly_arm_source", ".sqlite3"]) }
+        let(:poly_adapter) do
+          described_class.new(
+            ConnectionConfig.new(
+              adapter: adapter_name,
+              database_name: poly_db_file.path,
+              host: nil,
+              port: nil,
+              user: nil,
+              password: nil,
+            ),
+            logger
+          )
+        end
+        let(:dump_target) { Exwiw::DumpTarget.new(ids: ['t1'], scope_column: 'tenant_id') }
+        let(:shops) do
+          TableConfig.from_symbol_keys(
+            name: 'shops', primary_key: 'id', belongs_tos: [],
+            columns: [{ name: 'id' }, { name: 'tenant_id' }]
+          )
+        end
+        let(:posts) do
+          TableConfig.from_symbol_keys(
+            name: 'posts', primary_key: 'id',
+            belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id' }],
+            columns: [{ name: 'id' }, { name: 'shop_id' }]
+          )
+        end
+        let(:pages) do
+          TableConfig.from_symbol_keys(
+            name: 'pages', primary_key: 'id',
+            belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id' }],
+            columns: [{ name: 'id' }, { name: 'shop_id' }]
+          )
+        end
+        let(:comments) do
+          TableConfig.from_symbol_keys(
+            name: 'comments', primary_key: 'id',
+            belongs_tos: [
+              { table_name: 'posts', foreign_key: 'commentable_id',
+                foreign_type: 'commentable_type', type_value: 'Post' },
+              { table_name: 'pages', foreign_key: 'commentable_id',
+                foreign_type: 'commentable_type', type_value: 'Page' },
+            ],
+            columns: [
+              { name: 'id' }, { name: 'commentable_type' },
+              { name: 'commentable_id' }, { name: 'body' }
+            ]
+          )
+        end
+        let(:table_by_name) do
+          [shops, posts, pages, comments].each_with_object({}) { |t, h| h[t.name] = t }
+        end
+        let(:comments_ast) { QueryAstBuilder.run('comments', table_by_name, dump_target, logger) }
+
+        before do
+          db = ::SQLite3::Database.new(poly_db_file.path)
+          db.execute_batch(<<~SQL)
+            CREATE TABLE shops (id INTEGER PRIMARY KEY, tenant_id TEXT);
+            CREATE TABLE posts (id INTEGER PRIMARY KEY, shop_id INTEGER);
+            CREATE TABLE pages (id INTEGER PRIMARY KEY, shop_id INTEGER);
+            CREATE TABLE comments (id INTEGER PRIMARY KEY, commentable_type TEXT, commentable_id INTEGER, body TEXT);
+
+            INSERT INTO shops VALUES (1, 't1'), (2, 't2');
+            INSERT INTO posts VALUES (1, 1), (2, 2);
+            INSERT INTO pages VALUES (10, 1), (11, 2);
+
+            -- in scope, one per arm
+            INSERT INTO comments VALUES (1, 'Post', 1, 'on t1 post');
+            INSERT INTO comments VALUES (2, 'Page', 10, 'on t1 page');
+            -- other tenant, one per arm
+            INSERT INTO comments VALUES (3, 'Post', 2, 'on t2 post');
+            INSERT INTO comments VALUES (4, 'Page', 11, 'on t2 page');
+            -- a Post-typed row whose id collides with an in-scope page id: only
+            -- the type column tells it apart from comment 2.
+            INSERT INTO comments VALUES (5, 'Post', 10, 'dangling');
+          SQL
+          db.close
+        end
+
+        it "extracts every arm's rows" do
+          rows = poly_adapter.execute(comments_ast).to_a
+
+          expect(rows.map(&:first)).to eq([1, 2])
+          expect(rows.map { |row| row[1] }).to eq(%w[Post Page])
+        end
+
+        it "extracts nothing belonging to another tenant" do
+          bodies = poly_adapter.execute(comments_ast).to_a.map(&:last)
+
+          expect(bodies).not_to include('on t2 post')
+          expect(bodies).not_to include('on t2 page')
+        end
+
+        it "does not confuse arms that share a foreign-key value" do
+          expect(poly_adapter.execute(comments_ast).to_a.map(&:first)).not_to include(5)
+        end
+
+        context "the generated DELETE" do
+          before do
+            db = ::SQLite3::Database.new(poly_db_file.path)
+            db.execute_batch(poly_adapter.to_bulk_delete(comments_ast, comments))
+            db.close
+          end
+
+          it "removes exactly the rows the extraction keeps" do
+            db = ::SQLite3::Database.new(poly_db_file.path)
+            expect(db.execute("SELECT id FROM comments ORDER BY id")).to eq([[3], [4], [5]])
+            db.close
           end
         end
       end
