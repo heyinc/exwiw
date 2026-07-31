@@ -505,7 +505,7 @@ module Exwiw
       table = table_by_name.fetch(table_name)
       return :exempt if scope_exempt?(table)
       return :direct if directly_scoped?(table)
-      return :via_path if build_join_clauses_scoped(table).any?
+      return :via_path if scoped_arms(table).any?
       return :referenced_by if @allow_reverse && build_referenced_by_clause(table)
       return :via_scoped_parent if forward_scope_allowed?(table) && build_belongs_to_scoped_clause(table)
 
@@ -539,10 +539,20 @@ module Exwiw
       end
 
       # Reachable via belongs_to: join up to the scoped ancestor (the scope
-      # filter is applied at the terminal join inside build_join_clauses_scoped).
-      join_clauses = build_join_clauses_scoped(table)
-      unless join_clauses.empty?
-        join_clauses.each { |join_clause| ast.join(join_clause) }
+      # filter is applied at the terminal join inside build_scoped_join_clauses).
+      # A polymorphic hop resolves to one arm per concrete target type, so there
+      # may be several such routes; see #scoped_arms.
+      arms = scoped_arms(table)
+      if arms.size == 1 && arms.first.path
+        arm = arms.first
+        build_scoped_join_clauses(arm.path, first_relation: arm.relation).each { |join_clause| ast.join(join_clause) }
+        ast.where(table.filter) if table.filter
+        return ast
+      elsif arms.size >= 1
+        # Several polymorphic arms: INNER JOINing one of them would drop the rows
+        # of every other type, so constrain this table to the UNION of the ids the
+        # arms keep instead.
+        ast.where(polymorphic_arms_clause(table, arms))
         ast.where(table.filter) if table.filter
         return ast
       end
@@ -613,9 +623,28 @@ module Exwiw
     # target-mode walk, the returned path INCLUDES that ancestor: the scope column
     # lives on the ancestor itself (not on a foreign key of the child), so the
     # ancestor must be joined and then filtered.
-    private def find_path_to_scoped(table)
+    #
+    # `first_relation` pins the first hop to one specific belongs_to instead of
+    # letting the BFS pick it. This is how a single polymorphic arm is resolved
+    # (see #scoped_arms): the walk is forced out through that arm's target and
+    # then continues normally. The origin is pre-marked visited so the walk can
+    # never come back through it — exactly what the unseeded form's first pop
+    # does — which also keeps the BFS terminating on a belongs_to cycle.
+    private def find_path_to_scoped(table, first_relation: nil)
       visited = {}
-      queue = [[table.name, [table.name]]]
+      queue =
+        if first_relation
+          first_table = table_by_name[first_relation.table_name]
+          return [] if first_table.nil?
+
+          first_path = [table.name, first_relation.table_name]
+          return first_path if directly_scoped?(first_table)
+
+          visited[table.name] = true
+          [[first_relation.table_name, first_path]]
+        else
+          [[table.name, [table.name]]]
+        end
 
       until queue.empty?
         current_table_name, path = queue.shift
@@ -640,17 +669,223 @@ module Exwiw
       []
     end
 
-    private def build_join_clauses_scoped(table)
-      path_tables = find_path_to_scoped(table)
-      @logger.debug("  Join path from #{table.name} to a scoped table: #{path_tables}")
+    # One resolved route from a table to the scope.
+    #
+    # `relation` is the belongs_to the route leaves through (nil when the plain
+    # BFS picked it). Exactly one of the two other members is set:
+    #   - `path`         — table names from this table up to a directly-scoped
+    #                      ancestor, compiled into a chain of JOINs.
+    #   - `target_query` — the arm target's own (already scoped) extraction
+    #                      query, used when the target carries no scope column
+    #                      and no join path reaches one, but is scoped by other
+    #                      means (referenced_by / reverse_scope / the belongs_to
+    #                      cascade). The arm then probes that query's ids.
+    ScopedArm = Struct.new(:relation, :path, :target_query, keyword_init: true)
 
+    # Every route this table has to the scope.
+    #
+    # A non-polymorphic belongs_to addresses exactly one parent table, so the
+    # single shortest path `find_path_to_scoped` returns is the whole story and
+    # this returns one arm — the historical behavior, byte-for-byte.
+    #
+    # A *polymorphic* hop is different: one (foreign_key, foreign_type) pair
+    # addresses several parent tables — one per `type_value` — and each row
+    # belongs to whichever arm its type column names. Following a single path
+    # therefore extracts only the rows of that one arm and silently drops every
+    # other type. (`active_storage_attachments` is the canonical case: the BFS
+    # settles on one owner table and the query filters `record_type = '<that
+    # one>'`, so attachments of the other 20-odd owner types never make it into
+    # the dump.) So when the shortest path leaves through a polymorphic relation,
+    # resolve every sibling arm of the same (foreign_key, foreign_type) group.
+    #
+    # Note the entry condition: this only ever widens a table that *already*
+    # reaches the scope through a polymorphic join path. A table with no path at
+    # all still returns [] and keeps its existing treatment (referenced_by, the
+    # belongs_to cascade, or :unscopable).
+    #
+    # Arms that reach nothing are **dropped, never widened**: emitting an arm
+    # with no scope predicate would pull in every tenant's rows. So the union is
+    # only ever as broad as the scoped arms allow.
+    private def scoped_arms(table)
+      (@scoped_arms ||= {})[table.name] ||= begin
+        shortest = find_path_to_scoped(table)
+        @logger.debug("  Join path from #{table.name} to a scoped table: #{shortest}")
+
+        if shortest.size < 2
+          []
+        else
+          sibling_arms = polymorphic_sibling_arms(table, shortest[1])
+          if sibling_arms.nil?
+            [ScopedArm.new(relation: nil, path: shortest)]
+          else
+            arms = sibling_arms.filter_map { |relation| resolve_scoped_arm(table, relation) }
+            @logger.debug(
+              "  #{table.name} reaches the scope through #{arms.size} of " \
+              "#{sibling_arms.size} polymorphic '#{sibling_arms.first.foreign_type}' arm(s)."
+            )
+            arms
+          end
+        end
+      end
+    end
+
+    # Resolve one polymorphic arm, or nil when its target cannot be scoped.
+    #
+    # The cheap case is a join path from this table up to a directly-scoped
+    # ancestor. When there is none, the target may still be scoped by one of the
+    # other mechanisms — most commonly a `reverse_scope`d owner table (one
+    # narrowed by the rows that reference it, rather than by a path of its own),
+    # whose children therefore have no path of their own. Rather than dropping
+    # such an arm, reuse the target's own extraction query as the id set; that
+    # query is built by the same recursion every other rescue uses, so it picks
+    # up referenced_by / reverse_scope / the multi-hop cascade for free.
+    private def resolve_scoped_arm(table, relation)
+      path = find_path_to_scoped(table, first_relation: relation)
+      return ScopedArm.new(relation: relation, path: path) if path.size >= 2
+
+      target = table_by_name[relation.table_name]
+      return nil if target.nil? || target.primary_key.nil?
+      # Descending into a table already being resolved would close a cycle.
+      return nil if target.name == table.name || @forward_path.include?(target.name)
+
+      target_query = self.class.run(
+        target.name, table_by_name, dump_target, @logger,
+        allow_reverse: true, forward_path: @forward_path + [table.name]
+      )
+      # An unconstrained target selects every id, i.e. does not scope the arm at
+      # all; dropping the arm is the safe outcome.
+      return nil unless target_query.where_clauses.any? || target_query.join_clauses.any?
+
+      # The target is scoped *through this very table* (the classic shape is
+      # active_storage_blobs, narrowed by referenced_by from
+      # active_storage_attachments, appearing as an `ActiveStorage::Blob` arm of
+      # those same attachments). Adopting the arm would make the two tables
+      # scope each other: this table's query would widen to rows whose ids the
+      # target's query — built without the new arm — never saw, so the target
+      # would no longer cover every row this table keeps (a dangling foreign key
+      # on import). Drop the arm and leave the pair consistent.
+      if QueryAst.reads_table?(target_query, table.name)
+        @logger.debug(
+          "  Skipping #{table.name} polymorphic arm '#{relation.type_value}': " \
+          "#{target.name} is itself scoped through #{table.name}."
+        )
+        return nil
+      end
+
+      ScopedArm.new(relation: relation, target_query: target_query)
+    end
+
+    # The polymorphic belongs_to arms sharing the (foreign_key, foreign_type) of
+    # the relation this table uses to reach `first_hop_table_name`, or nil when
+    # the caller should stay on the single-path behavior: the hop is not
+    # polymorphic, or its group has only one arm, or this table has no usable
+    # primary key to union the arms on.
+    #
+    # The relation is looked up with `belongs_to(table_name)` — the same lookup
+    # #build_scoped_join_clause performs — so the decision is made about exactly
+    # the relation that would be compiled.
+    private def polymorphic_sibling_arms(table, first_hop_table_name)
+      return nil if table.primary_key.nil?
+
+      relation = table.belongs_to(first_hop_table_name)
+      return nil if relation.nil? || !relation.polymorphic?
+
+      arms = table.belongs_tos.select do |other|
+        other.polymorphic? &&
+          other.foreign_key == relation.foreign_key &&
+          other.foreign_type == relation.foreign_type
+      end
+      arms.size > 1 ? arms : nil
+    end
+
+    # Constrain `table` to the UNION of the ids each polymorphic arm's join path
+    # keeps:
+    #
+    #   <table>.<pk> IN (
+    #     SELECT <table>.<pk> FROM <table> <arm 1 joins + scope filter>
+    #     UNION
+    #     SELECT <table>.<pk> FROM <table> <arm 2 joins + scope filter>
+    #     ...
+    #   )
+    #
+    # UNION rather than OR because the arms join *different* tables: OR-ing them
+    # in one WHERE would need the joins to be outer joins, whereas each arm is a
+    # self-contained INNER-JOIN query of exactly the shape a single-arm table
+    # already produces. It also lands on the existing scope id-set machinery —
+    # the adapters lift a `pk IN (UnionSubquery)` clause into a materialized
+    # `SELECT DISTINCT` derived-table JOIN (and the mysql adapter into a session
+    # TEMPORARY TABLE), so the arms are evaluated once instead of per outer row,
+    # and the DISTINCT keeps the row set identical to the IN form.
+    #
+    # The projected primary key is forced to a plain column so any masking
+    # (`replace_with` / `raw_sql`) configured on it cannot corrupt the id
+    # comparison — the same guard the reverse-scope projections use.
+    private def polymorphic_arms_clause(table, arms)
+      pk_column = TableColumn.from_symbol_keys(name: table.primary_key)
+
+      queries = arms.map do |arm|
+        query = QueryAst::Select.new
+        query.from(table.name)
+        query.select([pk_column])
+
+        if arm.path
+          build_scoped_join_clauses(arm.path, first_relation: arm.relation).each { |jc| query.join(jc) }
+        else
+          # The arm's target is scoped without a join path of its own, so probe
+          # its id set instead of joining up to a scoped ancestor. The type
+          # column still has to be constrained: the foreign key alone cannot tell
+          # this arm's rows from another arm's (record_id=1 may be any type).
+          target = table_by_name.fetch(arm.relation.table_name)
+          query.where QueryAst::WhereClause.new(
+            column_name: arm.relation.foreign_key,
+            operator: :in_subquery,
+            value: QueryAst::SelectSubquery.new(
+              query: project_query_to(arm.target_query, target.primary_key)
+            )
+          )
+          query.where QueryAst::WhereClause.new(
+            column_name: arm.relation.foreign_type,
+            operator: :eq,
+            value: [arm.relation.type_value]
+          )
+        end
+
+        query
+      end
+
+      QueryAst::WhereClause.new(
+        column_name: table.primary_key,
+        operator: :in_subquery,
+        value: QueryAst::UnionSubquery.new(queries: queries)
+      )
+    end
+
+    # Reduce an extraction query to a single-column id projection, keeping its
+    # joins and filters. The column is forced to a plain TableColumn so any
+    # masking (`replace_with` / `raw_sql`) configured on it cannot corrupt the id
+    # comparison.
+    private def project_query_to(query, column_name)
+      projected = QueryAst::Select.new
+      projected.from(query.from_table_name)
+      projected.select([TableColumn.from_symbol_keys(name: column_name)])
+      query.join_clauses.each { |join_clause| projected.join(join_clause) }
+      query.where_clauses.each { |where_clause| projected.where(where_clause) }
+      projected
+    end
+
+    # Compile one route (a table-name path from this table up to a directly
+    # scoped ancestor) into JoinClauses. `first_relation` pins the first hop's
+    # belongs_to when the caller resolved it explicitly (a polymorphic arm);
+    # otherwise every hop is looked up by target table name, as before.
+    private def build_scoped_join_clauses(path_tables, first_relation: nil)
       return [] if path_tables.size < 2
 
-      path_tables.each_cons(2).map do |from_table_name, to_table_name|
+      path_tables.each_cons(2).with_index.map do |(from_table_name, to_table_name), idx|
         from_table = table_by_name[from_table_name]
         to_table = table_by_name[to_table_name]
 
-        join_clause = build_scoped_join_clause(from_table, to_table)
+        hop_relation = idx.zero? ? first_relation : nil
+        join_clause = build_scoped_join_clause(from_table, to_table, hop_relation)
 
         # Only the final hop's to_table is directly scoped (the BFS stops there),
         # so the scope filter rides on that join's where_clauses, compiled against
@@ -670,8 +905,15 @@ module Exwiw
     # One belongs_to hop as a JoinClause, with the polymorphic type condition
     # placed on the source table (base_where_clauses) when the hop is polymorphic
     # — mirroring the target-mode loop in build_join_clauses.
-    private def build_scoped_join_clause(from_table, to_table)
-      relation = from_table.belongs_to(to_table.name)
+    #
+    # `relation` may be supplied to pin the hop to one specific belongs_to. The
+    # name-based lookup cannot express "this arm": a table can declare several
+    # relations to the same target (e.g. active_storage_attachments has both the
+    # plain `blob_id` and the polymorphic `record_id`/`ActiveStorage::Blob` edge
+    # to active_storage_blobs) and #belongs_to returns whichever comes first, so
+    # a polymorphic arm resolved by #scoped_arms passes itself in.
+    private def build_scoped_join_clause(from_table, to_table, relation = nil)
+      relation ||= from_table.belongs_to(to_table.name)
 
       join_clause = QueryAst::JoinClause.new(
         base_table_name: from_table.name,

@@ -492,6 +492,25 @@ module Exwiw
           end
         end
 
+        context "compile_ast with a polymorphic multi-arm UnionSubquery" do
+          it "materializes each arm's join chain into one derived-table JOIN" do
+            sql = adapter.compile_ast(build_polymorphic_arm_union_ast)
+            expect(sql).to eq(
+              "SELECT comments.id FROM comments JOIN (" \
+              "SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (" \
+              "SELECT comments.id FROM comments " \
+              "JOIN posts ON comments.commentable_id = posts.id AND comments.commentable_type = 'Post' " \
+              "JOIN shops ON posts.shop_id = shops.id AND shops.tenant_id = 't1' " \
+              "UNION " \
+              "SELECT comments.id FROM comments " \
+              "JOIN pages ON comments.commentable_id = pages.id AND comments.commentable_type = 'Page' " \
+              "JOIN shops ON pages.shop_id = shops.id AND shops.tenant_id = 't1'" \
+              ") AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON comments.id = exwiw_scope_ids_0.exwiw_scope_id"
+            )
+            expect(sql).not_to include("::text")
+          end
+        end
+
         context "compile_ast with a three-level nested IN subquery (multi-hop forward cascade)" do
           it "nests a materialized derived-table JOIN at every level (matching types, no cast)" do
             sql = adapter.compile_ast(build_multi_hop_nested_in_ast)
@@ -742,6 +761,88 @@ module Exwiw
               expect { connection.exec(post_insert) }.not_to raise_error
             end
           end
+        end
+      end
+
+      # End-to-end proof against the live postgres that a polymorphic join table
+      # scoped through several arms extracts every arm's rows and nothing from
+      # another tenant. TEMP tables keep the seed database untouched: they live
+      # on this adapter's connection only (execute / COUNT / DELETE all reuse
+      # it) and vanish when the example's connection is dropped.
+      describe "polymorphic multi-arm scope against a live database" do
+        let(:connection) { adapter.send(:connection) }
+        let(:dump_target) { Exwiw::DumpTarget.new(ids: ['t1'], scope_column: 'tenant_id') }
+        let(:arm_shops) do
+          TableConfig.from_symbol_keys(
+            name: 'arm_shops', primary_key: 'id', belongs_tos: [],
+            columns: [{ name: 'id' }, { name: 'tenant_id' }]
+          )
+        end
+        let(:arm_posts) do
+          TableConfig.from_symbol_keys(
+            name: 'arm_posts', primary_key: 'id',
+            belongs_tos: [{ table_name: 'arm_shops', foreign_key: 'shop_id' }],
+            columns: [{ name: 'id' }, { name: 'shop_id' }]
+          )
+        end
+        let(:arm_pages) do
+          TableConfig.from_symbol_keys(
+            name: 'arm_pages', primary_key: 'id',
+            belongs_tos: [{ table_name: 'arm_shops', foreign_key: 'shop_id' }],
+            columns: [{ name: 'id' }, { name: 'shop_id' }]
+          )
+        end
+        let(:arm_comments) do
+          TableConfig.from_symbol_keys(
+            name: 'arm_comments', primary_key: 'id',
+            belongs_tos: [
+              { table_name: 'arm_posts', foreign_key: 'commentable_id',
+                foreign_type: 'commentable_type', type_value: 'Post' },
+              { table_name: 'arm_pages', foreign_key: 'commentable_id',
+                foreign_type: 'commentable_type', type_value: 'Page' },
+            ],
+            columns: [
+              { name: 'id' }, { name: 'commentable_type' },
+              { name: 'commentable_id' }, { name: 'body' }
+            ]
+          )
+        end
+        let(:table_by_name) do
+          [arm_shops, arm_posts, arm_pages, arm_comments].each_with_object({}) { |t, h| h[t.name] = t }
+        end
+        let(:comments_ast) { QueryAstBuilder.run('arm_comments', table_by_name, dump_target, logger) }
+
+        before do
+          connection.exec(<<~SQL)
+            CREATE TEMP TABLE arm_shops (id int PRIMARY KEY, tenant_id varchar(8));
+            CREATE TEMP TABLE arm_posts (id int PRIMARY KEY, shop_id int);
+            CREATE TEMP TABLE arm_pages (id int PRIMARY KEY, shop_id int);
+            CREATE TEMP TABLE arm_comments (id int PRIMARY KEY, commentable_type varchar(32), commentable_id int, body varchar(64));
+
+            INSERT INTO arm_shops VALUES (1, 't1'), (2, 't2');
+            INSERT INTO arm_posts VALUES (1, 1), (2, 2);
+            INSERT INTO arm_pages VALUES (10, 1), (11, 2);
+            INSERT INTO arm_comments VALUES
+              (1, 'Post', 1, 'on t1 post'),
+              (2, 'Page', 10, 'on t1 page'),
+              (3, 'Post', 2, 'on t2 post'),
+              (4, 'Page', 11, 'on t2 page'),
+              (5, 'Post', 10, 'dangling');
+          SQL
+        end
+
+        it "extracts every arm's rows and nothing from another tenant" do
+          rows = adapter.execute(comments_ast).to_a
+
+          expect(rows.map(&:first)).to eq(["1", "2"])
+          expect(rows.map { |row| row[1] }).to eq(%w[Post Page])
+          expect(rows.map(&:last)).to eq(['on t1 post', 'on t1 page'])
+        end
+
+        it "deletes exactly the rows the extraction keeps" do
+          connection.exec(adapter.to_bulk_delete(comments_ast, arm_comments))
+
+          expect(connection.exec("SELECT id FROM arm_comments ORDER BY id").values).to eq([["3"], ["4"], ["5"]])
         end
       end
     end
