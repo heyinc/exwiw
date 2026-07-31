@@ -348,6 +348,15 @@ module Exwiw
             query = adapter.build_query(mall_banners, dump_target, local_config_by_name)
             expect(query.filter).to eq("mall_id" => { "$in" => %w[m1 m2] })
           end
+
+          it "matches nothing when the genuine parents captured no ids, instead of the reference-parent fallback" do
+            # A dump target that owns no stores (e.g. a just-created tenant):
+            # falling back to `mall_id $in <all malls>` would degenerate into a
+            # near-full scan of items across every scope.
+            adapter.instance_variable_set(:@state, { "malls" => { "_id" => %w[m1 m2] } })
+            query = adapter.build_query(items, dump_target, local_config_by_name)
+            expect(query.filter).to eq("_id" => { "$in" => [] })
+          end
         end
 
         context "when called with an embedded config" do

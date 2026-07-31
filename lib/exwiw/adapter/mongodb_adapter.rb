@@ -476,9 +476,13 @@ module Exwiw
       #   has a genuine parent to anchor on, reference-parent constraints are
       #   dropped entirely.
       #
-      # When NO genuine parent produced ids, the collection is not reachable from
-      # the dump target; fall back to the historical strict-AND of whatever
-      # constraints exist (bounded, preserves prior behavior).
+      # - When the collection DECLARES a genuine parent but none captured any id
+      #   (the dump target legitimately owns no such rows — e.g. a tenant created
+      #   moments ago), it matches nothing: reference-parent constraints do not
+      #   narrow to the target, so falling back to them degenerates into a
+      #   near-full-collection query. Only a collection with NO genuine parent at
+      #   all (reachable only via reference data) keeps the historical strict-AND
+      #   fallback.
       #
       # A belongs_to whose parent produced no ids contributes no constraint: either
       # the parent matched nothing, or it is not dumped here (e.g. an embedded
@@ -518,6 +522,16 @@ module Exwiw
 
           target = genuine.include?(relation.table_name) ? genuine_clauses : reference_clauses
           target << [relation.foreign_key, values]
+        end
+
+        if genuine_clauses.empty? && reference_clauses.any? && config.belongs_tos.any? { |r| genuine.include?(r.table_name) }
+          @logger.warn(
+            "  Collection '#{config.name}' is scoped by genuine parent(s) that captured no ids " \
+            "for this dump target; constraining it to match no rows instead of falling back to " \
+            "reference-parent constraints (which do not narrow to the target and can devolve " \
+            "into a full-collection scan)."
+          )
+          return { config.primary_key => { "$in" => [] } }
         end
 
         filter =

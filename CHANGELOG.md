@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **MongoDB: a collection whose genuine (target-reachable) parents captured no ids now matches nothing instead of falling back to reference-parent constraints.** When the dump target legitimately owns no rows in a scoping chain (e.g. a just-created tenant with no rows in the anchor collection), the previous strict-AND fallback over reference parents — master data dumped in full — degenerated into a near-full-collection query: at best dumping cross-scope rows, at worst timing out or exceeding the BSON size limit on a large collection. Collections with no genuine parent at all (reachable only via reference data) keep the historical fallback.
+
 ## [0.9.15] - 2026-07-31
 
 ### Fixed
