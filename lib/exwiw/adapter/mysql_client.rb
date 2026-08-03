@@ -107,6 +107,9 @@ module Exwiw
         case @driver
         when :mysql2
           res = raw.query(sql, cast: false, as: :array)
+          # mysql2 returns nil for a statement with no result set (SET, DDL, ...).
+          return Result.new([], []) if res.nil?
+
           rows = res.to_a.map { |row| row.map { |value| self.class.stringify_value(value) } }
           Result.new(res.fields, rows)
         when :trilogy
