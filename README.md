@@ -40,7 +40,7 @@ gem install exwiw
 - mysql
 - postgresql
 - sqlite
-- mongodb (experimental, see [MongoDB notes](#mongodb-notes))
+- mongodb (see [MongoDB support](docs/mongodb.md))
 
 For MySQL, exwiw connects through whichever of the `mysql2` or `trilogy` gem is
 available (preferring `mysql2`), so an app on either driver works without any
@@ -129,28 +129,31 @@ exwiw explain \
 
 The `--output-dir`, `--output-format`, `--insert-only`, and `--after-insert-hook` options are dump-specific and rejected when used with `explain`.
 
-#### MongoDB explain verbosity
+MongoDB-specific explain behavior — the configurable verbosity (`queryPlanner` / `executionStats` / `allPlansExecution`) and how scoped collections are shown — is described in [MongoDB support](docs/mongodb.md#exwiw-explain-verbosity).
 
-The mongodb explain runs the server's [explain command](https://www.mongodb.com/docs/manual/reference/command/explain/) at a configurable verbosity. The default, **`queryPlanner`, only plans the query and does not execute it**, so it is safe to point at a production source. Set it with the `EXWIW_MONGODB_EXPLAIN_VERBOSITY` environment variable or the `explain_verbosity:` config key (the env var wins):
+### How each table is narrowed — the six scoping paths
 
-| verbosity | behaviour |
-|---|---|
-| `queryPlanner` (default) | Plans the query only. **The query is not executed** — no documents are scanned. |
-| `executionStats` | **Runs the query** and reports runtime statistics (docs examined, time, etc.). |
-| `allPlansExecution` | Runs the winning plan **and the rejected candidate plans** to gather their stats. |
+Only the dump target itself is filtered by `--ids` directly. Every *other* table must be **scoped** — narrowed to just the rows related to the target — some other way, and a table that cannot be scoped at all is dumped in full (or, in scope-column mode, aborts the run). exwiw resolves each table through the **first** of these six paths that applies:
 
-```bash
-# inspect index usage of the real extraction query (executes it)
-EXWIW_MONGODB_EXPLAIN_VERBOSITY=executionStats exwiw explain \
-  --adapter=mongodb \
-  --uri="mongodb+srv://reader@cluster/app_production" \
-  --schema-dir=exwiw/schema \
-  --target-collection=shops --ids=...
-```
+| # | Path | When it applies | Resulting query shape |
+|---|------|-----------------|-----------------------|
+| 1 | **Direct filter** | The table is the `--target-table` itself; or, in [scope-column mode](#scope-column-mode), it declares a `scope_column` | `WHERE pk IN (ids)` / `WHERE scope_column IN (ids)` |
+| 2 | **`belongs_to` join walk** | The table reaches the target (or a scope-column table) by following its `belongs_to` edges | `WHERE fk IN (ids)` for a single hop; a chain of `JOIN`s for longer paths |
+| 3 | **Referenced-by (automatic reverse)** | No `belongs_to` path of its own, but **exactly one** already-constrained table points at it by foreign key | Constrained to the ids that referencer's own query selects |
+| 4 | **`reverse_scope` (declared reverse)** | Referenced by **many** scoped tables — typically a global-identity table like `users` — and the referencers are enumerated in its config | Constrained to the `UNION` of the enumerated referencers' ids |
+| 5 | **Scoped-parent cascade** | No path or referencer, but a `belongs_to` parent is itself scoped (by any path above) | Constrained to the parent's in-scope primary keys; cascades over multiple hops |
+| 6 | **Full dump** | Nothing relates the table to the target | All rows. In scope-column mode this **aborts** unless the table opts in with `scope_exempt: true` |
 
-`executionStats` and `allPlansExecution` execute the extraction query against the source, so use them deliberately on large/production collections.
+How the paths behave and interact:
 
-> **Scoped collections use a placeholder id.** A non-target collection is scoped by its parents' ids, which a real dump captures while running each parent query — but `explain` runs nothing. So for scoped collections, `explain` fills the real foreign-key filter (e.g. `users` → `{ shop_id: { $in: [...] } }`) with a placeholder id rather than real values. The plan still reflects the real dump: `queryPlanner` chooses an index by the queried *field*, not its value, so whether a scoped extraction does an `IXSCAN` or a `COLLSCAN` is reported correctly. Only the bound *values* are fake. (The target collection uses the real `--ids`; reference collections with no `belongs_to` use the real `{}` full scan.)
+1. **Direct filter.** In the default single-target mode the target is anchored on its primary key (or a custom field via the mongodb-only `--ids-field`). In [scope-column mode](#scope-column-mode) there is no single anchor: every table that declares a `scope_column` is filtered on that column directly.
+2. **`belongs_to` join walk** — the "normal join" path. exwiw BFS-walks `belongs_to` edges to the nearest terminus (the target table, or a directly scoped table in scope-column mode) and compiles the shortest path into `INNER JOIN`s. A [polymorphic `belongs_to`](#polymorphic-belongs_to) hop additionally pins the type column; in scope-column mode a polymorphic hop is resolved for **every** concrete arm and the arms are `UNION`ed (see [Every arm is extracted](#every-arm-is-extracted-scope-column-mode)).
+3. **Referenced-by** handles a table with no outgoing path that is pointed *at* by a constrained child — `active_storage_blobs`, referenced by `active_storage_attachments.blob_id`, is the canonical case (see [ActiveStorage](#activestorage-has_one_attached--has_many_attached)). It is automatic but deliberately narrow: it requires a single, non-polymorphic referencer. With two or more referencers it steps aside (path 6) unless you declare `reverse_scope`.
+4. **[`reverse_scope`](#reverse-scope-for-multi-referencer-tables-reverse_scope)** is the declared, multi-referencer form of path 3: the config enumerates which referencers' (already scoped) queries feed the id set. Unscoped arms are skipped with a warning rather than widening the dump.
+5. **Scoped-parent cascade** rescues satellites: a table whose only link is a `belongs_to` toward a hub that is itself scoped (e.g. via referenced-by or `reverse_scope`) is constrained to that parent's in-scope ids. The cascade recurses hop by hop (each level requires a single unambiguous scopable parent) and stops on `belongs_to` cycles.
+6. **Full dump** is the fallback for a genuinely unrelated table — intended for reference/master data. Single-target mode dumps it in full (with a warning when an ambiguous cascade was the reason); scope-column mode refuses to run instead, unless the table is explicitly marked [`scope_exempt: true`](#scope_exempt-intentional-full-dump) (Rails-managed tables are exempt automatically).
+
+Paths 3–5 all materialize their id set once and probe it via a `JOIN` on a `SELECT DISTINCT` derived table rather than `IN (subquery)` — see [Why a JOIN, not `IN (subquery)`](#why-a-join-not-in-subquery). Scope-column mode classifies every table up front with these same paths (`:direct` / `:via_path` / `:referenced_by` / `:via_scoped_parent` / `:exempt` / `:unscopable` in `QueryAstBuilder#scope_category`) and aborts before extracting anything if any table lands on `:unscopable`. The MongoDB adapter follows the same model, except id sets are captured at runtime while parent collections stream instead of being expressed as SQL subqueries — see [MongoDB support](docs/mongodb.md).
 
 ### Scope-column mode
 
@@ -317,8 +320,8 @@ Notes:
 - **Relative paths in the config (`schema_dir`, `output_dir`, `after_insert_hook`) are resolved relative to the config file's own directory**, not the current working directory. So with the config at the project root, `schema_dir: exwiw/schema` reads naturally, and an absolute `--config=/path/to/exwiw.yml` works no matter where you run from. (CLI path flags remain relative to the current directory — each source resolves relative to where it is written.) Absolute paths are used as-is.
 - Unknown keys are rejected so a typo surfaces immediately.
 - Export-only keys (`output_dir`, `output_format`, `insert_only`, `after_insert_hook`) are ignored when running `explain`, so a single config file can be shared by both subcommands.
-- `explain_verbosity` sets the mongodb `explain` verbosity (`queryPlanner` | `executionStats` | `allPlansExecution`, default `queryPlanner`); the `EXWIW_MONGODB_EXPLAIN_VERBOSITY` env var overrides it. Ignored by the SQL adapters and by `export`. See [`exwiw explain`](#mongodb-explain-verbosity).
-- `mongodb_query_timeout_ms` sets the global, server-enforced query timeout (mongodb only); the `--mongodb-query-timeout-ms` CLI flag overrides it. Ignored by the SQL adapters. See [MongoDB notes](#mongodb-notes).
+- `explain_verbosity` sets the mongodb `explain` verbosity (`queryPlanner` | `executionStats` | `allPlansExecution`, default `queryPlanner`); the `EXWIW_MONGODB_EXPLAIN_VERBOSITY` env var overrides it. Ignored by the SQL adapters and by `export`. See [MongoDB support](docs/mongodb.md#exwiw-explain-verbosity).
+- `mongodb_query_timeout_ms` sets the global, server-enforced query timeout (mongodb only); the `--mongodb-query-timeout-ms` CLI flag overrides it. Ignored by the SQL adapters. See [MongoDB support](docs/mongodb.md).
 
 ### Generator
 
@@ -382,64 +385,13 @@ A `belongs_to` whose target model lives in a *different* database (e.g. a `prima
 
 #### Mongoid applications
 
-For MongoDB applications backed by [Mongoid](https://www.mongodb.com/docs/mongoid/), a separate rake task introspects Mongoid document models and emits `MongodbCollectionConfig` files (the `fields` / `_id` / `embedded_in` shape described under [MongoDB notes](#mongodb-notes)):
+For MongoDB applications backed by [Mongoid](https://www.mongodb.com/docs/mongoid/), a separate rake task introspects Mongoid document models and emits `MongodbCollectionConfig` files:
 
 ```bash
 bundle exec rake exwiw:schema:generate_mongoid
 ```
 
-It is a distinct task and class (`Exwiw::MongoidSchemaGenerator`) from the ActiveRecord generator because the two ORMs expose entirely different metadata. From each model it derives:
-
-- the collection name and the `_id` primary key,
-- `fields` from the declared Mongoid fields (referenced `belongs_to` foreign keys such as `shop_id`, and the `created_at` / `updated_at` columns added by `Mongoid::Timestamps`, are ordinary fields — their BSON `ObjectId` / `Date` values serialize as MongoDB Extended JSON at dump time). For an aliased field (`field :ctry, as: :country`), the generator emits the **stored** document key (`ctry`), never the Ruby accessor (`country`), so masking and projection target the key that actually appears in the document, and additionally records the accessor as `mongoid_field_name` on that field so the short key stays understandable (association aliases such as `shop => shop_id` and the built-in `id => _id` are not field renames and are not annotated),
-- `belongs_tos` from referenced `belongs_to` associations (`{ table_name, foreign_key }`). A referenced `belongs_to` declared on an *embedded* document is dropped (cross-collection refs from inside embedded subdocuments are unsupported — see [MongoDB notes](#mongodb-notes)), but its foreign-key column is still kept as an ordinary field. A `has_and_belongs_to_many` association is also dropped (its foreign keys are stored as an array field, e.g. `tag_ids`, which exwiw cannot follow as a single-valued foreign key), while that `*_ids` array column is kept as an ordinary field,
-- `embedded_in` from `embedded_in` / `embeds_many` / `embeds_one` associations. Each embedded config names its *immediate* parent collection and the document key it lives under (`store_as`, defaulting to the relation name); nested embedding is represented as a chain (`comments` → `embedded_in` `posts`, `posts` → `embedded_in` `users`) rather than a flattened dot-path, matching how the adapter recurses through array and Hash subdocuments. The document key is resolved by locating the parent's `embeds_one` / `embeds_many` that stores this collection. (Mongoid's computed inverse is frequently `nil` when no explicit `inverse_of:` is set, so exwiw matches by the collection the parent's embedding relations store rather than trusting that inverse — this also resolves an STI subclass embedded through a relation declared against its base class.) When the same collection is embedded under several keys in the parent, the path is ambiguous and treated as unrepresentable (see below). A *polymorphic* `embedded_in` (`embedded_in :addressable, polymorphic: true`) has no single embedding parent collection and so cannot be expressed as an `embedded_in` config. A *self-referential / cyclic* embedding (Mongoid's `recursively_embeds_many` / `recursively_embeds_one`) makes a collection both a top-level document and embedded inside documents of its own type; exwiw represents a collection as either top-level or embedded, not both, so it cannot emit an `embedded_in` config that would silently make the collection undumpable. These unrepresentable shapes are handled best-effort by default and abort only in strict mode (see below).
-
-Models in an inheritance hierarchy whose subclasses share the base's collection (Mongoid STI, distinguished by the auto-added `_type` discriminator) collapse into a single config: the generator discovers the subclasses via `descendants` (Mongoid registers only the base class in `Mongoid.models`) and unions every class's `fields` and `belongs_tos` into the collection config, so subclass-only fields and associations are not lost.
-
-Regeneration preserves hand-edited `replace_with`, `filter`, `ignore`, `bulk_insert_chunk_size`, and `query_timeout_ms` values, like the ActiveRecord generator. Indexes are not written to the config — they are introspected from the live database at dump time (see [MongoDB notes](#mongodb-notes)). Polymorphic `belongs_to` is not yet expanded by this task.
-
-By default the task **aborts** when a model uses a construct exwiw cannot represent: a `belongs_to` whose target class can no longer be resolved (a stale relation left behind after its model was removed), or a polymorphic / self-referential-cyclic / ambiguous / unresolvable-parent `embedded_in` (see the cases above).
-
-#### Honoring an explicit `ignore` (the recommended way to keep these out)
-
-When you have reviewed such a construct and decided exwiw should leave it alone, mark it `ignore: true` in its config on disk. The generator **honors an explicit `ignore` and skips re-introspecting it**, so it never aborts the run on something you have already triaged — and your annotation survives regeneration. Two granularities:
-
-- A whole **collection** exwiw cannot represent (e.g. a polymorphic / ambiguous `embedded_in`) — mark the collection config `"ignore": true`. To actually dump/mask it later, define its `embedded_in` config by hand (see [Embedded documents](#embedded-documents)).
-- A single **`belongs_to`** that no longer resolves while the rest of its collection is fine (e.g. a stale relation pointing at a removed model) — mark that entry `"ignore": true`, with no `table_name`. The relation is dropped from extraction (`#reject_ignored_members!`) while its foreign-key column stays an ordinary field, and the collection keeps dumping.
-
-Record *why* with the optional **`ignore_type`** (a free-form tag exwiw never interprets — e.g. `"need_code_fix"` for an application-side bug, `"unsupported"` for a shape exwiw cannot express) and a **`comment`**. Both are user-owned and preserved across regeneration; the generator never emits `ignore_type` itself.
-
-```json
-// orders.json — a stale belongs_to flagged for a code fix; the collection still dumps
-{
-  "name": "orders",
-  "primary_key": "_id",
-  "belongs_to": [
-    { "table_name": "shops", "foreign_key": "shop_id" },
-    {
-      "foreign_key": "coupon_id",
-      "ignore": true,
-      "ignore_type": "need_code_fix",
-      "comment": "FIXME: belongs_to :coupon -> Coupon does not exist (dead relation)."
-    }
-  ],
-  "fields": [ /* ... coupon_id is kept as an ordinary field ... */ ]
-}
-```
-
-#### First bootstrap pass: `EXWIW_SKIP_UNSUPPORTED=1`
-
-For the very first pass against a large app — before any `ignore` annotations exist — set `EXWIW_SKIP_UNSUPPORTED=1` to keep going past *un-annotated* unrepresentable constructs instead of aborting one at a time:
-
-```bash
-EXWIW_SKIP_UNSUPPORTED=1 bundle exec rake exwiw:schema:generate_mongoid
-```
-
-- An unresolvable `belongs_to` is dropped from the collection's `belongs_tos` (its foreign-key column is still kept as an ordinary field, like the polymorphic / HABTM cases) and a warning naming the relation is printed to stderr.
-- An unrepresentable `embedded_in` collection is emitted as a **top-level** config marked `"ignore": true` with a `comment` recording why, and a warning is printed.
-
-Review the stderr warnings, annotate the affected configs (`ignore` / `ignore_type` / `comment`), and subsequent runs complete without the flag because the generator honors those explicit ignores.
+What it derives from each model (fields, `belongs_tos`, `embedded_in`, STI handling), how to annotate constructs exwiw cannot represent with `ignore` / `ignore_type`, and the `EXWIW_SKIP_UNSUPPORTED=1` bootstrap flag are all documented in [MongoDB support](docs/mongodb.md#generating-config-from-mongoid-models).
 
 ### Configuration
 
@@ -717,7 +669,7 @@ Notes:
 - **NULLs are excluded** per arm (`IS NOT NULL`).
 - **Satellites need no config.** A table that `belongs_to` the reverse-scoped table (e.g. `end_users.id → users.id`, or `identities.user_id → users.id`) tightens to the kept ids automatically through the normal cascade — only the reverse-scoped table itself declares `reverse_scope`. The cascade is **multi-hop**, so a table several `belongs_to` hops below the reverse-scoped table (e.g. `end_user_profiles → end_users → users`) also tightens automatically, with no config of its own.
 - Works in both single-target and scope-column mode. In single-target mode there is no scope-column pre-flight (`validate_scope!`), so a satellite the cascade cannot resolve to a single scopable parent (e.g. it `belongs_to` two scopable hubs) is dumped in full with a warning rather than aborting. Polymorphic foreign keys are not eligible as anchors (the named `column` is always a concrete column).
-- **The MongoDB adapter supports `reverse_scope` too** — same config shape and semantics, but the id set is captured at runtime instead of being emitted as a `UNION` subquery. See [`reverse_scope` on collections](#reverse_scope-on-collections) under MongoDB notes.
+- **The MongoDB adapter supports `reverse_scope` too** — same config shape and semantics, but the id set is captured at runtime instead of being emitted as a `UNION` subquery. See [`reverse_scope` on collections](docs/mongodb.md#reverse_scope-on-collections) under MongoDB support.
 
 ### Why a JOIN, not `IN (subquery)`
 
@@ -935,7 +887,7 @@ fake value, across tables, runs, and adapters:
 - Exclusive with the other masking keys on the same column, and invisible to
   `explain`. Also supported by the MongoDB adapter on a `MongodbField` (seed
   names a field of the collection, or `_id`), where it is applied document-side
-  after `replace_with` — see [MongoDB notes](#mongodb-notes).
+  after `replace_with` — see [MongoDB support](docs/mongodb.md#masking).
 
 **Performance**: this is a per-row Ruby transform, measured at ~1.5–1.6µs/row
 per fake column (so ≈ +8s per 5M rows per column; ~+40% against a local sqlite
@@ -946,100 +898,9 @@ unaffected: the transform streams with the dump. See
 [`docs/row-transform-masking-notes.md`](docs/row-transform-masking-notes.md)
 for the benchmark, and `script/bench_row_transform.rb` to measure on your data.
 
-### MongoDB notes
+### MongoDB
 
-The MongoDB adapter is experimental. To use it:
-
-- Add `gem "mongo"` to your Gemfile in addition to `exwiw` (it is not declared as a runtime dependency of the gem).
-- Set `--adapter=mongodb`. `--user` / `DATABASE_PASSWORD` are optional and only needed when your MongoDB requires authentication.
-- `--uri=URI` connects with a full MongoDB connection string (`mongodb://...` or `mongodb+srv://...`) instead of `--host`/`--port`. Use it for managed/replica-set deployments (e.g. Atlas) where TLS, `replicaSet`, `authSource`, and credentials must be expressed — put them in the URI's query string (e.g. `mongodb+srv://user:pass@cluster.example.com/?authSource=admin&tls=true`). The URI takes precedence: when given, `--host`/`--port`/`--user`/`DATABASE_PASSWORD` are ignored, and `--host`/`--port`/`--database` are no longer required on the CLI. `--database`, if still passed, overrides the database in the URI path; otherwise the database from the URI is used. This flag is **mongodb-only** (the SQL adapters shell out to their own client binaries and have no equivalent). The URI may carry credentials, so it is never written to logs.
-- The MongoDB adapter consumes a separate config type, `MongodbCollectionConfig`, with MongoDB-native naming. Use `fields` (instead of the SQL adapters' `columns`), and set `"primary_key": "_id"`. Foreign keys (`shop_id`, `user_id`, ...) stay as ordinary fields.
-- `--ids` values are coerced to the type actually stored in `_id` before filtering: integer-looking ids become `Integer`, 24-char hex ids become `BSON::ObjectId` (Mongoid's default `_id` type — a plain String would never match an ObjectId), and any other string is left as-is.
-- `--target-collection=COLLECTION` is a mongodb-only alias of `--target-table` (use whichever reads better for MongoDB). Specifying both, or using `--target-collection` with a non-mongodb adapter, is an error.
-- `--ids-field=FIELD` matches `--ids` against `FIELD` on the target collection instead of its primary key (e.g. `--target-collection=users --ids=a@example.com --ids-field=email`). Downstream foreign-key propagation still keys off the primary key, so only the target collection's filter changes. Unlike the primary-key path, the supplied ids are **not** type-coerced (the stored type of a custom field is unknown), so pass values matching the field's actual type. This flag is **mongodb-only** (the SQL adapters have no equivalent).
-- Large or embedded-document-heavy dumps are streamed automatically: the adapter reads the collection through a lazy cursor (not `.to_a`) and writes JSONL in chunks, so peak memory is bounded by the chunk size rather than the collection size — no flag to set. Encoding each document to MongoDB Extended JSON is accelerated by an **optional native (C) extension** that compiles automatically on `gem install`; where it cannot compile, exwiw falls back to a byte-identical pure-Ruby encoder. See [`docs/optimization-notes.md`](docs/optimization-notes.md) for the performance investigation and [`docs/optimize-mongodb-export-with-native-ext.md`](docs/optimize-mongodb-export-with-native-ext.md) for the native encoder's design. Benchmark your own data with `script/bench_mongodb_dump.rb`.
-- `--mongodb-query-timeout-ms=N` sets a global, **server-enforced** timeout (in milliseconds) on every query exwiw issues — the find cursor's whole lifetime (the initial batch and every `getMore` the streaming dump walks), the count, and an executing `explain`. Past the deadline the server aborts the operation and exwiw fails the run, so an accidentally heavy or unscoped query cannot keep pinning the (often production) source. It is **mongodb-only** (the SQL adapters shell out to their own clients) and may also be set as `mongodb_query_timeout_ms:` in the config file. The default is no timeout. A single collection can opt to a different limit with a `query_timeout_ms` key in its schema config (a sibling of `bulk_insert_chunk_size`), which overrides the global for that collection's find/count — use it to give a known-large collection more headroom, or to cap one that tends to run away. Hand-edited `query_timeout_ms` values are preserved across schema regeneration.
-- `--parallel-workers=N` (opt-in, `export` only) forks `N` worker processes that decode whole collections in parallel — the dominant cost on a large dump is the driver's BSON→Ruby decode, and each worker decodes its own collections in their natural order, so the output stays **byte-identical** to a serial run (same filenames and content). It needs a dump target (the schedule is built around the scoped DAG) and a `fork`-capable runtime (CRuby on POSIX), falling back to the serial path otherwise; it also accepts `parallel_workers:` in the config file. The speedup needs real cores to spend — it reaches ~2× from 4 workers and saturates there. The default is serial. See [`docs/mongodb-dump-parallelism-2x-notes.md`](docs/mongodb-dump-parallelism-2x-notes.md) for the schedule and measurements.
-- Output is JSON Lines (`insert-{idx}-{collection}.jsonl`) using MongoDB Extended JSON (relaxed mode). Import with `mongoimport`:
-  ```bash
-  mongoimport --db app_dev --collection users --file dump/insert-002-users.jsonl
-  ```
-- A Ruby [after-insert hook](#after-insert-hook) can seed extra documents into named collections with `insert_jsonl(collection, template)`; each targeted collection gets its own `insert-NNN-<collection>.jsonl` file numbered after the dump's own files, so the filename-based `mongoimport` convention above applies to hook output unchanged.
-- The leading `dump/insert-000-schema.js` contains `db.createCollection(...)` and `db.<col>.createIndex(...)` calls for every top-level collection (indexes are introspected from the source via `listIndexes`; the auto-created `_id_` index is skipped). Apply it with mongosh **before** running `mongoimport`:
-  ```bash
-  mongosh "mongodb://localhost/app_dev" dump/insert-000-schema.js
-  ```
-- Unlike SQL adapters, the MongoDB adapter does not emit `delete-*.jsonl` files (drop the database / collection yourself before importing if needed).
-- `replace_with_fake_data` is supported on a field ([full reference](#replace_with_fake_data)) — its `seed` names a field of the same collection (bare or `collection.`-qualified) or the primary key (`_id`), and it derives the same fake value as the SQL adapters for the same seed. It is applied document-side after `replace_with` (so a fake seed reads the already-masked value, matching the SQL adapters where `replace_with` runs in the database first), works inside embedded subdocuments, and is exclusive with `replace_with` on the same field. Add `gem "faker"` to use it (except a config using only `ja` person types). `raw_sql` and `map` are **not** supported (the `MongodbField` schema does not declare them; such keys are rejected on load — see [Unknown keys are rejected](#unknown-keys-are-rejected)); use `replace_with` for template masking.
-- The MongoDB adapter does not support the collection-level `filter` field (it raises `NotImplementedError` if set, since the SQL-string filter cannot be applied to MongoDB).
-
-#### `reverse_scope` on collections
-
-[Multi-referencer reverse scoping](#reverse-scope-for-multi-referencer-tables-reverse_scope) works on `MongodbCollectionConfig` with the same config shape and the same semantics as the SQL adapters — a global-identity collection (say `accounts`) with no `belongs_to` path to the dump target, but referenced by several scoped collections, is constrained to the union of the ids those referencers actually point at instead of being dumped in full:
-
-```json
-{
-  "name": "accounts",
-  "primary_key": "_id",
-  "reverse_scope": {
-    "via": [
-      { "table": "articles", "column": "author_account_id" },
-      { "table": "invitations", "column": "invitee_account_id" }
-    ]
-  },
-  "belongs_tos": [],
-  "fields": [{ "name": "_id" }, { "name": "name" }]
-}
-```
-
-Where the SQL adapters emit a `UNION` subquery, MongoDB has no cross-collection joins, so the adapter captures each arm's column values **at runtime** while the referencer collection streams (the same mechanism that already propagates parent ids to children), then filters the reverse-scoped collection with `{"_id": {"$in": [<union of captured ids>]}}`. Consequences of that runtime capture:
-
-- **Processing order**: a reverse-scoped collection is dumped **after** all of its `via` referencers (an arm's own `belongs_to` back to the reverse-scoped collection is inverted rather than kept — the declaration states ids flow referencer → collection). If the arms form a genuine ordering cycle with the `belongs_to` graph, the export aborts with an error naming the cycle members. SQL processing order is unchanged (its INSERT output must stay loadable in foreign-key order).
-- **Arm hygiene mirrors SQL**: an arm whose referencer is unknown, embedded, not dumped, or itself unscoped (no path to the dump target and no `reverse_scope` of its own) is **skipped with a warning** — an unscoped referencer's ids span every scope and would silently widen the dump. Per-arm `null`/absent foreign keys are dropped (the SQL `IS NOT NULL`), an array-valued foreign-key column contributes one id per element, and captured values keep their native BSON types (an `ObjectId` foreign key matches an `ObjectId` `_id` with no coercion).
-- **Precedence mirrors SQL**: a collection with its own `belongs_to` path to the dump target is scoped by that path; a `reverse_scope` declared on it is ignored.
-- **Satellites need no config**, as in SQL: a collection that `belongs_to` the reverse-scoped collection tightens to the kept ids automatically through the ordinary captured-parent-id mechanism.
-- **`--parallel-workers` falls back to serial** (with a warning) when any collection declares `reverse_scope` — the parallel schedule does not express the referencers-first ordering constraint yet.
-- **`exwiw explain`** shows the real `{"_id": {"$in": [...]}}` filter shape with a placeholder id, like the other runtime-captured scopes.
-
-Masking (`replace_with`) and `fields` behavior on a reverse-scoped collection are unchanged. Like the SQL key, `reverse_scope` is user-owned: `exwiw:mongoid:schema:generate` never emits it and regeneration preserves a hand-added value.
-
-#### Embedded documents
-
-MongoDB models often store one-to-many relationships as embedded subdocument arrays (e.g. `users` documents with a `posts: [...]` field). To mask fields inside embedded subdocuments, declare a separate config with `embedded_in`:
-
-```jsonc
-// e2e/users.json — top-level collection
-{
-  "name": "users",
-  "primary_key": "_id",
-  "belongs_tos": [{ "table_name": "shops", "foreign_key": "shop_id" }],
-  "fields": [
-    { "name": "_id" },
-    { "name": "name", "replace_with": "masked{_id}" },
-    { "name": "shop_id" }
-  ]
-}
-
-// e2e/posts.json — embedded under users.posts
-{
-  "name": "posts",
-  "primary_key": "_id",
-  "embedded_in": { "collection_name": "users", "path": "posts" },
-  "belongs_tos": [],
-  "fields": [
-    { "name": "_id" },
-    { "name": "title", "replace_with": "masked-{_id}" }
-  ]
-}
-```
-
-At runtime:
-
-- `posts` is **not** dumped as its own jsonl file. Its `replace_with` rules are applied to the subdocuments inside the parent `users` document at the path `posts`.
-- `path` accepts dot-separated paths for nested fields (e.g. `"profile.contacts"`).
-- Both arrays of subdocuments and a single Hash subdocument at `path` are supported. Multiple levels of nesting work via embedded chains.
-- Cross-collection references from inside an embedded subdocument (`belongs_tos` on an embedded config) are not supported and raise `ArgumentError` on load.
-- Specifying an embedded config as `--target-table` raises `NotImplementedError`; pass the top-level collection name instead.
+exwiw can export MongoDB databases too (`--adapter=mongodb`): JSONL output importable with `mongoimport`, schema/index DDL for `mongosh`, masking inside embedded documents, `reverse_scope` on collections, Mongoid-based config generation, a server-enforced query timeout, and parallel dump workers. Everything MongoDB-specific is documented in [docs/mongodb.md](docs/mongodb.md).
 
 ## How it works
 
