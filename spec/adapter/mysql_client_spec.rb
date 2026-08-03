@@ -142,6 +142,28 @@ module Exwiw
           # Connection recovered (remaining rows drained), so a follow-up succeeds.
           expect(client.query('SELECT COUNT(*) FROM shops').rows.dig(0, 0).to_i).to be > 0
         end
+
+        # Scope id-set materialization issues SET / CREATE TEMPORARY TABLE /
+        # ALTER TABLE through #query, and mysql2 returns nil for each of them.
+        %i[mysql2 trilogy].each do |driver|
+          it "returns an empty result for statements with no result set, keeping the connection usable (#{driver})" do
+            client = MysqlClient.new(connection_config, driver: driver)
+            sql_mode = client.query('SELECT @@SESSION.sql_mode').rows.dig(0, 0)
+
+            statements = [
+              "SET SESSION sql_mode = '#{sql_mode}'",
+              'CREATE TEMPORARY TABLE exwiw_no_result_set_probe (id INT)',
+              'ALTER TABLE exwiw_no_result_set_probe ADD INDEX `index_id` (id)',
+            ]
+
+            statements.each do |statement|
+              result = client.query(statement)
+              expect([result.fields, result.rows]).to eq([[], []]), "expected #{statement} to yield an empty result"
+            end
+
+            expect(client.query('SELECT COUNT(*) FROM exwiw_no_result_set_probe').rows).to eq([['0']])
+          end
+        end
       end
     end
   end
