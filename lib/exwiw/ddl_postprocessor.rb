@@ -64,6 +64,44 @@ module Exwiw
       sql.gsub(/^[ \t]*CREATE\s+(?:OR\s+REPLACE\s+)?(?:CONSTRAINT\s+)?TRIGGER\b[^;]*;\r?\n?/i, "")
     end
 
+    # A user@host pair as mysqldump writes it. Each side is independently a
+    # backtick-quoted identifier (doubled backticks escape), a single- or
+    # double-quoted string, or a bare word (`root@localhost`). A definer may
+    # also be CURRENT_USER / CURRENT_USER(), which has no @host.
+    DEFINER_ACCOUNT_PART =
+      /(?:`(?:[^`]|``)*`|'(?:[^']|'')*'|"(?:[^"]|"")*"|[A-Za-z0-9_$.%\-]+)/.freeze
+
+    DEFINER_CLAUSE =
+      /DEFINER[ \t]*=[ \t]*
+       (?:CURRENT_USER(?:[ \t]*\([ \t]*\))?
+         |#{DEFINER_ACCOUNT_PART}(?:@#{DEFINER_ACCOUNT_PART})?)/xi.freeze
+
+    # mysqldump wraps every view/trigger/routine/event DEFINER in a versioned
+    # comment, e.g. `/*!50013 DEFINER=`u`@`h` SQL SECURITY DEFINER */` or the
+    # trigger form `/*!50017 DEFINER=`u`@`h`*/`. From MySQL 8.2, creating a
+    # stored object owned by another account needs SET_ANY_DEFINER, which
+    # managed MySQL (RDS / Cloud SQL) does not grant, and a nonexistent
+    # definer leaves an orphan object that later breaks CREATE USER / DROP
+    # USER. Omitting the clause defaults the definer to CURRENT_USER (the
+    # restoring account), sidestepping both.
+    #
+    # Anchoring on the versioned comment, rather than gsubbing DEFINER=
+    # anywhere, keeps this from touching a literal "DEFINER=" inside a
+    # trigger body string or a column COMMENT. SQL SECURITY DEFINER|INVOKER
+    # is preserved — it governs runtime privileges, not who the definer is.
+    DEFINER_COMMENT_RE =
+      %r{/\*!(?<ver>\d{5})[ \t]+#{DEFINER_CLAUSE}[ \t]*
+         (?<rest>(?:(?!\*/).)*?)[ \t]*\*/(?<trail>[ \t]*)}xi.freeze
+
+    def strip_definer_clauses(sql)
+      sql.gsub(DEFINER_COMMENT_RE) do
+        m = Regexp.last_match
+        # Drop the comment whole if DEFINER was its only content (trigger
+        # form); otherwise keep the surviving content (e.g. SQL SECURITY).
+        m[:rest].empty? ? "" : "/*!#{m[:ver]} #{m[:rest]} */#{m[:trail]}"
+      end
+    end
+
     # A bare `CREATE TYPE ... AS ENUM (...)` (as a full-database pg_dump emits,
     # unlike a `--table` dump, which omits enum types) is not idempotent: a
     # second restore raises `duplicate_object`. Wrap each in a DO block that
