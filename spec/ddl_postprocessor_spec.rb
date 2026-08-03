@@ -120,6 +120,98 @@ module Exwiw
       end
     end
 
+    describe '.strip_definer_clauses' do
+      it 'drops the whole comment when it held only the trigger DEFINER' do
+        sql = <<~SQL
+          DELIMITER ;;
+          /*!50003 CREATE*/ /*!50017 DEFINER=`root`@`localhost`*/ /*!50003 TRIGGER `t_bi` BEFORE INSERT ON `t` FOR EACH ROW BEGIN SET NEW.x = 1; END */;;
+          DELIMITER ;
+        SQL
+        out = described_class.strip_definer_clauses(sql)
+        expect(out).not_to include('DEFINER=')
+        expect(out).not_to include('/*!50017')
+        expect(out).to include('/*!50003 CREATE*/ /*!50003 TRIGGER `t_bi` BEFORE INSERT ON `t`')
+      end
+
+      it 'keeps the comment (and its version gate) when SQL SECURITY survives' do
+        sql = "/*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */\n"
+        expect(described_class.strip_definer_clauses(sql)).to eq("/*!50013 SQL SECURITY DEFINER */\n")
+      end
+
+      it 'leaves no trailing whitespace on the rewritten view comment' do
+        sql = <<~SQL
+          /*!50001 CREATE ALGORITHM=UNDEFINED */
+          /*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */
+          /*!50001 VIEW `v` AS select 1 AS `id` */;
+        SQL
+        out = described_class.strip_definer_clauses(sql)
+        expect(out).not_to match(/[ \t]+$/)
+        expect(out).to include('/*!50013 SQL SECURITY DEFINER */')
+      end
+
+      it 'preserves SQL SECURITY INVOKER' do
+        sql = "/*!50013 DEFINER=CURRENT_USER() SQL SECURITY INVOKER */\n"
+        expect(described_class.strip_definer_clauses(sql)).to eq("/*!50013 SQL SECURITY INVOKER */\n")
+      end
+
+      it 'strips a single-quoted account with a wildcard host' do
+        sql = "/*!50017 DEFINER='app'@'10.0.%'*/\n"
+        out = described_class.strip_definer_clauses(sql)
+        expect(out).not_to include('DEFINER=')
+        expect(out).not_to include('/*!50017')
+      end
+
+      it 'strips an unquoted account' do
+        sql = "/*!50017 DEFINER=root@localhost*/\n"
+        out = described_class.strip_definer_clauses(sql)
+        expect(out).not_to include('DEFINER=')
+      end
+
+      it 'strips a backtick-escaped identifier' do
+        sql = "/*!50017 DEFINER=`weird``user`@`10.0.%`*/\n"
+        out = described_class.strip_definer_clauses(sql)
+        expect(out).not_to include('DEFINER=')
+      end
+
+      it 'strips CURRENT_USER without parens' do
+        sql = "/*!50017 DEFINER=CURRENT_USER*/\n"
+        out = described_class.strip_definer_clauses(sql)
+        expect(out).not_to include('DEFINER=')
+      end
+
+      it 'strips a routine DEFINER (/*!50020 ...*/)' do
+        sql = "/*!50020 DEFINER=`root`@`localhost`*/\n"
+        out = described_class.strip_definer_clauses(sql)
+        expect(out).not_to include('DEFINER=')
+        expect(out).not_to include('/*!50020')
+      end
+
+      it 'does NOT touch a literal DEFINER= inside a column COMMENT' do
+        sql = "CREATE TABLE `t` (`c` int COMMENT 'DEFINER=`x`@`y` note') ENGINE=InnoDB;\n"
+        expect(described_class.strip_definer_clauses(sql)).to eq(sql)
+      end
+
+      it 'does NOT touch a literal DEFINER= inside a trigger body string' do
+        sql = "/*!50003 TRIGGER `t` BEFORE INSERT ON `t` FOR EACH ROW BEGIN SET NEW.note = 'DEFINER=`a`@`b`'; END */;;\n"
+        expect(described_class.strip_definer_clauses(sql)).to eq(sql)
+      end
+
+      it 'is a no-op on a dump with no stored objects' do
+        sql = "CREATE TABLE IF NOT EXISTS `t` (`id` int NOT NULL) ENGINE=InnoDB;\n"
+        expect(described_class.strip_definer_clauses(sql)).to eq(sql)
+      end
+
+      it 'is idempotent' do
+        sql = <<~SQL
+          /*!50003 CREATE*/ /*!50017 DEFINER=`root`@`localhost`*/ /*!50003 TRIGGER `t_bi` BEFORE INSERT ON `t` FOR EACH ROW BEGIN SET NEW.x = 1; END */;;
+          /*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */
+        SQL
+        once = described_class.strip_definer_clauses(sql)
+        twice = described_class.strip_definer_clauses(once)
+        expect(twice).to eq(once)
+      end
+    end
+
     describe '.wrap_create_type_enum_in_do_block' do
       it 'wraps a single-line CREATE TYPE ... AS ENUM in an idempotent DO block' do
         sql = "CREATE TYPE public.user_role AS ENUM ('admin', 'member');"

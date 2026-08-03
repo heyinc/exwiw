@@ -250,6 +250,43 @@ module Exwiw
           end
         end
 
+        context "when the dump carries views and triggers" do
+          let(:success_status) { instance_double(Process::Status, success?: true, exitstatus: 0) }
+          let(:dump_output) do
+            <<~SQL
+              CREATE TABLE `shops` (
+                `id` int NOT NULL
+              ) ENGINE=InnoDB;
+              /*!50001 CREATE ALGORITHM=UNDEFINED */
+              /*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */
+              /*!50001 VIEW `v` AS select 1 AS `id` */;
+              DELIMITER ;;
+              /*!50003 CREATE*/ /*!50017 DEFINER=`root`@`localhost`*/ /*!50003 TRIGGER `t_bi` BEFORE INSERT ON `shops` FOR EACH ROW BEGIN SET NEW.id = NEW.id; END */;;
+              DELIMITER ;
+            SQL
+          end
+
+          before do
+            allow(Open3).to receive(:capture3)
+              .with('mysqldump', '--version')
+              .and_return(["mysqldump  Ver 8.0.36 Distrib 8.0.36, for Linux on x86_64\n", '', success_status])
+
+            allow(Open3).to receive(:capture3)
+              .with(hash_including('MYSQL_PWD'), 'mysqldump', any_args)
+              .and_return([dump_output, '', success_status])
+          end
+
+          it "writes no DEFINER clause into insert-000-schema.sql" do
+            tables = [shops_table(adapter_name)]
+            adapter.dump_schema(tables, schema_path)
+
+            sql = File.read(schema_path)
+            expect(sql).not_to include('DEFINER=')
+            expect(sql).to include('SQL SECURITY DEFINER')
+            expect(sql).to include('CREATE TABLE IF NOT EXISTS `shops`')
+          end
+        end
+
         context "when mysqldump --version fails" do
           let(:failure_status) { instance_double(Process::Status, success?: false, exitstatus: 1) }
           let(:success_status) { instance_double(Process::Status, success?: true, exitstatus: 0) }
