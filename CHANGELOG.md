@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.18] - 2026-08-03
+
 ### Fixed
 
 - **mysql: scope id-set materialization now works under the mysql2 driver instead of silently disabling itself.** `MysqlClient#query` read `fields` off the driver's return value, but mysql2 returns `nil` for a statement with no result set — exactly what materialization issues (`SET SESSION sql_mode`, `CREATE TEMPORARY TABLE`, `ALTER TABLE ... ADD INDEX`). The resulting `NoMethodError` was caught by the adapter's own safety net, which logged `Disabling scope id-set materialization` and fell back to inline scope subqueries for the whole run, so every descendant table re-evaluated the same id-set subquery (for a multi-arm `reverse_scope` UNION over a large identity table, the dominant cost of the export) — the 0.9.13 optimization never took effect on mysql2 at all. The trilogy driver always returns a result object, which is why it was unaffected. `#query` now returns an empty `Result` for a statement with no result set, and a spec exercises `SET` / `CREATE TEMPORARY TABLE` / `ALTER TABLE` against a live server on both drivers. Because a materialization failure is invisible in the output — the adapter warns and falls back to inline subqueries, producing identical rows — a new mysql e2e scenario (`e2e/test_with_mysql_scope.sh`, scope-column mode over the two-tenant fixture) additionally asserts that the run materializes an id-set and never logs the fallback. Dumped rows are unchanged; only the number of times the scope subquery is executed is.
