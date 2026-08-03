@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.17] - 2026-08-03
+
 ### Fixed
 
 - **mysql: `insert-000-schema.sql` no longer carries the source server's `DEFINER=` clauses, so a restore into MySQL 8.2+ / 8.4 succeeds without the `SET_ANY_DEFINER` privilege.** `mysqldump` stamps every view and trigger with the account that owns it on the source (e.g. `/*!50013 DEFINER=user@host SQL SECURITY DEFINER */`). From MySQL 8.2, creating a stored object owned by another account needs `SET_ANY_DEFINER` — a privilege managed MySQL (RDS / Cloud SQL) does not grant — so the restore aborted, and a definer account absent on the target left an orphan object that broke later `CREATE USER` / `DROP USER`. A new `DdlPostprocessor.strip_definer_clauses` pass removes the clause (only from the version-gated comment `mysqldump` wraps it in, so a literal `DEFINER=` inside a trigger body or column `COMMENT` is untouched), so each object is created owned by the restoring account — MySQL's default when the clause is omitted. `SQL SECURITY DEFINER` / `INVOKER` is preserved as written; postgresql/sqlite are unaffected. Output for a database with no views or triggers is byte-identical. Note: a schema containing views or triggers is still not *re*-appliable (`--skip-add-drop-table` suppresses the `DROP` that would make it so) — tracked separately.
