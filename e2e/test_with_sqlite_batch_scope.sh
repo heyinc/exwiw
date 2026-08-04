@@ -9,7 +9,7 @@
 # the rows match the unbatched run (e2e/test_with_sqlite_scope.sh), and the export
 # really ran one query per slice, bounded by that slice's literal ids.
 
-set -e
+set -eo pipefail
 
 TARGET_DB_PATH="tmp/scenario-batch-scope-target.sqlite3"
 NEW_DB_PATH="tmp/scenario-batch-scope-new.sqlite3"

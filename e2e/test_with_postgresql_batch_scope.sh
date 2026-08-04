@@ -5,7 +5,7 @@
 # this pins down that the emitted literals stay comparable against both an integer
 # and a uuid primary key.
 
-set -e
+set -eo pipefail
 
 export FROM_DATABASE_NAME="exwiw_scenario_batch_scope_prod_db"
 export TO_DATABASE_NAME="exwiw_scenario_batch_scope_dev_db"
