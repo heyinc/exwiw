@@ -738,6 +738,59 @@ Unlike rails-managed entries, `columns` and `belongs_tos` are retained so the en
 
 If omitted, the adapter default applies: 10,000 rows per statement for the SQL adapters (1,000 documents per chunk for MongoDB). Tables at or below the chunk size still produce a single `INSERT` statement. To force a single statement regardless of table size, set a value larger than the table's row count.
 
+### Batched extraction (`batch_scope`)
+
+A scoped table is normally extracted with one query, whose scope filter sits on the table it joins up to:
+
+```sql
+SELECT activities.* FROM activities
+  JOIN customers ON activities.customer_id = customers.id
+                AND customers.tenant_id IN ('t1')
+```
+
+That is index-driven while the scope keeps few `customers`. Past some number of them the planner's estimate of "probe the foreign-key index once per customer" exceeds its estimate of "scan the table once", and it switches to a **sequential scan of the whole table** — for a result set that is a small fraction of it. On a table of hundreds of millions of rows the scan then exceeds the server's `statement_timeout`, or simply runs for hours. Note that no `filter` on the extracted table fixes this: a predicate that reduces the *output* does not reduce the *work* once the plan is a scan (it may not even change the plan).
+
+`batch_scope` removes the choice instead of arguing with the estimate. It names the scoped table this one reaches — the **batch table** — and exwiw resolves that table's in-scope primary keys once, then extracts one `size`-sized slice of those ids at a time:
+
+```json
+{
+  "name": "activities",
+  "primary_key": "id",
+  "batch_scope": { "table": "customers", "size": 1000 },
+  "belongs_tos": [{ "table_name": "customers", "foreign_key": "customer_id" }],
+  "columns": [{ "name": "id" }, { "name": "customer_id" }]
+}
+```
+
+Each batch runs with that slice's ids in place of the scope filter:
+
+```sql
+SELECT activities.* FROM activities
+  JOIN customers ON activities.customer_id = customers.id
+                AND customers.id IN (/* 1000 ids */)
+```
+
+An explicit id list of that size is exactly estimated and selective, so the foreign-key index is unambiguously the cheapest plan for every batch, and total work is proportional to the rows the table actually keeps rather than to the table's size.
+
+- **The dumped rows are the same as the unbatched query's** (in batch-by-batch order). The slices partition the id set — every id is in exactly one batch — so no row is dropped or emitted twice.
+- **`size` defaults to 1000** ids per batch.
+- The batch table's ids come from **its own extraction query**, so it is narrowed by exactly the filter it would carry in the unbatched query. They are held in memory for the extraction: one scope's worth of primary keys, orders of magnitude smaller than the table being batched.
+- The batch table may be **any number of hops up** the path — a table two hops below it (`activity_orders → activities → customers`) names `customers` too, and the batch ids are applied where the path meets the scope, bounding the whole join chain.
+- A table that **carries the scope column itself** batches by naming itself; each batch then filters `WHERE <pk> IN (<ids>)` directly.
+- `delete-*.sql` is unaffected (it is generated from the unbatched query).
+- `bulk_insert_chunk_size` is independent: batches are query boundaries, chunks are `INSERT` statement boundaries.
+
+**Supported shapes.** A batch key only splits an extraction correctly when *every* row the table keeps is selected through the batch table's scope filter — otherwise a route the batch key does not constrain would keep the same rows in every batch, and the dump would repeat them (a primary-key conflict on import). So `batch_scope` requires [scope-column mode](#scope-column-mode) and one of:
+
+- the table is **directly scoped** (`scope_column`) and names itself, or
+- the table reaches the scope through a **single `belongs_to` join path** (path 2 in [the six scoping paths](#how-each-table-is-narrowed--the-six-scoping-paths)) whose scoped terminus is the named table.
+
+Every other shape — polymorphic arm `UNION`s, `reverse_scope`, referenced-by, the parent cascade, `scope_exempt`, and single `--target-table` mode — is **rejected with an explanation** rather than silently mis-sliced. (In single-target mode the extraction is already anchored on a caller-supplied id list, so batching it means running exwiw once per slice of `--ids`.)
+
+`exwiw explain` prints the id-set query and its `EXPLAIN` after a batched table's own query, since that query is the part of a batched export the table's query does not show. It cannot show a batch's literal id list — `explain` resolves no ids, because it executes no extraction SELECT.
+
+Like `scope_column` / `scope_exempt` / `reverse_scope`, `batch_scope` is user-maintained: never emitted by `schema:generate`, and preserved across regeneration.
+
 ### Filter
 
 Some case, you don't need full records related to target. e.g. dump user access logs only for the last year.
@@ -745,6 +798,7 @@ Some case, you don't need full records related to target. e.g. dump user access 
 
 - injected as it is in table condition(e.g. WHERE on mysql), so you are recommended to clearify table name of column to avoid ambiguity.
 - injected to every where / join clause, so it affects to all tables depends on filterted target-table. it results to data inconsistency.
+- a way to reduce the rows returned, which is **not** necessarily a way to reduce the work: on a large table the engine may keep (or switch to) a full scan and evaluate the filter per row. See [batched extraction](#batched-extraction-batch_scope) when the goal is to bound how much of the table is read.
 
 ### Masking
 
