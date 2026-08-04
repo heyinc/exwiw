@@ -114,6 +114,20 @@ RSpec.describe Exwiw::BatchedExtraction do
     expect(adapter.executed.count { |ast| ast.from_table_name == 'customers' }).to eq(1)
   end
 
+  context 'when the id-set query returns the ids in a different order' do
+    let(:customer_ids) { %w[3 1 2] }
+
+    # The id-set query has no ORDER BY, so the engine may return the ids in any
+    # order; sorting fixes the batch composition, and so the dump, across runs.
+    it 'slices the same batches regardless' do
+      extraction = batched
+      extraction.each { |_row| nil }
+
+      batch_queries = adapter.executed.select { |ast| ast.from_table_name == 'activities' }
+      expect(batch_queries.map { |ast| RecordingAdapter.batch_ids(ast) }).to eq([%w[1 2], %w[3]])
+    end
+  end
+
   it 'logs the plan up front and each batch as it completes' do
     extraction = batched
     extraction.prepare!

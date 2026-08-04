@@ -772,7 +772,7 @@ SELECT activities.* FROM activities
 
 An explicit id list of that size is exactly estimated and selective, so the foreign-key index is unambiguously the cheapest plan for every batch, and total work is proportional to the rows the table actually keeps rather than to the table's size.
 
-- **The dumped rows are the same as the unbatched query's** (in batch-by-batch order). The slices partition the id set — every id is in exactly one batch — so no row is dropped or emitted twice.
+- **The dumped rows are the same as the unbatched query's** (in batch-by-batch order). The slices partition the id set — every id is in exactly one batch — so no row is dropped or emitted twice. The ids are sorted (in exwiw, not with `ORDER BY` — the id-set query stays cheap on the source DB) before slicing, so batch composition, and the dump, is reproducible run to run.
 - **`size` defaults to 1000** ids per batch.
 - The batch table's ids come from **its own extraction query**, so it is narrowed by exactly the filter it would carry in the unbatched query. They are held in memory for the extraction: one scope's worth of primary keys, orders of magnitude smaller than the table being batched.
 - The batch table may be **any number of hops up** the path — a table two hops below it (`activity_orders → activities → customers`) names `customers` too, and the batch ids are applied where the path meets the scope, bounding the whole join chain.

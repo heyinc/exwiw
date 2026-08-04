@@ -1850,6 +1850,80 @@ RSpec.describe Exwiw::QueryAstBuilder do
         )
       end
 
+      # scope_category is :via_path here — the same category as the accepted
+      # single-path shape — but the walk resolves two polymorphic arms, so the
+      # gate must key on the shape, not the category.
+      it 'rejects a table reaching the scope through multiple polymorphic arms' do
+        other = Exwiw::TableConfig.from_symbol_keys(
+          name: 'other_scoped', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }, { name: 'tenant_id' }]
+        )
+        notes = Exwiw::TableConfig.from_symbol_keys(
+          name: 'notes', primary_key: 'id',
+          batch_scope: { table: 'customers' },
+          belongs_tos: [
+            { table_name: 'customers', foreign_key: 'notable_id', foreign_type: 'notable_type', type_value: 'Customer' },
+            { table_name: 'other_scoped', foreign_key: 'notable_id', foreign_type: 'notable_type', type_value: 'Other' },
+          ],
+          columns: [{ name: 'id' }, { name: 'notable_type' }, { name: 'notable_id' }]
+        )
+        all_tables.push(other, notes)
+
+        expect(described_class.scope_category('notes', table_by_name, dump_target, logger)).to eq(:via_path)
+        expect { terminus('notes') }.to raise_error(
+          ArgumentError, /needs a single belongs_to join path/
+        )
+      end
+
+      it 'rejects a table scoped by referenced-by' do
+        hub = Exwiw::TableConfig.from_symbol_keys(
+          name: 'hub', primary_key: 'id', belongs_tos: [],
+          batch_scope: { table: 'customers' },
+          columns: [{ name: 'id' }]
+        )
+        referencer = Exwiw::TableConfig.from_symbol_keys(
+          name: 'referencer', primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'hub', foreign_key: 'hub_id' },
+            { table_name: 'customers', foreign_key: 'customer_id' },
+          ],
+          columns: [{ name: 'id' }, { name: 'hub_id' }, { name: 'customer_id' }]
+        )
+        all_tables.push(hub, referencer)
+
+        expect(described_class.scope_category('hub', table_by_name, dump_target, logger)).to eq(:referenced_by)
+        expect { terminus('hub') }.to raise_error(
+          ArgumentError, /needs a single belongs_to join path/
+        )
+      end
+
+      it 'rejects a table scoped by the parent cascade' do
+        hub = Exwiw::TableConfig.from_symbol_keys(
+          name: 'hub', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }]
+        )
+        referencer = Exwiw::TableConfig.from_symbol_keys(
+          name: 'referencer', primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'hub', foreign_key: 'hub_id' },
+            { table_name: 'customers', foreign_key: 'customer_id' },
+          ],
+          columns: [{ name: 'id' }, { name: 'hub_id' }, { name: 'customer_id' }]
+        )
+        satellite = Exwiw::TableConfig.from_symbol_keys(
+          name: 'satellite', primary_key: 'id',
+          batch_scope: { table: 'customers' },
+          belongs_tos: [{ table_name: 'hub', foreign_key: 'hub_id' }],
+          columns: [{ name: 'id' }, { name: 'hub_id' }]
+        )
+        all_tables.push(hub, referencer, satellite)
+
+        expect(described_class.scope_category('satellite', table_by_name, dump_target, logger)).to eq(:via_scoped_parent)
+        expect { terminus('satellite') }.to raise_error(
+          ArgumentError, /needs a single belongs_to join path/
+        )
+      end
+
       # Kept by the referencers' id UNION, not by a join through the batch table.
       it 'rejects a table scoped by reverse_scope' do
         identities = Exwiw::TableConfig.from_symbol_keys(
