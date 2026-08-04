@@ -779,6 +779,7 @@ An explicit id list of that size is exactly estimated and selective, so the fore
 - A table that **carries the scope column itself** batches by naming itself; each batch then filters `WHERE <pk> IN (<ids>)` directly. Note that the id-set query is then the same scope predicate over the same table, so this shape only avoids the scan when the scope column is indexed (ideally index-only) — the join shape above is the one that genuinely removes the planner's choice.
 - `delete-*.sql` is unaffected (it is generated from the unbatched query).
 - `bulk_insert_chunk_size` is independent: batches are query boundaries, chunks are `INSERT` statement boundaries.
+- With `--output-format=copy`, batching bounds each query's cost but not memory: COPY builds the whole table's body in memory, so all batches' rows are resident at once. Use the default INSERT format (which streams) when the kept rows themselves are huge.
 
 **Supported shapes.** A batch key only splits an extraction correctly when *every* row the table keeps is selected through the batch table's scope filter — otherwise a route the batch key does not constrain would keep the same rows in every batch, and the dump would repeat them (a primary-key conflict on import). So `batch_scope` requires [scope-column mode](#scope-column-mode) and one of:
 

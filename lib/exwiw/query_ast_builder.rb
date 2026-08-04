@@ -666,6 +666,12 @@ module Exwiw
               "running exwiw once per slice of `--ids`."
       end
 
+      if scope_exempt?(table)
+        raise ArgumentError,
+              "#{prefix} cannot apply: the table is exported in full (scope_exempt / rails-managed), " \
+              "so there is no scope filter to slice."
+      end
+
       terminus = table_by_name[batch_scope.table]
       if terminus.nil?
         raise ArgumentError, "#{prefix} names table '#{batch_scope.table}', which is not in the schema."
@@ -686,12 +692,6 @@ module Exwiw
         raise ArgumentError,
               "#{prefix} table '#{terminus.name}' is exported in full (scope_exempt / rails-managed), " \
               "so its id set is not scoped and every batch would reach outside the scope."
-      end
-
-      if scope_exempt?(table)
-        raise ArgumentError,
-              "#{prefix} cannot apply: the table is exported in full (scope_exempt / rails-managed), " \
-              "so there is no scope filter to slice."
       end
 
       if directly_scoped?(table)

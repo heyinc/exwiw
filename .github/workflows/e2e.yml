@@ -79,6 +79,9 @@ jobs:
       - name: Run exwiw (scope-column mode, materialized scope id-sets)
         run: e2e/test_with_mysql_scope.sh
 
+      - name: Run exwiw (batch_scope, one query per scope-id slice)
+        run: e2e/test_with_mysql_batch_scope.sh
+
       - name: Run exwiw (explain)
         run: e2e/test_explain_with_mysql.sh
 
