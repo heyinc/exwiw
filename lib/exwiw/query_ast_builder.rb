@@ -2,8 +2,8 @@
 
 module Exwiw
   class QueryAstBuilder
-    def self.run(table_name, table_by_name, dump_target, logger, allow_reverse: true, forward_path: [])
-      new(table_name, table_by_name, dump_target, logger, allow_reverse: allow_reverse, forward_path: forward_path).run
+    def self.run(table_name, table_by_name, dump_target, logger, allow_reverse: true, forward_path: [], batch_ids: nil)
+      new(table_name, table_by_name, dump_target, logger, allow_reverse: allow_reverse, forward_path: forward_path, batch_ids: batch_ids).run
     end
 
     # Scope-column mode classification for a single table. One of
@@ -49,12 +49,19 @@ module Exwiw
 
     attr_reader :table_name, :table_by_name, :dump_target
 
-    def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true, forward_path: [])
+    def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true, forward_path: [], batch_ids: nil)
       @table_name = table_name
       @table_by_name = table_by_name
       @dump_target = dump_target
       @logger = logger
       @allow_reverse = allow_reverse
+      # One batch's slice of the batch table's in-scope primary keys, set only by
+      # BatchedExtraction (nil for an ordinary build). It replaces the scope
+      # filter on the batch table; see #scope_where_clause. Deliberately not
+      # threaded into the recursive builds below: those compile *other* tables'
+      # queries, and a batched table is required to have no such route
+      # (#batch_scope_terminus!).
+      @batch_ids = batch_ids
       # @forward_path is the chain of tables currently being forward-resolved by
       # the "scope via an indirectly-scoped belongs_to parent" rescue
       # (build_belongs_to_scoped_clause). Each forward hop appends the table it is
@@ -612,11 +619,108 @@ module Exwiw
     end
 
     private def scope_where_clause(table)
+      batch_clause = batch_ids_clause(table)
+      return batch_clause if batch_clause
+
       Exwiw::QueryAst::WhereClause.new(
         column_name: resolved_scope_column(table),
         operator: :eq,
         value: dump_target.ids
       )
+    end
+
+    # In a batched extraction (see {BatchedExtraction}) the batch table's scope
+    # filter is replaced by this batch's slice of its in-scope primary keys, so
+    # the query selects a bounded, index-probeable part of what the unbatched one
+    # would. Every other table's scope filter is untouched — including on a
+    # nested build, which never receives @batch_ids. nil when this build is not
+    # batched, or when `table` is not the batch table.
+    private def batch_ids_clause(table)
+      return nil if @batch_ids.nil?
+
+      batch_scope = table_by_name.fetch(table_name).batch_scope
+      return nil if batch_scope.nil? || batch_scope.table != table.name
+
+      Exwiw::QueryAst::WhereClause.new(
+        column_name: table.primary_key,
+        operator: :eq,
+        value: @batch_ids
+      )
+    end
+
+    # Resolve and validate the *batch table* of a table configured with
+    # `batch_scope` (see {BatchScope}): the scoped table whose in-scope primary
+    # keys slice this table's extraction. Returns its TableConfig, or nil when
+    # this table is not batched.
+    #
+    # The shape is checked strictly because a batch key only splits the
+    # extraction correctly when **every** row the table keeps is selected through
+    # the batch table's scope filter. A route the batch key does not constrain
+    # would keep the same rows in every batch, so the dump would repeat them
+    # (duplicate INSERTs, and a primary-key conflict on import). A single
+    # `belongs_to` join path terminating at the batch table has that property by
+    # construction; the other scoping paths (polymorphic arm UNIONs,
+    # `reverse_scope`, referenced-by, the parent cascade) do not, so they are
+    # rejected with an explanation rather than silently mis-sliced.
+    def batch_scope_terminus!
+      table = table_by_name.fetch(table_name)
+      batch_scope = table.batch_scope
+      return nil if batch_scope.nil?
+
+      prefix = "Table '#{table.name}': batch_scope"
+
+      unless scope_mode?
+        raise ArgumentError,
+              "#{prefix} is supported in scope-column mode only. In single `--target-table` mode the " \
+              "extraction is already anchored on a caller-supplied id list, which can be batched by " \
+              "running exwiw once per slice of `--ids`."
+      end
+
+      terminus = table_by_name[batch_scope.table]
+      if terminus.nil?
+        raise ArgumentError, "#{prefix} names table '#{batch_scope.table}', which is not in the schema."
+      end
+      if terminus.primary_key.nil?
+        raise ArgumentError, "#{prefix} table '#{terminus.name}' has no primary_key to slice the extraction by."
+      end
+      unless directly_scoped?(terminus)
+        raise ArgumentError,
+              "#{prefix} table '#{terminus.name}' does not carry the scope column " \
+              "(#{resolved_scope_column(terminus) || 'none declared'}), so its in-scope ids cannot be " \
+              "resolved. Name the scoped table this table joins up to."
+      end
+
+      if scope_exempt?(table)
+        raise ArgumentError,
+              "#{prefix} cannot apply: the table is exported in full (scope_exempt / rails-managed), " \
+              "so there is no scope filter to slice."
+      end
+
+      if directly_scoped?(table)
+        return terminus if terminus.name == table.name
+
+        raise ArgumentError,
+              "#{prefix} must name '#{table.name}' itself, which carries the scope column and is " \
+              "therefore filtered directly rather than through '#{terminus.name}'."
+      end
+
+      arms = scoped_arms(table)
+      unless arms.size == 1 && arms.first.path
+        raise ArgumentError,
+              "#{prefix} needs a single belongs_to join path from '#{table.name}' to the scope, but it is " \
+              "scoped another way (polymorphic arms / reverse_scope / referenced-by / the parent cascade). " \
+              "Those id sets keep rows by routes a batch of '#{terminus.name}' ids does not constrain, so " \
+              "every batch would re-emit them."
+      end
+
+      path = arms.first.path
+      unless path.last == terminus.name
+        raise ArgumentError,
+              "#{prefix} table '#{terminus.name}' is not where '#{table.name}' reaches the scope " \
+              "(#{path.join(' -> ')}); name that path's scoped table, '#{path.last}'."
+      end
+
+      terminus
     end
 
     # BFS over belongs_tos to the nearest *directly scoped* ancestor. Unlike the

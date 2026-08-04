@@ -47,6 +47,12 @@ module Exwiw
     # schema generators.
     attribute :reverse_scope, Serdes::OptionalType.new(ReverseScope), skip_serializing_if_nil: true
 
+    # `batch_scope` splits this table's extraction into one query per slice of the
+    # scope's id set (see Exwiw::BatchScope and Exwiw::BatchedExtraction), for a
+    # table large enough that a single scoped query degrades into a full scan.
+    # User-configured and never emitted by the schema generators.
+    attribute :batch_scope, Serdes::OptionalType.new(BatchScope), skip_serializing_if_nil: true
+
     def self.from(hash)
       # Reject unknown keys before deserializing: Serdes silently drops them,
       # which would turn a typo'd or unsupported key into a silent no-op (see
@@ -76,6 +82,7 @@ module Exwiw
         hash.delete("belongs_tos")
         hash.delete("columns")
         hash.delete("reverse_scope")
+        hash.delete("batch_scope")
       end
       hash
     end
@@ -171,6 +178,7 @@ module Exwiw
         merged_table.scope_exempt = scope_exempt
         merged_table.scope_column = scope_column
         merged_table.reverse_scope = reverse_scope
+        merged_table.batch_scope = batch_scope
 
         # Structural facts of each belongs_to come from the freshly generated
         # config, but the user-owned `comment`/`ignore`/`ignore_type`/`references`
@@ -222,11 +230,21 @@ module Exwiw
           raise ArgumentError,
                 "Table '#{name}' has type=#{type}; reverse_scope must not be defined."
         end
+        if batch_scope
+          raise ArgumentError,
+                "Table '#{name}' has type=#{type}; batch_scope must not be defined."
+        end
       else
         # An ignore:true table is not extracted, so primary_key is not required
         # (e.g. a composite-primary-key table that exwiw does not support).
         if primary_key.nil? && !ignore
           raise ArgumentError, "Table '#{name}' requires primary_key."
+        end
+
+        if batch_scope && batch_scope.size && batch_scope.size < 1
+          raise ArgumentError,
+                "Table '#{name}': batch_scope size must be a positive number of ids per batch " \
+                "(got #{batch_scope.size})."
         end
 
         columns.each { |column| validate_ruby_side_masking!(column) }
