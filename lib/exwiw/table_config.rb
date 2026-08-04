@@ -48,9 +48,7 @@ module Exwiw
     attribute :reverse_scope, Serdes::OptionalType.new(ReverseScope), skip_serializing_if_nil: true
 
     # `batch_scope` splits this table's extraction into one query per slice of the
-    # scope's id set (see Exwiw::BatchScope and Exwiw::BatchedExtraction), for a
-    # table large enough that a single scoped query degrades into a full scan.
-    # User-configured and never emitted by the schema generators.
+    # scope's id set (see Exwiw::BatchScope). User-configured, never generated.
     attribute :batch_scope, Serdes::OptionalType.new(BatchScope), skip_serializing_if_nil: true
 
     def self.from(hash)

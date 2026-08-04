@@ -1,10 +1,8 @@
 # frozen_string_literal: true
 
 RSpec.describe Exwiw::BatchedExtraction do
-  # Answers each query with canned rows and records what it was asked to run, so
-  # the batching is observable without a database (the sqlite/postgresql e2e
-  # scenarios cover it against a real server). Rows are keyed off the query's
-  # FROM: the id-set query projects customers, each batch selects activities.
+  # Canned rows keyed off the query's FROM, so the batching is observable without
+  # a database (the sqlite/postgresql e2e scenarios cover a real server).
   class RecordingAdapter
     Result = Struct.new(:rows) do
       include Enumerable
@@ -31,8 +29,6 @@ RSpec.describe Exwiw::BatchedExtraction do
       Result.new(rows_for(query_ast))
     end
 
-    # The ids a batch's query is constrained to (the batch table's scope filter,
-    # replaced by that slice of ids).
     def self.batch_ids(query_ast)
       query_ast.join_clauses.last.where_clauses.first.value
     end
@@ -40,8 +36,7 @@ RSpec.describe Exwiw::BatchedExtraction do
     private def rows_for(query_ast)
       return @customer_ids.map { |id| [id] } if query_ast.from_table_name == 'customers'
 
-      # Two activities per customer, so a batch returns more rows than it has ids
-      # and the running total in the log is not just the batch index.
+      # Two per customer, so a batch returns more rows than it has ids.
       self.class.batch_ids(query_ast).flat_map { |id| [["a#{id}", id], ["b#{id}", id]] }
     end
   end
@@ -56,6 +51,7 @@ RSpec.describe Exwiw::BatchedExtraction do
       columns: [{ name: 'id' }, { name: 'tenant_id' }]
     )
   end
+  # Reaches the scope through customers, so customers' in-scope ids slice it.
   let(:activities) do
     Exwiw::TableConfig.from_symbol_keys(
       name: 'activities', primary_key: 'id',

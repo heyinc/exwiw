@@ -1680,8 +1680,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
     let(:logger) { Logger.new(nil) }
     let(:dump_target) { Exwiw::DumpTarget.new(ids: ['t1'], scope_column: 'tenant_id') }
 
-    # customers carries the scope column; activities reaches it through a single
-    # belongs_to hop and is batched by customers' in-scope ids.
+    # customers carries the scope column; activities reaches it through one hop.
     let(:customers) do
       Exwiw::TableConfig.from_symbol_keys(
         name: 'customers', primary_key: 'id', belongs_tos: [],
@@ -1696,8 +1695,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
         columns: [{ name: 'id' }, { name: 'customer_id' }, { name: 'happened_at' }]
       )
     end
-    # A second hop below the batched table: it reaches the scope through
-    # activities -> customers, so the same batch key bounds it too.
+    # One hop further down: activity_orders -> activities -> customers.
     let(:activity_orders) do
       Exwiw::TableConfig.from_symbol_keys(
         name: 'activity_orders', primary_key: 'id',
@@ -1843,9 +1841,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
         )
       end
 
-      # A reverse_scope'd table keeps rows by way of the referencers' id UNION,
-      # not by a join through the batch table, so a batch of customers ids would
-      # not narrow it and every batch would re-emit the same rows.
+      # Kept by the referencers' id UNION, not by a join through the batch table.
       it 'rejects a table scoped by reverse_scope' do
         identities = Exwiw::TableConfig.from_symbol_keys(
           name: 'identities', primary_key: 'id', belongs_tos: [],

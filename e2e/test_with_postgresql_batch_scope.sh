@@ -1,14 +1,9 @@
 #!/bin/bash
 
-# Batched extraction (`batch_scope`) on postgresql: the same scenario as
-# e2e/test_with_sqlite_batch_scope.sh, run against a real postgres server.
-#
-# It is covered on postgresql specifically because that is where the plan flip
-# batching exists to remove is most consequential (a scoped join over a very
-# large table switching to a sequential scan, then hitting statement_timeout),
-# and because the batch ids arrive from libpq as text while the batched column is
-# an integer — so this also pins down that the emitted `IN (...)` literals are
-# comparable against the column, and against a uuid key too.
+# Batched extraction (`batch_scope`) on postgresql: the sqlite scenario against a
+# real server, plus a uuid-keyed pair. libpq returns the batch ids as text, so
+# this pins down that the emitted literals stay comparable against both an integer
+# and a uuid primary key.
 
 set -e
 
@@ -37,8 +32,7 @@ $PSQL_CMD -c "CREATE DATABASE ${FROM_DATABASE_NAME}" > /dev/null
 $PSQL_CMD -c "DROP DATABASE IF EXISTS ${TO_DATABASE_NAME}" > /dev/null
 $PSQL_CMD -c "CREATE DATABASE ${TO_DATABASE_NAME}" > /dev/null
 
-# Source DB: schema + two tenants' rows. `deliveries` is keyed by uuid so the
-# batch ids are quoted text against a non-integer key as well.
+# Source DB: schema + two tenants' rows.
 $PSQL_CMD -d "${FROM_DATABASE_NAME}" > /dev/null <<'SQL'
 CREATE TABLE accounts (id integer PRIMARY KEY, tenant_id integer NOT NULL, name text NOT NULL);
 CREATE TABLE orders (id integer PRIMARY KEY, tenant_id integer NOT NULL, amount integer NOT NULL);
@@ -61,8 +55,8 @@ SQL
 
 # Target DB: left empty on purpose; insert-000-schema.sql provisions it.
 
-# Schema config: orders/shipments carry the scope column; order_lines and
-# shipment_events reach it through their belongs_to and are batched by it.
+# orders/shipments carry the scope column; order_lines and shipment_events reach
+# it through their belongs_to and are batched by it.
 mkdir -p "$SCHEMA_DIR"
 cat > "$SCHEMA_DIR/accounts.json" <<'JSON'
 {
@@ -151,25 +145,20 @@ check_log() {
 }
 
 echo "Verifying batched extraction..."
-# Batched tables hold exactly the rows their unbatched query would keep: tenant
-# 1's orders are 1,2,4 and its shipments are the 1111.../2222... pair. Every id
-# falls in exactly one batch, so nothing is dropped or repeated — a repeat would
-# have aborted the import on the primary key.
+# Tenant 1 owns orders 1,2,4 and the 1111.../2222... shipments. A row emitted
+# twice would have aborted the import on the primary key.
 check_ids order_lines "1,2,4"
 check_ids shipment_events "1,2"
-# Unbatched tables are extracted as usual.
 check_ids accounts "1"
 check_ids orders "1,2,4"
 check_ids shipments "11111111-1111-4111-8111-111111111111,22222222-2222-4222-8222-222222222222"
 
 echo "Verifying the extraction really ran in batches..."
-# Three in-scope orders at two ids per batch: one full slice, one partial.
 check_log "Extracting in 2 batch(es) of up to 2 orders.id value(s) (3 in scope)"
 check_log "Batch 1/2: 2 record(s), 2 so far"
 check_log "Batch 2/2: 1 record(s), 3 so far"
 check_log "JOIN orders ON order_lines.order_id = orders.id AND orders.id IN ('1', '2')"
 check_log "JOIN orders ON order_lines.order_id = orders.id AND orders.id = '4'"
-# The uuid-keyed pair batches the same way, one id at a time.
 check_log "Extracting in 2 batch(es) of up to 1 shipments.id value(s) (2 in scope)"
 check_log "AND shipments.id = '11111111-1111-4111-8111-111111111111'"
 

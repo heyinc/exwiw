@@ -56,11 +56,8 @@ module Exwiw
       @logger = logger
       @allow_reverse = allow_reverse
       # One batch's slice of the batch table's in-scope primary keys, set only by
-      # BatchedExtraction (nil for an ordinary build). It replaces the scope
-      # filter on the batch table; see #scope_where_clause. Deliberately not
-      # threaded into the recursive builds below: those compile *other* tables'
-      # queries, and a batched table is required to have no such route
-      # (#batch_scope_terminus!).
+      # BatchedExtraction. Deliberately not threaded into the recursive builds
+      # below, which compile other tables' queries.
       @batch_ids = batch_ids
       # @forward_path is the chain of tables currently being forward-resolved by
       # the "scope via an indirectly-scoped belongs_to parent" rescue
@@ -629,12 +626,8 @@ module Exwiw
       )
     end
 
-    # In a batched extraction (see {BatchedExtraction}) the batch table's scope
-    # filter is replaced by this batch's slice of its in-scope primary keys, so
-    # the query selects a bounded, index-probeable part of what the unbatched one
-    # would. Every other table's scope filter is untouched — including on a
-    # nested build, which never receives @batch_ids. nil when this build is not
-    # batched, or when `table` is not the batch table.
+    # This batch's ids, in place of the batch table's scope filter. nil when the
+    # build is not batched or `table` is not the batch table.
     private def batch_ids_clause(table)
       return nil if @batch_ids.nil?
 
@@ -648,20 +641,11 @@ module Exwiw
       )
     end
 
-    # Resolve and validate the *batch table* of a table configured with
-    # `batch_scope` (see {BatchScope}): the scoped table whose in-scope primary
-    # keys slice this table's extraction. Returns its TableConfig, or nil when
-    # this table is not batched.
-    #
-    # The shape is checked strictly because a batch key only splits the
-    # extraction correctly when **every** row the table keeps is selected through
-    # the batch table's scope filter. A route the batch key does not constrain
-    # would keep the same rows in every batch, so the dump would repeat them
-    # (duplicate INSERTs, and a primary-key conflict on import). A single
-    # `belongs_to` join path terminating at the batch table has that property by
-    # construction; the other scoping paths (polymorphic arm UNIONs,
-    # `reverse_scope`, referenced-by, the parent cascade) do not, so they are
-    # rejected with an explanation rather than silently mis-sliced.
+    # The scoped table whose in-scope primary keys slice this table's extraction,
+    # or nil when it declares no `batch_scope`. Shapes are accepted only when
+    # every row the table keeps is selected through that table's scope filter —
+    # otherwise the unconstrained route would re-emit the same rows in every
+    # batch — so each rejection below explains itself to the config author.
     def batch_scope_terminus!
       table = table_by_name.fetch(table_name)
       batch_scope = table.batch_scope

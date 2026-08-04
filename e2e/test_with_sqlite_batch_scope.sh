@@ -1,18 +1,13 @@
 #!/bin/bash
 
-# Batched extraction (`batch_scope`): a table reached through a belongs_to hop is
-# extracted as one query per slice of the scope's id set instead of a single
-# scoped query. This reuses the scope-column fixture (plus one more in-scope
-# order, so the slices do not divide evenly) and adds
-# `batch_scope: { table: "orders", size: 2 }` to `order_lines` in a patched copy
-# of the schema dir: tenant 1's three in-scope orders produce a full batch of two
-# ids and a partial batch of one.
+# Batched extraction (`batch_scope`) on sqlite. Reuses the scope-column fixture
+# (plus one more in-scope order, so the slices do not divide evenly) with
+# `batch_scope: { table: "orders", size: 2 }` on `order_lines`, so tenant 1's
+# three in-scope orders produce a full batch and a partial one.
 #
-# What must hold: the extracted rows are exactly what the unbatched run produces
-# (e2e/test_with_sqlite_scope.sh asserts the same expectations), each batch's
-# query is bounded by a literal `orders.id IN (...)` list rather than the scope
-# filter, and no row is emitted twice — a duplicate would abort the import on
-# order_lines' primary key.
+# Batching is invisible in the output when it works, so both halves are asserted:
+# the rows match the unbatched run (e2e/test_with_sqlite_scope.sh), and the export
+# really ran one query per slice, bounded by that slice's literal ids.
 
 set -e
 
@@ -56,8 +51,6 @@ INSERT INTO attachments (id, attachable_type, attachable_id, label) VALUES
 # Fresh DB: schema only.
 sqlite3 "$NEW_DB_PATH" "$SCHEMA_SQL"
 
-# Schema dir: the scope-column fixture with order_lines batched by orders, one
-# order id per batch.
 cp -R e2e/scope-schema "$SCHEMA_DIR"
 ruby -rjson -e '
   path = ARGV[0]
@@ -114,14 +107,10 @@ check_log() {
 }
 
 echo "Verifying batched extraction..."
-# The batched table comes out with exactly the rows the unbatched query keeps:
-# only the lines whose order belongs to tenant 1 (orders 1, 2, 4 -> lines 1,2,4).
-# Every id is covered by exactly one batch, so nothing is dropped or repeated —
-# a repeat would have aborted the import on order_lines' primary key.
+# Only the lines whose order belongs to tenant 1 (orders 1, 2, 4). A row emitted
+# twice would have aborted the import on order_lines' primary key.
 check_count order_lines 3
 check_ids order_lines "1,2,4"
-# Every other table is extracted normally, so the rest of the dump matches the
-# unbatched scope scenario.
 check_count accounts 1
 check_ids accounts "1"
 check_count orders 3
@@ -132,11 +121,9 @@ check_count attachments 3
 check_ids attachments "1,2,5"
 
 echo "Verifying the extraction really ran in batches..."
-# Three in-scope orders at two ids per batch: one full slice, one partial.
 check_log "Extracting in 2 batch(es) of up to 2 orders.id value(s) (3 in scope)"
 check_log "Batch 1/2: 2 record(s), 2 so far"
 check_log "Batch 2/2: 1 record(s), 3 so far"
-# Each batch is bounded by that slice's literal ids, not by the scope filter.
 check_log "JOIN orders ON order_lines.order_id = orders.id AND orders.id IN (1, 2)"
 check_log "JOIN orders ON order_lines.order_id = orders.id AND orders.id = 4"
 # The batch ids come from the scope filter the unbatched query would carry.

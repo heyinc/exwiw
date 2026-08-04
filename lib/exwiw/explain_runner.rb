@@ -73,12 +73,10 @@ module Exwiw
       end
     end
 
-    # For a table extracted in batches (see Exwiw::BatchedExtraction), also show
-    # the query that resolves the ids the extraction is sliced by — the one part
-    # of a batched export that is not visible in the query above. The per-batch
-    # query itself is the query above with the scope filter replaced by a literal
-    # id list, which explain cannot render faithfully: it resolves no ids, since
-    # it executes no extraction SELECT.
+    # A batched export also runs the query resolving the ids it is sliced by,
+    # which the table's own block above does not show. The per-batch query cannot
+    # be rendered faithfully here: explain resolves no ids, so #describe_plan
+    # explains the substitution instead.
     private def explain_batch_scope(adapter, table, table_by_name)
       batched = BatchedExtraction.build(
         adapter: adapter,

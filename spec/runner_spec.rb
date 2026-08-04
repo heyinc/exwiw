@@ -277,10 +277,8 @@ module Exwiw
     end
 
     describe 'with batch_scope' do
-      # Scope-column mode over the seeded fixture: `orders` is filtered by
-      # shop_id directly (shop 1 owns orders 1-6), and `order_items` reaches the
-      # scope through it. order_items is batched by orders' in-scope ids, four
-      # per batch, so the six items come out over two queries.
+      # Scope-column mode over the seeded fixture: shop 1 owns orders 1-6, and
+      # order_items is batched by them four at a time -- six rows, two queries.
       let(:dump_target) { DumpTarget.new(table_name: 'orders', ids: ['1']) }
       let(:log_io) { StringIO.new }
       let(:runner) do
@@ -316,8 +314,7 @@ module Exwiw
         expect(log_io.string).to include('Generated INSERT statement for 6 records')
       end
 
-      # The DELETE is what clears the import target before loading, so it must
-      # cover the whole scope rather than one batch's ids.
+      # The DELETE clears the import target, so it must cover the whole scope.
       it 'generates the delete file from the unbatched query' do
         runner.run
 

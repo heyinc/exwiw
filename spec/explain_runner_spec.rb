@@ -86,9 +86,7 @@ module Exwiw
     end
 
     describe '#run with a batch_scope table' do
-      # Scope-column mode over the seeded fixture (see the Runner spec): orders is
-      # filtered by shop_id, order_items reaches the scope through it and is
-      # batched by orders' in-scope ids.
+      # Scope-column mode over the seeded fixture (see the Runner spec).
       let(:dump_target) { DumpTarget.new(table_name: 'orders', ids: ['1']) }
 
       before do
@@ -104,8 +102,6 @@ module Exwiw
         File.write(File.join(schema_dir, 'order_items.json'), JSON.dump(order_items))
       end
 
-      # A batched export runs a query the table's own block does not show — the
-      # one resolving the ids it is sliced by — so explain prints that too.
       it 'also prints the id-set query and its EXPLAIN' do
         runner.run
 
