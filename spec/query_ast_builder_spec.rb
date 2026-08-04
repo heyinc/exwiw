@@ -1952,6 +1952,20 @@ RSpec.describe Exwiw::QueryAstBuilder do
           described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
         }.to raise_error(ArgumentError, /batch_scope names table 'ghosts'/)
       end
+
+      it 'lets the pre-flight report an unscopable table as unscopable, not as a bad batch_scope' do
+        orphan = Exwiw::TableConfig.from_symbol_keys(
+          name: 'orphan', primary_key: 'id', belongs_tos: [],
+          batch_scope: { table: 'customers' },
+          columns: [{ name: 'id' }]
+        )
+        all_tables << orphan
+
+        expect(described_class.scope_category('orphan', table_by_name, dump_target, logger)).to eq(:unscopable)
+        expect {
+          described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+        }.to raise_error(ArgumentError, /cannot be scoped: orphan.*declare `scope_column/m)
+      end
     end
 
     def sqlite_adapter

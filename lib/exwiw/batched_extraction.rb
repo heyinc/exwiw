@@ -71,12 +71,9 @@ module Exwiw
       self
     end
 
-    # Drained in full rather than streamed: the connection has to be free for the
-    # per-batch queries. One scope's primary keys, so far smaller than the table.
-    # Sorted here, not via ORDER BY — the id-set query stays cheap on the source
-    # DB (no sort node spilling at whale scale), and the array is in memory
-    # anyway. Any total order makes batch composition, and so the dump,
-    # reproducible run to run.
+    # Drained in full (the connection must be free for the batch queries) and
+    # sorted here rather than via ORDER BY, which would push a sort onto the
+    # source DB. Any total order makes the batches reproducible run to run.
     def key_ids
       @key_ids ||= @adapter.execute(key_query_ast).map(&:first).sort
     end

@@ -31,26 +31,29 @@ module Exwiw
     # (both modes) — before any output is written. `tables` is the set of
     # dumpable configs (ignore:true tables are skipped — they are not extracted).
     def self.validate_scope!(tables, table_by_name, dump_target, logger)
+      # Unscopable is reported before a bad batch_scope shape — it is the more
+      # fundamental problem.
+      if scope_mode?(table_by_name, dump_target)
+        unscopable =
+          tables.reject(&:ignore).select do |table|
+            scope_category(table.name, table_by_name, dump_target, logger) == :unscopable
+          end
+
+        if unscopable.any?
+          names = unscopable.map(&:name).sort.join(", ")
+          raise ArgumentError,
+                "scope-column mode: #{unscopable.size} table(s) cannot be scoped: #{names}. " \
+                "For each, declare `scope_column: <column>` on the table to filter it directly, " \
+                "add a belongs_to path to a table that carries the scope column, mark it " \
+                "`scope_exempt: true` to export it in full, or set `ignore: true` to skip it."
+        end
+      end
+
       tables.reject(&:ignore).each do |table|
         next unless table.respond_to?(:batch_scope) && table.batch_scope
 
         new(table.name, table_by_name, dump_target, logger).batch_scope_terminus!
       end
-
-      return unless scope_mode?(table_by_name, dump_target)
-
-      unscopable =
-        tables.reject(&:ignore).select do |table|
-          scope_category(table.name, table_by_name, dump_target, logger) == :unscopable
-        end
-      return if unscopable.empty?
-
-      names = unscopable.map(&:name).sort.join(", ")
-      raise ArgumentError,
-            "scope-column mode: #{unscopable.size} table(s) cannot be scoped: #{names}. " \
-            "For each, declare `scope_column: <column>` on the table to filter it directly, " \
-            "add a belongs_to path to a table that carries the scope column, mark it " \
-            "`scope_exempt: true` to export it in full, or set `ignore: true` to skip it."
     end
 
     attr_reader :table_name, :table_by_name, :dump_target
@@ -706,9 +709,9 @@ module Exwiw
       unless arms.size == 1 && arms.first.path
         raise ArgumentError,
               "#{prefix} needs a single belongs_to join path from '#{table.name}' to the scope, but it is " \
-              "scoped another way (polymorphic arms / reverse_scope / referenced-by / the parent cascade). " \
-              "Those id sets keep rows by routes a batch of '#{terminus.name}' ids does not constrain, so " \
-              "every batch would re-emit them."
+              "scoped another way (polymorphic arms / reverse_scope / referenced-by / the parent cascade), " \
+              "or not scoped at all. Those other id sets keep rows by routes a batch of '#{terminus.name}' " \
+              "ids does not constrain, so every batch would re-emit them."
       end
 
       path = arms.first.path

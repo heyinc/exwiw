@@ -117,8 +117,7 @@ RSpec.describe Exwiw::BatchedExtraction do
   context 'when the id-set query returns the ids in a different order' do
     let(:customer_ids) { %w[3 1 2] }
 
-    # The id-set query has no ORDER BY, so the engine may return the ids in any
-    # order; sorting fixes the batch composition, and so the dump, across runs.
+    # The id-set query has no ORDER BY; the sort fixes batch composition.
     it 'slices the same batches regardless' do
       extraction = batched
       extraction.each { |_row| nil }
