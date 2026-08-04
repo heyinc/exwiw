@@ -322,12 +322,13 @@ module Exwiw
         expect(File.read(delete_file)).to include("SELECT orders.id FROM orders WHERE orders.shop_id = '1'")
       end
 
-      it 'aborts with the offending table when the scope shape cannot be sliced' do
+      it 'aborts pre-flight, before any output, when the scope shape cannot be sliced' do
         order_items = JSON.parse(File.read(File.join(schema_dir, 'order_items.json')))
         order_items['batch_scope'] = { 'table' => 'ghosts' }
         File.write(File.join(schema_dir, 'order_items.json'), JSON.dump(order_items))
 
         expect { runner.run }.to raise_error(ArgumentError, /order_items.*batch_scope names table 'ghosts'/)
+        expect(Dir[File.join(output_dir, '*')]).to be_empty
       end
     end
 

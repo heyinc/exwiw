@@ -776,7 +776,7 @@ An explicit id list of that size is exactly estimated and selective, so the fore
 - **`size` defaults to 1000** ids per batch.
 - The batch table's ids come from **its own extraction query**, so it is narrowed by exactly the filter it would carry in the unbatched query. They are held in memory for the extraction: one scope's worth of primary keys, orders of magnitude smaller than the table being batched.
 - The batch table may be **any number of hops up** the path — a table two hops below it (`activity_orders → activities → customers`) names `customers` too, and the batch ids are applied where the path meets the scope, bounding the whole join chain.
-- A table that **carries the scope column itself** batches by naming itself; each batch then filters `WHERE <pk> IN (<ids>)` directly.
+- A table that **carries the scope column itself** batches by naming itself; each batch then filters `WHERE <pk> IN (<ids>)` directly. Note that the id-set query is then the same scope predicate over the same table, so this shape only avoids the scan when the scope column is indexed (ideally index-only) — the join shape above is the one that genuinely removes the planner's choice.
 - `delete-*.sql` is unaffected (it is generated from the unbatched query).
 - `bulk_insert_chunk_size` is independent: batches are query boundaries, chunks are `INSERT` statement boundaries.
 
@@ -785,7 +785,7 @@ An explicit id list of that size is exactly estimated and selective, so the fore
 - the table is **directly scoped** (`scope_column`) and names itself, or
 - the table reaches the scope through a **single `belongs_to` join path** (path 2 in [the six scoping paths](#how-each-table-is-narrowed--the-six-scoping-paths)) whose scoped terminus is the named table.
 
-Every other shape — polymorphic arm `UNION`s, `reverse_scope`, referenced-by, the parent cascade, `scope_exempt`, and single `--target-table` mode — is **rejected with an explanation** rather than silently mis-sliced. (In single-target mode the extraction is already anchored on a caller-supplied id list, so batching it means running exwiw once per slice of `--ids`.)
+Every other shape — polymorphic arm `UNION`s, `reverse_scope`, referenced-by, the parent cascade, `scope_exempt` (on the batched table *or* the batch table, whose id set would then not be scoped), and single `--target-table` mode — is **rejected with an explanation** rather than silently mis-sliced, before any output is written. (In single-target mode the extraction is already anchored on a caller-supplied id list, so batching it means running exwiw once per slice of `--ids`.)
 
 `exwiw explain` prints the id-set query and its `EXPLAIN` after a batched table's own query, since that query is the part of a batched export the table's query does not show. It cannot show a batch's literal id list — `explain` resolves no ids, because it executes no extraction SELECT.
 

@@ -26,11 +26,17 @@ module Exwiw
       !!(target && target.respond_to?(:scope_column) && target.scope_column)
     end
 
-    # Strict pre-flight for scope-column mode: abort if any extractable table
-    # cannot be scoped, so an unscoped (potentially sensitive) table is never
-    # silently dumped in full. No-op outside scope mode. `tables` is the set of
+    # Strict pre-flight: abort if any extractable table cannot be scoped (scope
+    # mode), or declares a `batch_scope` its scoping shape cannot be sliced by
+    # (both modes) — before any output is written. `tables` is the set of
     # dumpable configs (ignore:true tables are skipped — they are not extracted).
     def self.validate_scope!(tables, table_by_name, dump_target, logger)
+      tables.reject(&:ignore).each do |table|
+        next unless table.respond_to?(:batch_scope) && table.batch_scope
+
+        new(table.name, table_by_name, dump_target, logger).batch_scope_terminus!
+      end
+
       return unless scope_mode?(table_by_name, dump_target)
 
       unscopable =
@@ -672,6 +678,14 @@ module Exwiw
               "#{prefix} table '#{terminus.name}' does not carry the scope column " \
               "(#{resolved_scope_column(terminus) || 'none declared'}), so its in-scope ids cannot be " \
               "resolved. Name the scoped table this table joins up to."
+      end
+      # A scope_exempt terminus carries the column but its own extraction query is
+      # unfiltered, so the batches would substitute every tenant's ids for the
+      # scope filter the unbatched join still applies.
+      if scope_exempt?(terminus)
+        raise ArgumentError,
+              "#{prefix} table '#{terminus.name}' is exported in full (scope_exempt / rails-managed), " \
+              "so its id set is not scoped and every batch would reach outside the scope."
       end
 
       if scope_exempt?(table)

@@ -1841,6 +1841,15 @@ RSpec.describe Exwiw::QueryAstBuilder do
         )
       end
 
+      # A scope_exempt terminus carries the scope column but its own extraction
+      # is unfiltered, so the batches would carry every tenant's ids.
+      it 'rejects a scope_exempt batch table' do
+        customers.scope_exempt = true
+        expect { terminus('activities') }.to raise_error(
+          ArgumentError, /'customers' is exported in full.*every batch would reach outside the scope/
+        )
+      end
+
       # Kept by the referencers' id UNION, not by a join through the batch table.
       it 'rejects a table scoped by reverse_scope' do
         identities = Exwiw::TableConfig.from_symbol_keys(
@@ -1861,6 +1870,13 @@ RSpec.describe Exwiw::QueryAstBuilder do
         expect {
           described_class.new('activities', table_by_name, target, logger).batch_scope_terminus!
         }.to raise_error(ArgumentError, /supported in scope-column mode only/)
+      end
+
+      it 'is checked by the validate_scope! pre-flight, before any extraction' do
+        activities.batch_scope = Exwiw::BatchScope.from('table' => 'ghosts')
+        expect {
+          described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+        }.to raise_error(ArgumentError, /batch_scope names table 'ghosts'/)
       end
     end
 
