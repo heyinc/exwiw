@@ -2,8 +2,8 @@
 
 module Exwiw
   class QueryAstBuilder
-    def self.run(table_name, table_by_name, dump_target, logger, allow_reverse: true, forward_path: [])
-      new(table_name, table_by_name, dump_target, logger, allow_reverse: allow_reverse, forward_path: forward_path).run
+    def self.run(table_name, table_by_name, dump_target, logger, allow_reverse: true, forward_path: [], batch_ids: nil)
+      new(table_name, table_by_name, dump_target, logger, allow_reverse: allow_reverse, forward_path: forward_path, batch_ids: batch_ids).run
     end
 
     # Scope-column mode classification for a single table. One of
@@ -26,35 +26,48 @@ module Exwiw
       !!(target && target.respond_to?(:scope_column) && target.scope_column)
     end
 
-    # Strict pre-flight for scope-column mode: abort if any extractable table
-    # cannot be scoped, so an unscoped (potentially sensitive) table is never
-    # silently dumped in full. No-op outside scope mode. `tables` is the set of
+    # Strict pre-flight: abort if any extractable table cannot be scoped (scope
+    # mode), or declares a `batch_scope` its scoping shape cannot be sliced by
+    # (both modes) — before any output is written. `tables` is the set of
     # dumpable configs (ignore:true tables are skipped — they are not extracted).
     def self.validate_scope!(tables, table_by_name, dump_target, logger)
-      return unless scope_mode?(table_by_name, dump_target)
+      # Unscopable is reported before a bad batch_scope shape — it is the more
+      # fundamental problem.
+      if scope_mode?(table_by_name, dump_target)
+        unscopable =
+          tables.reject(&:ignore).select do |table|
+            scope_category(table.name, table_by_name, dump_target, logger) == :unscopable
+          end
 
-      unscopable =
-        tables.reject(&:ignore).select do |table|
-          scope_category(table.name, table_by_name, dump_target, logger) == :unscopable
+        if unscopable.any?
+          names = unscopable.map(&:name).sort.join(", ")
+          raise ArgumentError,
+                "scope-column mode: #{unscopable.size} table(s) cannot be scoped: #{names}. " \
+                "For each, declare `scope_column: <column>` on the table to filter it directly, " \
+                "add a belongs_to path to a table that carries the scope column, mark it " \
+                "`scope_exempt: true` to export it in full, or set `ignore: true` to skip it."
         end
-      return if unscopable.empty?
+      end
 
-      names = unscopable.map(&:name).sort.join(", ")
-      raise ArgumentError,
-            "scope-column mode: #{unscopable.size} table(s) cannot be scoped: #{names}. " \
-            "For each, declare `scope_column: <column>` on the table to filter it directly, " \
-            "add a belongs_to path to a table that carries the scope column, mark it " \
-            "`scope_exempt: true` to export it in full, or set `ignore: true` to skip it."
+      tables.reject(&:ignore).each do |table|
+        next unless table.respond_to?(:batch_scope) && table.batch_scope
+
+        new(table.name, table_by_name, dump_target, logger).batch_scope_terminus!
+      end
     end
 
     attr_reader :table_name, :table_by_name, :dump_target
 
-    def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true, forward_path: [])
+    def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true, forward_path: [], batch_ids: nil)
       @table_name = table_name
       @table_by_name = table_by_name
       @dump_target = dump_target
       @logger = logger
       @allow_reverse = allow_reverse
+      # One batch's slice of the batch table's in-scope primary keys, set only by
+      # BatchedExtraction. Deliberately not threaded into the recursive builds
+      # below, which compile other tables' queries.
+      @batch_ids = batch_ids
       # @forward_path is the chain of tables currently being forward-resolved by
       # the "scope via an indirectly-scoped belongs_to parent" rescue
       # (build_belongs_to_scoped_clause). Each forward hop appends the table it is
@@ -612,11 +625,103 @@ module Exwiw
     end
 
     private def scope_where_clause(table)
+      batch_clause = batch_ids_clause(table)
+      return batch_clause if batch_clause
+
       Exwiw::QueryAst::WhereClause.new(
         column_name: resolved_scope_column(table),
         operator: :eq,
         value: dump_target.ids
       )
+    end
+
+    # This batch's ids, in place of the batch table's scope filter. nil when the
+    # build is not batched or `table` is not the batch table.
+    private def batch_ids_clause(table)
+      return nil if @batch_ids.nil?
+
+      batch_scope = table_by_name.fetch(table_name).batch_scope
+      return nil if batch_scope.nil? || batch_scope.table != table.name
+
+      Exwiw::QueryAst::WhereClause.new(
+        column_name: table.primary_key,
+        operator: :eq,
+        value: @batch_ids
+      )
+    end
+
+    # The scoped table whose in-scope primary keys slice this table's extraction,
+    # or nil when it declares no `batch_scope`. Shapes are accepted only when
+    # every row the table keeps is selected through that table's scope filter —
+    # otherwise the unconstrained route would re-emit the same rows in every
+    # batch — so each rejection below explains itself to the config author.
+    def batch_scope_terminus!
+      table = table_by_name.fetch(table_name)
+      batch_scope = table.batch_scope
+      return nil if batch_scope.nil?
+
+      prefix = "Table '#{table.name}': batch_scope"
+
+      unless scope_mode?
+        raise ArgumentError,
+              "#{prefix} is supported in scope-column mode only. In single `--target-table` mode the " \
+              "extraction is already anchored on a caller-supplied id list, which can be batched by " \
+              "running exwiw once per slice of `--ids`."
+      end
+
+      if scope_exempt?(table)
+        raise ArgumentError,
+              "#{prefix} cannot apply: the table is exported in full (scope_exempt / rails-managed), " \
+              "so there is no scope filter to slice."
+      end
+
+      terminus = table_by_name[batch_scope.table]
+      if terminus.nil?
+        raise ArgumentError, "#{prefix} names table '#{batch_scope.table}', which is not in the schema."
+      end
+      if terminus.primary_key.nil?
+        raise ArgumentError, "#{prefix} table '#{terminus.name}' has no primary_key to slice the extraction by."
+      end
+      unless directly_scoped?(terminus)
+        raise ArgumentError,
+              "#{prefix} table '#{terminus.name}' does not carry the scope column " \
+              "(#{resolved_scope_column(terminus) || 'none declared'}), so its in-scope ids cannot be " \
+              "resolved. Name the scoped table this table joins up to."
+      end
+      # A scope_exempt terminus carries the column but its own extraction query is
+      # unfiltered, so the batches would substitute every tenant's ids for the
+      # scope filter the unbatched join still applies.
+      if scope_exempt?(terminus)
+        raise ArgumentError,
+              "#{prefix} table '#{terminus.name}' is exported in full (scope_exempt / rails-managed), " \
+              "so its id set is not scoped and every batch would reach outside the scope."
+      end
+
+      if directly_scoped?(table)
+        return terminus if terminus.name == table.name
+
+        raise ArgumentError,
+              "#{prefix} must name '#{table.name}' itself, which carries the scope column and is " \
+              "therefore filtered directly rather than through '#{terminus.name}'."
+      end
+
+      arms = scoped_arms(table)
+      unless arms.size == 1 && arms.first.path
+        raise ArgumentError,
+              "#{prefix} needs a single belongs_to join path from '#{table.name}' to the scope, but it is " \
+              "scoped another way (polymorphic arms / reverse_scope / referenced-by / the parent cascade), " \
+              "or not scoped at all. Those other id sets keep rows by routes a batch of '#{terminus.name}' " \
+              "ids does not constrain, so every batch would re-emit them."
+      end
+
+      path = arms.first.path
+      unless path.last == terminus.name
+        raise ArgumentError,
+              "#{prefix} table '#{terminus.name}' is not where '#{table.name}' reaches the scope " \
+              "(#{path.join(' -> ')}); name that path's scoped table, '#{path.last}'."
+      end
+
+      terminus
     end
 
     # BFS over belongs_tos to the nearest *directly scoped* ancestor. Unlike the

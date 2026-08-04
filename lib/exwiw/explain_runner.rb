@@ -68,7 +68,32 @@ module Exwiw
         @io.puts "-- EXPLAIN:"
         @io.puts explain_text
         @io.puts
+
+        explain_batch_scope(adapter, table, table_by_name)
       end
+    end
+
+    # A batched export also runs the query resolving the ids it is sliced by,
+    # which the table's own block above does not show. The per-batch query cannot
+    # be rendered faithfully here: explain resolves no ids, so #describe_plan
+    # explains the substitution instead.
+    private def explain_batch_scope(adapter, table, table_by_name)
+      batched = BatchedExtraction.build(
+        adapter: adapter,
+        table: table,
+        dump_target: @dump_target,
+        table_by_name: table_by_name,
+        logger: @logger,
+      )
+      return if batched.nil?
+
+      key_query_ast = batched.key_query_ast
+      @io.puts batched.describe_plan
+      @io.puts adapter.describe_query(key_query_ast)
+      @io.puts
+      @io.puts "-- EXPLAIN (batch_scope id set):"
+      @io.puts adapter.explain(key_query_ast, verbosity: @explain_verbosity)
+      @io.puts
     end
 
     private def load_table_config(klass)

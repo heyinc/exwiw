@@ -304,6 +304,16 @@ module Exwiw
           }.to raise_error(ArgumentError, /reverse_scope must not be defined/)
         end
 
+        it 'rejects batch_scope' do
+          expect {
+            TableConfig.from_symbol_keys(
+              name: 'schema_migrations',
+              type: TableConfig::RAILS_MANAGED_SCHEMA_MIGRATIONS,
+              batch_scope: { table: 'customers' },
+            )
+          }.to raise_error(ArgumentError, /batch_scope must not be defined/)
+        end
+
         it 'loads successfully with only name/type/comment' do
           expect {
             TableConfig.from_symbol_keys(
@@ -489,6 +499,64 @@ module Exwiw
           ['customers', 'user_id'],
         ])
         expect(merged.column_names).to eq(['id', 'added'])
+      end
+    end
+
+    describe 'batch_scope' do
+      it 'round-trips the batch table and size through JSON' do
+        config = TableConfig.from_symbol_keys(
+          name: 'activities',
+          primary_key: 'id',
+          batch_scope: { table: 'customers', size: 500 },
+          columns: [{ name: 'id' }, { name: 'customer_id' }],
+        )
+        reloaded = TableConfig.from(JSON.parse(JSON.generate(config.to_hash)))
+        expect(reloaded.batch_scope.table).to eq('customers')
+        expect(reloaded.batch_scope.size).to eq(500)
+        expect(reloaded.batch_scope.batch_size).to eq(500)
+      end
+
+      it 'falls back to the default batch size when size is omitted' do
+        config = TableConfig.from_symbol_keys(
+          name: 'activities', primary_key: 'id',
+          batch_scope: { table: 'customers' },
+          columns: [{ name: 'id' }],
+        )
+        expect(config.batch_scope.size).to be_nil
+        expect(config.batch_scope.batch_size).to eq(BatchScope::DEFAULT_SIZE)
+      end
+
+      it 'omits the key when unset (generator default)' do
+        hash = TableConfig.from_symbol_keys(
+          name: 'orders', primary_key: 'id', columns: [{ name: 'id' }]
+        ).to_hash
+        expect(hash).not_to have_key('batch_scope')
+      end
+
+      it 'preserves the user-set value across merge with a regenerated config' do
+        current = TableConfig.from_symbol_keys(
+          name: 'activities', primary_key: 'id',
+          batch_scope: { table: 'customers', size: 500 },
+          columns: [{ name: 'id' }],
+        )
+        regenerated = TableConfig.from_symbol_keys(
+          name: 'activities', primary_key: 'id',
+          columns: [{ name: 'id' }, { name: 'added' }],
+        )
+        merged = current.merge(regenerated)
+        expect(merged.batch_scope.table).to eq('customers')
+        expect(merged.batch_scope.size).to eq(500)
+        expect(merged.column_names).to eq(['id', 'added'])
+      end
+
+      it 'rejects a non-positive size' do
+        expect {
+          TableConfig.from_symbol_keys(
+            name: 'activities', primary_key: 'id',
+            batch_scope: { table: 'customers', size: 0 },
+            columns: [{ name: 'id' }],
+          )
+        }.to raise_error(ArgumentError, /batch_scope size must be a positive number of ids per batch \(got 0\)/)
       end
     end
 

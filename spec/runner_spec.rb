@@ -276,6 +276,62 @@ module Exwiw
       end
     end
 
+    describe 'with batch_scope' do
+      # Scope-column mode over the seeded fixture: shop 1 owns orders 1-6, and
+      # order_items is batched by them four at a time -- six rows, two queries.
+      let(:dump_target) { DumpTarget.new(table_name: 'orders', ids: ['1']) }
+      let(:log_io) { StringIO.new }
+      let(:runner) do
+        Runner.new(
+          connection_config: connection_config,
+          output_dir: output_dir,
+          schema_dir: schema_dir,
+          dump_target: dump_target,
+          logger: ::Logger.new(log_io),
+        )
+      end
+
+      before do
+        orders = JSON.parse(File.read('e2e/sqlite-schema/orders.json'))
+        orders['scope_column'] = 'shop_id'
+        orders.delete('filter')
+        orders['belongs_tos'] = []
+        File.write(File.join(schema_dir, 'orders.json'), JSON.dump(orders))
+
+        order_items = JSON.parse(File.read('e2e/sqlite-schema/order_items.json'))
+        order_items['batch_scope'] = { 'table' => 'orders', 'size' => 4 }
+        order_items['belongs_tos'] = [{ 'table_name' => 'orders', 'foreign_key' => 'order_id' }]
+        File.write(File.join(schema_dir, 'order_items.json'), JSON.dump(order_items))
+      end
+
+      it 'extracts the batched table over several queries into one insert file' do
+        runner.run
+
+        insert_file = Dir[File.join(output_dir, 'insert-*-order_items.sql')].first
+        expect(insert_file).not_to be_nil
+        expect(File.read(insert_file).scan(/INSERT INTO/).size).to eq(1)
+        expect(log_io.string).to include('Extracting in 2 batch(es) of up to 4 orders.id value(s) (6 in scope)')
+        expect(log_io.string).to include('Generated INSERT statement for 6 records')
+      end
+
+      # The DELETE clears the import target, so it must cover the whole scope.
+      it 'generates the delete file from the unbatched query' do
+        runner.run
+
+        delete_file = Dir[File.join(output_dir, 'delete-*-order_items.sql')].first
+        expect(File.read(delete_file)).to include("SELECT orders.id FROM orders WHERE orders.shop_id = '1'")
+      end
+
+      it 'aborts pre-flight, before any output, when the scope shape cannot be sliced' do
+        order_items = JSON.parse(File.read(File.join(schema_dir, 'order_items.json')))
+        order_items['batch_scope'] = { 'table' => 'ghosts' }
+        File.write(File.join(schema_dir, 'order_items.json'), JSON.dump(order_items))
+
+        expect { runner.run }.to raise_error(ArgumentError, /order_items.*batch_scope names table 'ghosts'/)
+        expect(Dir[File.join(output_dir, '*')]).to be_empty
+      end
+    end
+
     describe 'with after_insert_hook_path (.rb)' do
       let(:hook_path) { 'tmp/runner_spec_after_hook.rb' }
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1', '2']) }

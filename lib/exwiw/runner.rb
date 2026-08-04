@@ -103,8 +103,22 @@ module Exwiw
           # both the INSERT and COPY branches below.
           row_transformer = RowTransformer.build(table)
 
+          # `batch_scope` splits the extraction into one query per slice of the
+          # scope's id set, streaming rows like any adapter result. `query_ast`
+          # stays the unbatched query — the DELETE file and the error message
+          # below describe that one.
+          phase = "resolving the batch_scope id set"
+          batched = BatchedExtraction.build(
+            adapter: adapter,
+            table: table,
+            dump_target: @dump_target,
+            table_by_name: table_by_name,
+            logger: @logger,
+          )
+          batched&.prepare!
+
           phase = "executing extraction query"
-          results = adapter.execute(query_ast)
+          results = batched || adapter.execute(query_ast)
           results = row_transformer.wrap(results) if row_transformer
           insert_idx = (idx + 1).to_s.rjust(3, '0')
 

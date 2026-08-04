@@ -1675,4 +1675,307 @@ RSpec.describe Exwiw::QueryAstBuilder do
       expect(log_output.string).not_to include('dumped in full')
     end
   end
+
+  describe 'batched extraction (batch_scope)' do
+    let(:logger) { Logger.new(nil) }
+    let(:dump_target) { Exwiw::DumpTarget.new(ids: ['t1'], scope_column: 'tenant_id') }
+
+    # customers carries the scope column; activities reaches it through one hop.
+    let(:customers) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'customers', primary_key: 'id', belongs_tos: [],
+        columns: [{ name: 'id' }, { name: 'tenant_id' }]
+      )
+    end
+    let(:activities) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'activities', primary_key: 'id',
+        batch_scope: { table: 'customers', size: 2 },
+        belongs_tos: [{ table_name: 'customers', foreign_key: 'customer_id' }],
+        columns: [{ name: 'id' }, { name: 'customer_id' }, { name: 'happened_at' }]
+      )
+    end
+    # One hop further down: activity_orders -> activities -> customers.
+    let(:activity_orders) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'activity_orders', primary_key: 'id',
+        batch_scope: { table: 'customers' },
+        belongs_tos: [{ table_name: 'activities', foreign_key: 'activity_id' }],
+        columns: [{ name: 'id' }, { name: 'activity_id' }]
+      )
+    end
+    let(:all_tables) { [customers, activities, activity_orders] }
+    let(:table_by_name) { all_tables.each_with_object({}) { |t, h| h[t.name] = t } }
+
+    def build(name, batch_ids: nil)
+      described_class.run(name, table_by_name, dump_target, logger, batch_ids: batch_ids)
+    end
+
+    def terminus(name)
+      described_class.new(name, table_by_name, dump_target, logger).batch_scope_terminus!
+    end
+
+    it 'resolves the batch table a single join path terminates at' do
+      expect(terminus('activities').name).to eq('customers')
+      expect(terminus('activity_orders').name).to eq('customers')
+    end
+
+    it 'is nil for a table without batch_scope' do
+      expect(terminus('customers')).to be_nil
+    end
+
+    it 'replaces the batch table scope filter with that batch ids' do
+      ast = build('activities', batch_ids: %w[7 9])
+      expect(ast.join_clauses.map(&:to_h)).to eq([
+        {
+          base_table_name: 'activities',
+          foreign_key: 'customer_id',
+          join_table_name: 'customers',
+          primary_key: 'id',
+          where_clauses: [{ column_name: 'id', operator: :eq, value: %w[7 9] }],
+        },
+      ])
+    end
+
+    it 'applies the batch ids at the scope terminus of a multi-hop path' do
+      ast = build('activity_orders', batch_ids: %w[7])
+      expect(ast.join_clauses.map { |j| [j.join_table_name, j.where_clauses.map(&:to_h)] }).to eq([
+        ['activities', []],
+        ['customers', [{ column_name: 'id', operator: :eq, value: %w[7] }]],
+      ])
+    end
+
+    it 'keeps the scope filter when the build is not batched' do
+      expect(build('activities').join_clauses.first.where_clauses.map(&:to_h)).to eq([
+        { column_name: 'tenant_id', operator: :eq, value: ['t1'] },
+      ])
+    end
+
+    it 'compiles a batch to a bounded id list in place of the scope filter (sqlite)' do
+      expect(sqlite_adapter.compile_ast(build('activities', batch_ids: %w[7 9]))).to eq(
+        'SELECT activities.id, activities.customer_id, activities.happened_at FROM activities ' \
+        "JOIN customers ON activities.customer_id = customers.id AND customers.id IN ('7', '9')"
+      )
+    end
+
+    it 'keeps a table filter alongside the batch ids' do
+      activities.filter = 'activities.happened_at > 0'
+      expect(sqlite_adapter.compile_ast(build('activities', batch_ids: %w[7]))).to eq(
+        'SELECT activities.id, activities.customer_id, activities.happened_at FROM activities ' \
+        "JOIN customers ON activities.customer_id = customers.id AND customers.id = '7' " \
+        'WHERE activities.happened_at > 0'
+      )
+    end
+
+    it 'leaves another table scope filter untouched while batching this one' do
+      expect(sqlite_adapter.compile_ast(build('customers', batch_ids: %w[7]))).to eq(
+        "SELECT customers.id, customers.tenant_id FROM customers WHERE customers.tenant_id = 't1'"
+      )
+    end
+
+    context 'a directly scoped table' do
+      let(:customers) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'customers', primary_key: 'id', belongs_tos: [],
+          batch_scope: { table: 'customers' },
+          columns: [{ name: 'id' }, { name: 'tenant_id' }]
+        )
+      end
+
+      it 'batches itself by its own primary key' do
+        expect(terminus('customers').name).to eq('customers')
+        expect(sqlite_adapter.compile_ast(build('customers', batch_ids: %w[7 9]))).to eq(
+          "SELECT customers.id, customers.tenant_id FROM customers WHERE customers.id IN ('7', '9')"
+        )
+      end
+    end
+
+    describe 'shapes it refuses to batch' do
+      it 'rejects a table that names an unknown batch table' do
+        activities.batch_scope = Exwiw::BatchScope.from('table' => 'ghosts')
+        expect { terminus('activities') }.to raise_error(
+          ArgumentError, /names table 'ghosts', which is not in the schema/
+        )
+      end
+
+      it 'rejects a batch table that does not carry the scope column' do
+        activities.batch_scope = Exwiw::BatchScope.from('table' => 'activity_orders')
+        expect { terminus('activities') }.to raise_error(
+          ArgumentError, /'activity_orders' does not carry the scope column/
+        )
+      end
+
+      it 'rejects a batch table that is not where this table reaches the scope' do
+        other = Exwiw::TableConfig.from_symbol_keys(
+          name: 'other_scoped', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }, { name: 'tenant_id' }]
+        )
+        all_tables << other
+        activities.batch_scope = Exwiw::BatchScope.from('table' => 'other_scoped')
+        expect { terminus('activities') }.to raise_error(
+          ArgumentError, /is not where 'activities' reaches the scope \(activities -> customers\)/
+        )
+      end
+
+      it 'rejects a directly scoped table that names another table' do
+        other = Exwiw::TableConfig.from_symbol_keys(
+          name: 'other_scoped', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }, { name: 'tenant_id' }]
+        )
+        all_tables << other
+        customers.batch_scope = Exwiw::BatchScope.from('table' => 'other_scoped')
+        expect { terminus('customers') }.to raise_error(
+          ArgumentError, /must name 'customers' itself/
+        )
+      end
+
+      it 'rejects a scope_exempt table' do
+        reference = Exwiw::TableConfig.from_symbol_keys(
+          name: 'reference', primary_key: 'id', belongs_tos: [], scope_exempt: true,
+          batch_scope: { table: 'customers' },
+          columns: [{ name: 'id' }]
+        )
+        all_tables << reference
+        expect { terminus('reference') }.to raise_error(
+          ArgumentError, /the table is exported in full/
+        )
+      end
+
+      # A scope_exempt terminus carries the scope column but its own extraction
+      # is unfiltered, so the batches would carry every tenant's ids.
+      it 'rejects a scope_exempt batch table' do
+        customers.scope_exempt = true
+        expect { terminus('activities') }.to raise_error(
+          ArgumentError, /'customers' is exported in full.*every batch would reach outside the scope/
+        )
+      end
+
+      # scope_category is :via_path here — the same category as the accepted
+      # single-path shape — but the walk resolves two polymorphic arms, so the
+      # gate must key on the shape, not the category.
+      it 'rejects a table reaching the scope through multiple polymorphic arms' do
+        other = Exwiw::TableConfig.from_symbol_keys(
+          name: 'other_scoped', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }, { name: 'tenant_id' }]
+        )
+        notes = Exwiw::TableConfig.from_symbol_keys(
+          name: 'notes', primary_key: 'id',
+          batch_scope: { table: 'customers' },
+          belongs_tos: [
+            { table_name: 'customers', foreign_key: 'notable_id', foreign_type: 'notable_type', type_value: 'Customer' },
+            { table_name: 'other_scoped', foreign_key: 'notable_id', foreign_type: 'notable_type', type_value: 'Other' },
+          ],
+          columns: [{ name: 'id' }, { name: 'notable_type' }, { name: 'notable_id' }]
+        )
+        all_tables.push(other, notes)
+
+        expect(described_class.scope_category('notes', table_by_name, dump_target, logger)).to eq(:via_path)
+        expect { terminus('notes') }.to raise_error(
+          ArgumentError, /needs a single belongs_to join path/
+        )
+      end
+
+      it 'rejects a table scoped by referenced-by' do
+        hub = Exwiw::TableConfig.from_symbol_keys(
+          name: 'hub', primary_key: 'id', belongs_tos: [],
+          batch_scope: { table: 'customers' },
+          columns: [{ name: 'id' }]
+        )
+        referencer = Exwiw::TableConfig.from_symbol_keys(
+          name: 'referencer', primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'hub', foreign_key: 'hub_id' },
+            { table_name: 'customers', foreign_key: 'customer_id' },
+          ],
+          columns: [{ name: 'id' }, { name: 'hub_id' }, { name: 'customer_id' }]
+        )
+        all_tables.push(hub, referencer)
+
+        expect(described_class.scope_category('hub', table_by_name, dump_target, logger)).to eq(:referenced_by)
+        expect { terminus('hub') }.to raise_error(
+          ArgumentError, /needs a single belongs_to join path/
+        )
+      end
+
+      it 'rejects a table scoped by the parent cascade' do
+        hub = Exwiw::TableConfig.from_symbol_keys(
+          name: 'hub', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }]
+        )
+        referencer = Exwiw::TableConfig.from_symbol_keys(
+          name: 'referencer', primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'hub', foreign_key: 'hub_id' },
+            { table_name: 'customers', foreign_key: 'customer_id' },
+          ],
+          columns: [{ name: 'id' }, { name: 'hub_id' }, { name: 'customer_id' }]
+        )
+        satellite = Exwiw::TableConfig.from_symbol_keys(
+          name: 'satellite', primary_key: 'id',
+          batch_scope: { table: 'customers' },
+          belongs_tos: [{ table_name: 'hub', foreign_key: 'hub_id' }],
+          columns: [{ name: 'id' }, { name: 'hub_id' }]
+        )
+        all_tables.push(hub, referencer, satellite)
+
+        expect(described_class.scope_category('satellite', table_by_name, dump_target, logger)).to eq(:via_scoped_parent)
+        expect { terminus('satellite') }.to raise_error(
+          ArgumentError, /needs a single belongs_to join path/
+        )
+      end
+
+      # Kept by the referencers' id UNION, not by a join through the batch table.
+      it 'rejects a table scoped by reverse_scope' do
+        identities = Exwiw::TableConfig.from_symbol_keys(
+          name: 'identities', primary_key: 'id', belongs_tos: [],
+          reverse_scope: { via: [{ table: 'customers', column: 'identity_id' }] },
+          batch_scope: { table: 'customers' },
+          columns: [{ name: 'id' }]
+        )
+        customers.columns << Exwiw::TableColumn.from_symbol_keys(name: 'identity_id')
+        all_tables << identities
+        expect { terminus('identities') }.to raise_error(
+          ArgumentError, /needs a single belongs_to join path/
+        )
+      end
+
+      it 'rejects single-target mode, where there is no scope column' do
+        target = Exwiw::DumpTarget.new(table_name: 'customers', ids: ['1'])
+        expect {
+          described_class.new('activities', table_by_name, target, logger).batch_scope_terminus!
+        }.to raise_error(ArgumentError, /supported in scope-column mode only/)
+      end
+
+      it 'is checked by the validate_scope! pre-flight, before any extraction' do
+        activities.batch_scope = Exwiw::BatchScope.from('table' => 'ghosts')
+        expect {
+          described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+        }.to raise_error(ArgumentError, /batch_scope names table 'ghosts'/)
+      end
+
+      it 'lets the pre-flight report an unscopable table as unscopable, not as a bad batch_scope' do
+        orphan = Exwiw::TableConfig.from_symbol_keys(
+          name: 'orphan', primary_key: 'id', belongs_tos: [],
+          batch_scope: { table: 'customers' },
+          columns: [{ name: 'id' }]
+        )
+        all_tables << orphan
+
+        expect(described_class.scope_category('orphan', table_by_name, dump_target, logger)).to eq(:unscopable)
+        expect {
+          described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+        }.to raise_error(ArgumentError, /cannot be scoped: orphan.*declare `scope_column/m)
+      end
+    end
+
+    def sqlite_adapter
+      Exwiw::Adapter::SqliteAdapter.new(
+        Exwiw::ConnectionConfig.new(
+          adapter: 'sqlite', database_name: 'tmp/test.sqlite3',
+          host: nil, port: nil, user: nil, password: nil
+        ),
+        logger,
+      )
+    end
+  end
 end

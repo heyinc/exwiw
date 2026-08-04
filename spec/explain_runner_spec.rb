@@ -85,6 +85,39 @@ module Exwiw
       end
     end
 
+    describe '#run with a batch_scope table' do
+      # Scope-column mode over the seeded fixture (see the Runner spec).
+      let(:dump_target) { DumpTarget.new(table_name: 'orders', ids: ['1']) }
+
+      before do
+        orders = JSON.parse(File.read('e2e/sqlite-schema/orders.json'))
+        orders['scope_column'] = 'shop_id'
+        orders.delete('filter')
+        orders['belongs_tos'] = []
+        File.write(File.join(schema_dir, 'orders.json'), JSON.dump(orders))
+
+        order_items = JSON.parse(File.read('e2e/sqlite-schema/order_items.json'))
+        order_items['batch_scope'] = { 'table' => 'orders', 'size' => 4 }
+        order_items['belongs_tos'] = [{ 'table_name' => 'orders', 'foreign_key' => 'order_id' }]
+        File.write(File.join(schema_dir, 'order_items.json'), JSON.dump(order_items))
+      end
+
+      it 'also prints the id-set query and its EXPLAIN' do
+        runner.run
+
+        out = io.string
+        expect(out).to include('-- batch_scope: extracted in batches of up to 4 orders.id value(s).')
+        expect(out).to include("SELECT orders.id FROM orders WHERE orders.shop_id = '1'")
+        expect(out).to include('-- EXPLAIN (batch_scope id set):')
+      end
+
+      it 'executes no extraction query' do
+        expect_any_instance_of(Adapter::SqliteAdapter).not_to receive(:execute)
+
+        runner.run
+      end
+    end
+
     describe '#run when --target-table is marked ignore:true' do
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1']) }
 
