@@ -344,6 +344,33 @@ EXWIW_SCHEMA_DIR_PATH=custom_directory bundle exec rake exwiw:schema:generate
 
 As with the CLI, a relative `schema_dir` in the config file is resolved relative to the config file's own directory.
 
+#### Safe mode (masking new columns by default)
+
+A migration that adds a column normally leaves `schema:generate` emitting it unmasked, so it
+starts being exported the moment the config is regenerated — before anyone has judged whether
+it holds personal data. Safe mode inverts that default:
+
+```bash
+EXWIW_NEW_COLUMNS=safe bundle exec rake exwiw:schema:generate
+```
+
+Every column the config does not have yet is emitted **masked** and flagged
+[`needs_mask_decision: true`](#needs_mask_decision). Columns already in the config keep
+whatever they say — the merge that preserves `replace_with` / `comment` / `ignore` preserves a
+resolved decision too — so in practice this marks exactly the columns a migration just added.
+Without the environment variable the generated config is unchanged.
+
+The default mask depends on the column type: `masked-{primary key}` for text (with
+`@example.com` appended when the column name mentions mail, so it stays a valid address),
+`0` for numbers, `false` for booleans, a fixed date/timestamp, and `{}` for JSON. Two kinds of
+column are flagged but deliberately **not** masked:
+
+- **The primary key, and the foreign keys/types the `belongs_tos` join on.** Masking them
+  would break the joins and leave the dump referencing rows that were never exported.
+- **Types no constant safely fits** — `uuid`, `binary`, enums, arrays, and text columns too
+  short to hold the masked value. An invalid default would fail the restore the dump feeds,
+  which is worse than exporting the column while the flag keeps the change from being merged.
+
 #### Tidying stale config (`schema:tidy`)
 
 `schema:generate` adds and updates config files for the tables it finds, but it never deletes the config file of a table that has been dropped from the application. To reconcile the existing config against the current schema, run:

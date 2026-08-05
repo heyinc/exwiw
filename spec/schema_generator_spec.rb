@@ -440,6 +440,69 @@ module Exwiw
       end
     end
 
+    describe "safe mode" do
+      def generate_safe(models_to_use = models)
+        described_class.new(models: models_to_use, output_dir: output_dir, safe_new_columns: true).generate!
+      end
+
+      def config_for(table_name)
+        JSON.parse(File.read(File.join(output_dir, "#{table_name}.json")))
+      end
+
+      it "masks each column with a default its type can hold and flags it for a decision" do
+        generate_safe([User])
+
+        expect(config_for("users")["columns"]).to eq([
+          { "name" => "id", "needs_mask_decision" => true },
+          { "name" => "name", "replace_with" => "masked-{id}", "needs_mask_decision" => true },
+          { "name" => "email", "replace_with" => "masked-{id}@example.com", "needs_mask_decision" => true },
+          { "name" => "shop_id", "needs_mask_decision" => true },
+          { "name" => "created_at", "replace_with" => "2000-01-01 00:00:00", "needs_mask_decision" => true },
+          { "name" => "updated_at", "replace_with" => "2000-01-01 00:00:00", "needs_mask_decision" => true },
+        ])
+      end
+
+      it "masks a numeric column with a number, not with text" do
+        generate_safe([Product])
+
+        price = config_for("products")["columns"].find { |c| c["name"] == "price" }
+        expect(price["replace_with"]).to eq(0)
+      end
+
+      it "leaves the generated config unchanged when off" do
+        described_class.new(models: [User], output_dir: output_dir).generate!
+
+        expect(config_for("users")["columns"]).to eq([
+          { "name" => "id" }, { "name" => "name" }, { "name" => "email" },
+          { "name" => "shop_id" }, { "name" => "created_at" }, { "name" => "updated_at" },
+        ])
+      end
+
+      it "keeps a decision a human already made and only flags what is new" do
+        generate_safe([User])
+        path = File.join(output_dir, "users.json")
+        resolved = JSON.parse(File.read(path))
+        resolved["columns"] = resolved["columns"].map do |column|
+          case column["name"]
+          when "name" then { "name" => "name", "replace_with" => "masked-{id}", "comment" => "PII" }
+          when "email" then { "name" => "email" }
+          else column.reject { |key, _| key == "needs_mask_decision" }
+          end
+        end
+        File.write(path, JSON.pretty_generate(resolved) + "\n")
+
+        # A migration adds a column; only that one comes back flagged.
+        allow(User).to receive(:column_names).and_return(User.column_names + ["memo"])
+        generate_safe([User])
+
+        columns = config_for("users")["columns"]
+        expect(columns.find { |c| c["name"] == "name" })
+          .to eq({ "name" => "name", "replace_with" => "masked-{id}", "comment" => "PII" })
+        expect(columns.find { |c| c["name"] == "email" }).to eq({ "name" => "email" })
+        expect(columns.find { |c| c["name"] == "memo" }).to eq({ "name" => "memo", "needs_mask_decision" => true })
+      end
+    end
+
     describe "#tidy!" do
       def write_config(name, hash)
         File.write(File.join(output_dir, "#{name}.json"), JSON.pretty_generate(hash) + "\n")

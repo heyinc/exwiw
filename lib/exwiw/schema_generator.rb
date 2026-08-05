@@ -43,14 +43,21 @@ module Exwiw
     # belongs_to to it.
     ACTIVE_STORAGE_VARIANT_RECORDS_TABLE = "active_storage_variant_records"
 
-    def self.from_rails_application(output_dir:)
+    def self.from_rails_application(output_dir:, safe_new_columns: false)
       Rails.application.eager_load!
-      new(models: ActiveRecord::Base.descendants, output_dir: output_dir)
+      new(models: ActiveRecord::Base.descendants, output_dir: output_dir, safe_new_columns: safe_new_columns)
     end
 
-    def initialize(models:, output_dir:)
+    # `safe_new_columns` turns on safe mode: every column is emitted masked (as
+    # far as its type allows, see DefaultMask) and flagged
+    # `needs_mask_decision: true`. Only columns the config does not have yet keep
+    # that treatment — #merge lets an existing entry win — so in practice it
+    # applies to columns a migration has just added, which would otherwise be
+    # exported unmasked without anyone looking at them.
+    def initialize(models:, output_dir:, safe_new_columns: false)
       @models = models
       @output_dir = output_dir
+      @safe_new_columns = safe_new_columns
     end
 
     def generate!
@@ -239,16 +246,45 @@ module Exwiw
             columns: representative.column_names.map { |name| { name: name } },
           )
         else
+          belongs_tos = aggregate_belongs_tos(model_group)
           TableConfig.from_symbol_keys(
             name: table_name,
             primary_key: primary_key,
-            belongs_tos: aggregate_belongs_tos(model_group),
-            columns: representative.column_names.map { |name| { name: name } },
+            belongs_tos: belongs_tos,
+            columns: build_columns(representative, primary_key, belongs_tos),
           )
         end
       end
 
       tables_from_models + build_rails_managed_tables(conn)
+    end
+
+    # The `columns` entries for a table. Outside safe mode (and for the ignored
+    # tables, which are never extracted) a column is just its name.
+    #
+    # In safe mode each column also gets a default mask and the
+    # `needs_mask_decision` flag. The keys that hold the export together —
+    # the primary key and the foreign keys/types the belongs_tos join on — are
+    # flagged but never masked: masking them would break the joins and leave the
+    # dump with dangling references.
+    private def build_columns(representative, primary_key, belongs_tos)
+      names = representative.column_names
+      return names.map { |name| { name: name } } unless @safe_new_columns
+
+      structural = belongs_tos.flat_map { |bt| [bt[:foreign_key], bt[:foreign_type]] }.compact.to_set
+      structural << primary_key if primary_key
+      columns_by_name = representative.columns.each_with_object({}) { |column, acc| acc[column.name] = column }
+
+      names.map do |name|
+        entry = { name: name, needs_mask_decision: true }
+        next entry if structural.include?(name)
+
+        column = columns_by_name[name]
+        mask = column && DefaultMask.for(
+          name: name, type: column.type, limit: column.limit, primary_key: primary_key
+        )
+        mask.nil? ? entry : entry.merge(replace_with: mask)
+      end
     end
 
     private def concrete_models

@@ -13,12 +13,19 @@ namespace :exwiw do
       ENV["EXWIW_SCHEMA_DIR_PATH"] || Exwiw::ConfigFile.schema_dir || "exwiw/schema"
     end
 
+    # Safe mode (EXWIW_NEW_COLUMNS=safe): emit every column the config does not
+    # have yet masked and flagged `needs_mask_decision: true`, so a column added
+    # by a migration cannot reach a dump before someone decides how it should be
+    # masked. Off by default — the generated config is unchanged without it.
+    safe_new_columns = lambda { ENV["EXWIW_NEW_COLUMNS"] == "safe" }
+
     desc "Generate schema from application"
     task generate: :environment do
       require "exwiw"
 
       groups = Exwiw::SchemaGenerator.from_rails_application(
         output_dir: resolve_schema_dir.call,
+        safe_new_columns: safe_new_columns.call,
       ).generate!
 
       # Surface cross-database belongs_tos the generator auto-ignored: these
