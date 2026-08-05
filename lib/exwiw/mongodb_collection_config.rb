@@ -143,6 +143,9 @@ module Exwiw
             pf.replace_with_fake_data = receiver.replace_with_fake_data if receiver.replace_with_fake_data
             pf.comment = receiver.comment if receiver.comment
             pf.ignore = receiver.ignore unless receiver.ignore.nil?
+            # Receiver wins even when unset: clearing the flag is how a human
+            # records the decision, and regeneration must not bring it back.
+            pf.needs_mask_decision = receiver.needs_mask_decision
           end
           pf
         end

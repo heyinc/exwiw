@@ -379,6 +379,33 @@ module Exwiw
         expect(merged.fields.map(&:name)).to eq(['_id', 'token', 'extra'])
       end
 
+      it 'lets the on-disk needs_mask_decision state win over a regenerated one' do
+        current_flagged = described_class.from_symbol_keys(
+          name: 'orders',
+          primary_key: '_id',
+          belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id' }],
+          fields: [
+            { name: '_id' },
+            { name: 'memo', replace_with: 'masked', needs_mask_decision: true },
+            { name: 'decided', replace_with: 'masked' },
+          ],
+        )
+        regenerated = described_class.from_symbol_keys(
+          name: 'orders',
+          primary_key: '_id',
+          belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id' }],
+          fields: [
+            { name: '_id' },
+            { name: 'memo' },
+            { name: 'decided', needs_mask_decision: true },
+          ],
+        )
+        merged = current_flagged.merge(regenerated)
+
+        expect(merged.fields.find { |f| f.name == 'memo' }.needs_mask_decision).to eq(true)
+        expect(merged.fields.find { |f| f.name == 'decided' }.needs_mask_decision).to be_nil
+      end
+
       it 'preserves a user-owned replace_with_fake_data on a field across regeneration' do
         current_with_fake = described_class.from_symbol_keys(
           name: 'orders',
