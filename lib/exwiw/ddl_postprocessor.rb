@@ -170,6 +170,50 @@ module Exwiw
       end
     end
 
+    # Every extension name a dump installs, in the order the CREATE EXTENSION
+    # statements appear. Used to report which of them #strip_extensions is about
+    # to drop; run it on the raw dump, before any wrapping pass.
+    def extension_names(sql)
+      sql.scan(CREATE_EXTENSION_RE).map { |(name)| name.delete('"') }
+    end
+
+    # Drop every trace of the extensions named in `names` — the ones a managed
+    # PostgreSQL platform installs to run the source instance itself (see
+    # PostgresqlAdapter::PLATFORM_MANAGED_EXTENSIONS). Removed rather than merely
+    # wrapped like any other extension, because they cannot be created anywhere
+    # outside that platform, so keeping them only leaves a restore-time WARNING
+    # and objects the target will never have.
+    #
+    # Three things are emitted per extension and all three must go, or a leftover
+    # references a name that is no longer installed: pg_dump's `-- Name: <ext>;
+    # Type: EXTENSION` header block, the `CREATE EXTENSION`, and the
+    # `COMMENT ON EXTENSION` (whose own header reads `-- Name: EXTENSION <ext>;
+    # Type: COMMENT`). Run this on the raw dump, before the wrapping passes: they
+    # rewrite the bare statements this matches into DO blocks.
+    def strip_extensions(sql, names)
+      return sql if names.empty?
+
+      # Whole names only: each match is anchored by the whitespace/quote before it
+      # and a \b after, so `google_vacuum_mgmt` never matches an extension merely
+      # containing it (`not_google_vacuum_mgmt`, `google_vacuum_mgmt_v2`).
+      names_re = Regexp.union(names.map { |n| Regexp.escape(n) })
+      name = /(?:"#{names_re}"|#{names_re}\b)/
+
+      # Each removal takes the blank lines that trailed the object too, so the
+      # surrounding statements keep pg_dump's spacing instead of gaining a gap.
+      trailing_blank_lines = /(?:[ \t]*\r?\n(?:[ \t]*\r?\n)*)?/
+
+      sql = sql.gsub(
+        /^--\r?\n-- Name: (?:EXTENSION\s+)?#{name};[ \t]*Type:[ \t]*(?:EXTENSION|COMMENT);[^\n]*\n--(?:\r?\n)+/i,
+        "",
+      )
+      sql = sql.gsub(/^[ \t]*CREATE\s+EXTENSION\b(?:\s+IF\s+NOT\s+EXISTS)?\s+#{name}[^;]*;#{trailing_blank_lines}/i, "")
+      sql.gsub(
+        /^[ \t]*COMMENT\s+ON\s+EXTENSION\s+#{name}\s+IS\s+(?:'(?:[^']|'')*'|NULL)\s*;#{trailing_blank_lines}/i,
+        "",
+      )
+    end
+
     # Generate idempotent CREATE TYPE ... AS ENUM statements.
     # +enum_types+ is an Array of Hashes with keys :schema, :name, :labels.
     def create_type_enum_statements(enum_types)
