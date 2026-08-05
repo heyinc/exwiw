@@ -98,6 +98,41 @@ module Exwiw
         connection.exec("EXPLAIN #{sql}").values.map(&:first).join("\n")
       end
 
+      # Extensions a managed PostgreSQL platform installs to run the *source*
+      # instance itself, which exwiw treats as out of target and leaves out of the
+      # dump entirely. Each one here satisfies both conditions:
+      #
+      #   1. it ships only with the managed platform, so no restore target outside
+      #      that platform can create it, and
+      #   2. nothing in the application's own schema or queries references it — it
+      #      is operational machinery (autovacuum tuning, the in-memory columnar
+      #      cache, index advice), not a feature the app builds on.
+      #
+      # Condition 2 is what keeps this list short. AlloyDB's application-facing
+      # extensions — `google_ml_integration`, `alloydb_scann`, `alloydb_ai_nl` —
+      # meet condition 1 but are called from application SQL and can be named by
+      # dumped DDL (a ScaNN index is `USING scann`), so dropping their CREATE would
+      # silently strand whatever refers to them. They stay in the dump, wrapped in
+      # the usual warn-and-skip DO block, like `pglogical` and like a third-party
+      # extension pulled in as a dependency of one listed here (`google_db_advisor`
+      # requires `hypopg`, which any plain PostgreSQL can install).
+      #
+      # Deliberately an explicit list of names, not a `google_`/`alloydb_` prefix
+      # match (which is how the old `pg_extension` query filtered, before switching
+      # to a full-database pg_dump dropped that query and the filter with it): the
+      # prefixes are not reserved, so a schema an application legitimately owns —
+      # `google_calendar` for a Google Calendar integration — would be matched and
+      # dropped together with its tables. The vendor gains extensions faster than
+      # this list does; that costs a release, which is the right trade against
+      # deleting an application's own objects. Its `rds_%` / `aiven_%` arms are not
+      # carried over for the same reason: naming their members takes a dump to
+      # confirm, and adding one here is a one-line change.
+      PLATFORM_MANAGED_EXTENSIONS = %w[
+        google_columnar_engine
+        google_db_advisor
+        google_vacuum_mgmt
+      ].freeze
+
       def dump_schema(ordered_tables, output_path)
         require 'open3'
 
@@ -117,9 +152,19 @@ module Exwiw
           '--schema-only',
           '--no-owner',
           '--no-acl',
+          # An extension that needs a schema of its own puts it under its own name
+          # (Cloud SQL's google_vacuum_mgmt does; the AlloyDB two install into
+          # public), so excluding the same names covers the schema half — including
+          # any object the platform adds inside one later. The patterns are exact
+          # names: pg_dump reads them psql \d-style, where `_` is literal and only
+          # `*` globs. A pattern matching nothing is not an error (that needs
+          # --strict-names), so these are harmless against a self-hosted server.
+          *PLATFORM_MANAGED_EXTENSIONS.map { |name| "--exclude-schema=#{name}" },
           @connection_config.database_name,
         ]
         env = { 'PGPASSWORD' => @connection_config.password.to_s }
+
+        log_excluded_platform_managed_schemas
 
         @logger.debug("  Running pg_dump for the whole database (#{@connection_config.database_name})...")
         stdout, stderr, status = Open3.capture3(env, *cmd)
@@ -141,7 +186,9 @@ module Exwiw
         # EXTENSION that pg_dump emits alongside is likewise wrapped to swallow
         # undefined_object, so a skipped extension's trailing comment does not
         # abort the restore either.
-        idempotent = stdout
+        # Platform-managed extensions are stripped first: the wrapping passes below
+        # rewrite the bare CREATE/COMMENT statements this removes.
+        idempotent = strip_platform_managed_extensions(stdout)
         idempotent = DdlPostprocessor.wrap_create_type_enum_in_do_block(idempotent)
         idempotent = DdlPostprocessor.wrap_create_extension_in_do_block(idempotent)
         idempotent = DdlPostprocessor.wrap_comment_on_extension_in_do_block(idempotent)
@@ -157,6 +204,37 @@ module Exwiw
           file.write(idempotent)
         end
         @logger.info("  Wrote full-database schema to #{output_path} (#{ordered_tables.size} table(s) in scope for data).")
+      end
+
+      # Drop the platform-managed extensions from a raw pg_dump, naming the ones
+      # actually removed so the run records what it left out rather than silently
+      # dropping it. See PLATFORM_MANAGED_EXTENSIONS.
+      private def strip_platform_managed_extensions(sql)
+        removed = DdlPostprocessor.extension_names(sql) & PLATFORM_MANAGED_EXTENSIONS
+        unless removed.empty?
+          @logger.info("  Excluded platform-managed extension(s) from the schema dump: #{removed.join(', ')}.")
+        end
+
+        DdlPostprocessor.strip_extensions(sql, PLATFORM_MANAGED_EXTENSIONS)
+      end
+
+      # Name the --exclude-schema patterns the source instance actually has, so the
+      # run records the schema half of the exclusion the way
+      # #strip_platform_managed_extensions records the extension half. Only exact
+      # names are excluded, but nothing stops an application from owning one of
+      # them, and excluding a schema takes every object inside it along — that must
+      # not happen without the log saying so. See PLATFORM_MANAGED_EXTENSIONS.
+      private def log_excluded_platform_managed_schemas
+        # The names are bare identifiers from the constant, so they need no quoting
+        # inside the array literal ANY() takes.
+        result = connection.exec_params(
+          'SELECT nspname FROM pg_namespace WHERE nspname = ANY($1) ORDER BY nspname',
+          ["{#{PLATFORM_MANAGED_EXTENSIONS.join(',')}}"],
+        )
+        excluded = result.values.map(&:first)
+        return if excluded.empty?
+
+        @logger.info("  Excluded platform-managed schema(s) from the schema dump: #{excluded.join(', ')}.")
       end
 
       # The INSERT header for this adapter. PostgreSQL uses bare identifiers,
