@@ -71,6 +71,125 @@ module Exwiw
           labels = enum_match[1].scan(/'([^']*(?:''[^']*)*)'/).flatten
           expect(labels).to eq(labels.uniq), "enum labels should not be duplicated: #{labels}"
         end
+
+        # A managed platform (Cloud SQL / AlloyDB) installs extensions of its own
+        # into the source instance. They are out of target: no application data,
+        # and no restore target outside that platform can create them. pg_dump is
+        # stubbed here so the assertions do not depend on the test server having
+        # them — the shape mirrors what real Cloud SQL / AlloyDB dumps contain.
+        context "when the source instance carries platform-managed extensions" do
+          let(:success_status) { instance_double(Process::Status, success?: true, exitstatus: 0) }
+          let(:dump_output) do
+            # No `CREATE SCHEMA google_vacuum_mgmt`: the vendor schemas are dropped
+            # by the --exclude-schema flags (asserted separately below), so a real
+            # dump taken with them never contains one. What survives pg_dump's own
+            # filtering is the extension statements, which are not schema-qualified.
+            <<~SQL
+              --
+              -- Name: btree_gist; Type: EXTENSION; Schema: -; Owner: -
+              --
+
+              CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public;
+
+
+              --
+              -- Name: google_vacuum_mgmt; Type: EXTENSION; Schema: -; Owner: -
+              --
+
+              CREATE EXTENSION IF NOT EXISTS google_vacuum_mgmt WITH SCHEMA google_vacuum_mgmt;
+
+
+              --
+              -- Name: EXTENSION google_vacuum_mgmt; Type: COMMENT; Schema: -; Owner: -
+              --
+
+              COMMENT ON EXTENSION google_vacuum_mgmt IS 'extension for assistive operational tooling';
+
+
+              --
+              -- Name: google_db_advisor; Type: EXTENSION; Schema: -; Owner: -
+              --
+
+              CREATE EXTENSION IF NOT EXISTS google_db_advisor WITH SCHEMA public;
+
+
+              --
+              -- Name: hypopg; Type: EXTENSION; Schema: -; Owner: -
+              --
+
+              CREATE EXTENSION IF NOT EXISTS hypopg WITH SCHEMA public;
+
+
+              --
+              -- Name: alloydb_scann; Type: EXTENSION; Schema: -; Owner: -
+              --
+
+              CREATE EXTENSION IF NOT EXISTS alloydb_scann WITH SCHEMA public;
+
+
+              CREATE TABLE public.shops (
+                  id bigint NOT NULL
+              );
+            SQL
+          end
+
+          before do
+            allow(Open3).to receive(:capture3)
+              .with(hash_including('PGPASSWORD'), 'pg_dump', any_args) do |_env, *cmd|
+                @captured_cmd = cmd
+                [dump_output, '', success_status]
+              end
+          end
+
+          it "asks pg_dump to skip the vendor schemas, by exact name" do
+            adapter.dump_schema([shops_table(adapter_name)], schema_path)
+
+            expect(@captured_cmd).to include(
+              '--exclude-schema=google_columnar_engine',
+              '--exclude-schema=google_db_advisor',
+              '--exclude-schema=google_vacuum_mgmt',
+            )
+            # A prefix pattern would take an application's own `google_*` schema
+            # (and its tables) with it, so none is passed.
+            expect(@captured_cmd.grep(/--exclude-schema=.*\*/)).to be_empty
+          end
+
+          it "strips the vendor extensions, keeping the application's own" do
+            adapter.dump_schema([shops_table(adapter_name)], schema_path)
+
+            sql = File.read(schema_path)
+            expect(sql).not_to include('google_vacuum_mgmt')
+            expect(sql).not_to include('google_db_advisor')
+            expect(sql).to include('CREATE EXTENSION IF NOT EXISTS btree_gist')
+            expect(sql).to include('CREATE TABLE IF NOT EXISTS public.shops')
+          end
+
+          # hypopg is a plain open-source extension that AlloyDB's google_db_advisor
+          # depends on; it is installable on the restore target, so it stays (wrapped
+          # in the usual warn-and-skip block) even though its dependent is stripped.
+          it "keeps a third-party dependency of a stripped extension" do
+            adapter.dump_schema([shops_table(adapter_name)], schema_path)
+
+            expect(File.read(schema_path)).to include('DO $$ BEGIN CREATE EXTENSION IF NOT EXISTS hypopg')
+          end
+
+          # alloydb_scann is AlloyDB-only too, but application-facing: a dumped index
+          # can be `USING scann`, so removing its CREATE would strand that DDL. It
+          # keeps the warn-and-skip treatment instead of being stripped.
+          it "keeps an application-facing platform extension" do
+            adapter.dump_schema([shops_table(adapter_name)], schema_path)
+
+            expect(File.read(schema_path)).to include('DO $$ BEGIN CREATE EXTENSION IF NOT EXISTS alloydb_scann')
+          end
+
+          it "reports which extensions it left out" do
+            logger = instance_double(Logger, debug: nil, info: nil)
+            described_class.new(connection_config, logger).dump_schema([shops_table(adapter_name)], schema_path)
+
+            expect(logger).to have_received(:info)
+              .with(/Excluded platform-managed extension\(s\).*google_vacuum_mgmt, google_db_advisor/)
+          end
+        end
       end
 
       describe "#compile_ast" do

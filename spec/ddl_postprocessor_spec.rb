@@ -320,6 +320,119 @@ module Exwiw
       end
     end
 
+    describe '.extension_names' do
+      it 'lists every installed extension in dump order' do
+        sql = <<~SQL
+          CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public;
+          CREATE EXTENSION IF NOT EXISTS google_vacuum_mgmt WITH SCHEMA google_vacuum_mgmt;
+          CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;
+        SQL
+
+        expect(described_class.extension_names(sql)).to eq(%w[btree_gist google_vacuum_mgmt uuid-ossp])
+      end
+
+      it 'returns an empty list for a dump that installs no extension' do
+        expect(described_class.extension_names('CREATE TABLE public.t (id int);')).to eq([])
+      end
+    end
+
+    describe '.strip_extensions' do
+      # pg_dump's real layout for the objects an extension contributes: a 3-line
+      # `-- Name:` header before each of CREATE EXTENSION and COMMENT ON EXTENSION.
+      let(:dump) do
+        <<~SQL
+          SET row_security = off;
+
+          --
+          -- Name: btree_gist; Type: EXTENSION; Schema: -; Owner: -
+          --
+
+          CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public;
+
+
+          --
+          -- Name: EXTENSION btree_gist; Type: COMMENT; Schema: -; Owner: -
+          --
+
+          COMMENT ON EXTENSION btree_gist IS 'support for indexing common datatypes in GiST';
+
+
+          --
+          -- Name: google_vacuum_mgmt; Type: EXTENSION; Schema: -; Owner: -
+          --
+
+          CREATE EXTENSION IF NOT EXISTS google_vacuum_mgmt WITH SCHEMA google_vacuum_mgmt;
+
+
+          --
+          -- Name: EXTENSION google_vacuum_mgmt; Type: COMMENT; Schema: -; Owner: -
+          --
+
+          COMMENT ON EXTENSION google_vacuum_mgmt IS 'extension for assistive operational tooling';
+
+
+          --
+          -- Name: shops; Type: TABLE; Schema: public; Owner: -
+          --
+
+          CREATE TABLE public.shops (
+              id bigint NOT NULL
+          );
+        SQL
+      end
+
+      it 'removes the CREATE, the COMMENT and both pg_dump headers of a named extension' do
+        out = described_class.strip_extensions(dump, %w[google_vacuum_mgmt])
+
+        # Covers the statements and both `-- Name:` headers at once: not one
+        # mention of the extension survives anywhere in the dump.
+        expect(out).not_to include('google_vacuum_mgmt')
+        expect(out).to include('CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public;')
+        expect(out).to include("COMMENT ON EXTENSION btree_gist IS 'support for indexing common datatypes in GiST';")
+        expect(out).to include('CREATE TABLE public.shops (')
+      end
+
+      it 'keeps pg_dump spacing around the removal instead of leaving a gap' do
+        out = described_class.strip_extensions(dump, %w[google_vacuum_mgmt])
+
+        expect(out).not_to match(/\n{4,}/)
+      end
+
+      it 'removes every named extension and only those' do
+        sql = <<~SQL
+          CREATE EXTENSION IF NOT EXISTS google_columnar_engine WITH SCHEMA public;
+          CREATE EXTENSION IF NOT EXISTS google_db_advisor WITH SCHEMA public;
+          CREATE EXTENSION IF NOT EXISTS hypopg WITH SCHEMA public;
+        SQL
+
+        out = described_class.strip_extensions(sql, %w[google_columnar_engine google_db_advisor])
+
+        expect(described_class.extension_names(out)).to eq(['hypopg'])
+      end
+
+      # Whole names only: an application is free to own an object whose name merely
+      # starts with or contains a vendor one (a `google_calendar` integration), and
+      # a vendor's own next version may extend the name.
+      it 'leaves an extension whose name merely contains a listed one' do
+        sql = <<~SQL
+          CREATE EXTENSION IF NOT EXISTS not_google_vacuum_mgmt WITH SCHEMA public;
+          CREATE EXTENSION IF NOT EXISTS google_vacuum_mgmt_v2 WITH SCHEMA public;
+        SQL
+
+        expect(described_class.strip_extensions(sql, %w[google_vacuum_mgmt])).to eq(sql)
+      end
+
+      it 'removes a quoted extension name' do
+        sql = %(CREATE EXTENSION IF NOT EXISTS "google_vacuum_mgmt" WITH SCHEMA google_vacuum_mgmt;\n)
+
+        expect(described_class.strip_extensions(sql, %w[google_vacuum_mgmt])).to eq('')
+      end
+
+      it 'returns the dump untouched when no name is given' do
+        expect(described_class.strip_extensions(dump, [])).to eq(dump)
+      end
+    end
+
     describe '.create_type_enum_statements' do
       it 'returns empty string for empty input' do
         expect(described_class.create_type_enum_statements([])).to eq("")
