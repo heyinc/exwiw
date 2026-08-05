@@ -422,6 +422,15 @@ module Exwiw
         expect(described_class.strip_extensions(sql, %w[google_vacuum_mgmt])).to eq(sql)
       end
 
+      # A dump taken through a CRLF-translating path keeps the same shape; the
+      # header block must go with the statement rather than be left orphaned.
+      it 'removes the header of a CRLF dump too' do
+        sql = "--\r\n-- Name: google_vacuum_mgmt; Type: EXTENSION; Schema: -; Owner: -\r\n--\r\n" \
+              "\r\nCREATE EXTENSION IF NOT EXISTS google_vacuum_mgmt WITH SCHEMA google_vacuum_mgmt;\r\n"
+
+        expect(described_class.strip_extensions(sql, %w[google_vacuum_mgmt])).to eq('')
+      end
+
       it 'removes a quoted extension name' do
         sql = %(CREATE EXTENSION IF NOT EXISTS "google_vacuum_mgmt" WITH SCHEMA google_vacuum_mgmt;\n)
 

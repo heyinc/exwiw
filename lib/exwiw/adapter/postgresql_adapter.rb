@@ -164,6 +164,8 @@ module Exwiw
         ]
         env = { 'PGPASSWORD' => @connection_config.password.to_s }
 
+        log_excluded_platform_managed_schemas
+
         @logger.debug("  Running pg_dump for the whole database (#{@connection_config.database_name})...")
         stdout, stderr, status = Open3.capture3(env, *cmd)
         unless status.success?
@@ -214,6 +216,25 @@ module Exwiw
         end
 
         DdlPostprocessor.strip_extensions(sql, PLATFORM_MANAGED_EXTENSIONS)
+      end
+
+      # Name the --exclude-schema patterns the source instance actually has, so the
+      # run records the schema half of the exclusion the way
+      # #strip_platform_managed_extensions records the extension half. Only exact
+      # names are excluded, but nothing stops an application from owning one of
+      # them, and excluding a schema takes every object inside it along — that must
+      # not happen without the log saying so. See PLATFORM_MANAGED_EXTENSIONS.
+      private def log_excluded_platform_managed_schemas
+        # The names are bare identifiers from the constant, so they need no quoting
+        # inside the array literal ANY() takes.
+        result = connection.exec_params(
+          'SELECT nspname FROM pg_namespace WHERE nspname = ANY($1) ORDER BY nspname',
+          ["{#{PLATFORM_MANAGED_EXTENSIONS.join(',')}}"],
+        )
+        excluded = result.values.map(&:first)
+        return if excluded.empty?
+
+        @logger.info("  Excluded platform-managed schema(s) from the schema dump: #{excluded.join(', ')}.")
       end
 
       # The INSERT header for this adapter. PostgreSQL uses bare identifiers,

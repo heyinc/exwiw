@@ -203,7 +203,10 @@ module Exwiw
       # surrounding statements keep pg_dump's spacing instead of gaining a gap.
       trailing_blank_lines = /(?:[ \t]*\r?\n(?:[ \t]*\r?\n)*)?/
 
-      sql = sql.gsub(/^--\n-- Name: (?:EXTENSION\s+)?#{name};[ \t]*Type:[ \t]*(?:EXTENSION|COMMENT);[^\n]*\n--\n+/i, "")
+      sql = sql.gsub(
+        /^--\r?\n-- Name: (?:EXTENSION\s+)?#{name};[ \t]*Type:[ \t]*(?:EXTENSION|COMMENT);[^\n]*\n--(?:\r?\n)+/i,
+        "",
+      )
       sql = sql.gsub(/^[ \t]*CREATE\s+EXTENSION\b(?:\s+IF\s+NOT\s+EXISTS)?\s+#{name}[^;]*;#{trailing_blank_lines}/i, "")
       sql.gsub(
         /^[ \t]*COMMENT\s+ON\s+EXTENSION\s+#{name}\s+IS\s+(?:'(?:[^']|'')*'|NULL)\s*;#{trailing_blank_lines}/i,

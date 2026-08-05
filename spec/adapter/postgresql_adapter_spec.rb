@@ -189,6 +189,31 @@ module Exwiw
             expect(logger).to have_received(:info)
               .with(/Excluded platform-managed extension\(s\).*google_vacuum_mgmt, google_db_advisor/)
           end
+
+          # --exclude-schema takes every object inside the schema with it, and an
+          # application is free to own a schema whose name collides exactly with a
+          # platform one, so the run must name the schemas it actually dropped.
+          it "reports which schemas it left out" do
+            logger = instance_double(Logger, debug: nil, info: nil)
+            connection = adapter.send(:connection)
+            connection.exec_params('CREATE SCHEMA IF NOT EXISTS google_vacuum_mgmt', [])
+
+            begin
+              described_class.new(connection_config, logger).dump_schema([shops_table(adapter_name)], schema_path)
+            ensure
+              connection.exec_params('DROP SCHEMA IF EXISTS google_vacuum_mgmt', [])
+            end
+
+            expect(logger).to have_received(:info)
+              .with(/Excluded platform-managed schema\(s\).*google_vacuum_mgmt/)
+          end
+
+          it "says nothing about schemas the source instance does not have" do
+            logger = instance_double(Logger, debug: nil, info: nil)
+            described_class.new(connection_config, logger).dump_schema([shops_table(adapter_name)], schema_path)
+
+            expect(logger).not_to have_received(:info).with(/platform-managed schema/)
+          end
         end
       end
 
