@@ -388,6 +388,35 @@ Because it reads the database directly, a table that still exists in the databas
 
 It respects `EXWIW_SCHEMA_DIR_PATH` and the per-database subdirectory layout in the same way as `schema:generate`. Unlike `generate`, `tidy` never adds or regenerates entries — every surviving table/column (including hand-edited `comment` / `ignore` / `replace_with`) is left untouched, so it is safe to run on a customized config. The task prints which tables and columns it removed (or that the config was already tidy). Stale `belongs_tos` are not pruned by `tidy`; rerun `schema:generate` to refresh those.
 
+#### Checking the config against the schema
+
+`schema:check` reports how the committed config differs from what the application would
+generate now — without writing anything, so it can run on a working tree it must not modify:
+
+```bash
+bundle exec rake exwiw:schema:check
+```
+
+It regenerates into a throwaway copy of the config directory (safe mode + `tidy`) and prints
+the comparison as JSON, then exits non-zero when anything needs attention:
+
+```json
+{
+  "added_tables": [],
+  "added_columns": ["users.contact_email"],
+  "removed_tables": [],
+  "removed_columns": [],
+  "changed_tables": ["users"],
+  "needs_mask_decision": ["orders.memo"]
+}
+```
+
+`added_*` / `removed_*` / `changed_tables` mean the config no longer matches the schema — run
+`schema:generate` and `schema:tidy` to reconcile it. `needs_mask_decision` lists the columns
+whose masking nobody has decided on yet (see [the flag](#needs_mask_decision)). The exit code
+makes it usable as a CI check that keeps a schema change from being merged until both are
+resolved; the JSON is stable and sorted, so it can be posted as-is.
+
 #### Multiple databases
 
 If the application uses Rails' multiple-database support (`connects_to`), `schema:generate` buckets models by the database they connect to and writes each database's config files into its own subdirectory of the output directory, named after the database config name (`primary`, `analytics`, ...):

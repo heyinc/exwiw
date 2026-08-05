@@ -40,6 +40,7 @@ require_relative "exwiw/after_insert_hook"
 require_relative "exwiw/runner"
 require_relative "exwiw/explain_runner"
 require_relative "exwiw/schema_generator"
+require_relative "exwiw/schema_check"
 require_relative "exwiw/mongoid_schema_generator"
 
 begin
