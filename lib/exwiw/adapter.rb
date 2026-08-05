@@ -263,6 +263,19 @@ module Exwiw
         "CASE WHEN #{qualified_name(ast.from_table_name, column.name)} IS NOT NULL THEN #{masked_expr} ELSE NULL END"
       end
 
+      # A non-String `replace_with` (see Exwiw::MaskValue) is a constant used
+      # verbatim, so it is emitted as a typed SQL literal rather than being
+      # concatenated into text: an integer column masked with `0` keeps its
+      # numeric type through the SELECT and the generated INSERT. Shared by the
+      # SQL adapters' #compile_column_name ReplaceWith handling.
+      private def scalar_literal(value)
+        case value
+        when true then "TRUE"
+        when false then "FALSE"
+        else value.to_s
+        end
+      end
+
       # Split an outer query's WHERE clauses into the scope id-set clauses to
       # lift into a materialized derived-table JOIN (see each adapter's
       # #compile_scope_join) and the remaining plain clauses (kept in WHERE).

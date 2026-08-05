@@ -5,7 +5,7 @@ module Exwiw
     include Serdes
 
     attribute :name, String
-    attribute :replace_with, optional(String), skip_serializing_if_nil: true
+    attribute :replace_with, Serdes::OptionalType.new(MaskValue.new), skip_serializing_if_nil: true
     # Ruby-process-side masking: replace the value with a deterministic fake
     # value derived from a seed field (see FakeData / RowTransformer). Unlike the
     # SQL adapters — where replace_with runs in the database and fake data needs

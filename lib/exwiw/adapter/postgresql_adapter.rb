@@ -510,6 +510,10 @@ module Exwiw
         when Exwiw::QueryAst::ColumnValue::RawSql
           column.value
         when Exwiw::QueryAst::ColumnValue::ReplaceWith
+          if Exwiw::MaskValue.scalar?(column.value)
+            return null_preserving(ast, column, scalar_literal(column.value))
+          end
+
           parts = column.value.scan(/[^{}]+|\{[^{}]*\}/).map do |part|
             if part.start_with?('{')
               name = part[1..-2]

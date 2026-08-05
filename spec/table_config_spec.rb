@@ -457,6 +457,61 @@ module Exwiw
       end
     end
 
+    describe 'scalar replace_with' do
+      it 'round-trips non-String mask values through JSON with their type' do
+        config = TableConfig.from_symbol_keys(
+          name: 'metrics',
+          primary_key: 'id',
+          columns: [
+            { name: 'id' },
+            { name: 'score', replace_with: 0 },
+            { name: 'active', replace_with: false },
+            { name: 'ratio', replace_with: 1.5 },
+            { name: 'note', replace_with: 'masked-{id}' },
+          ],
+        )
+        reloaded = TableConfig.from(JSON.parse(JSON.generate(config.to_hash)))
+        expect(reloaded.columns.map(&:replace_with)).to eq([nil, 0, false, 1.5, 'masked-{id}'])
+      end
+
+      it 'rejects a mask value that is neither a scalar nor a template' do
+        expect {
+          TableConfig.from_symbol_keys(
+            name: 'metrics', primary_key: 'id',
+            columns: [{ name: 'score', replace_with: { 'nested' => true } }],
+          )
+        }.to raise_error(Serdes::TypeError)
+      end
+
+      it 'treats a false mask as masking, not as an absent mask' do
+        # `false` is falsy in Ruby, so a truthiness check here would silently
+        # emit the column unmasked.
+        config = TableConfig.from_symbol_keys(
+          name: 'metrics', primary_key: 'id',
+          columns: [{ name: 'active', replace_with: false }],
+        )
+        ast = QueryAst::Select.new.tap do |select|
+          select.from(config.name)
+          select.select(config.columns)
+        end
+
+        expect(ast.columns.map(&:class)).to eq([QueryAst::ColumnValue::ReplaceWith])
+      end
+
+      it 'rejects combining a false mask with ruby-side masking' do
+        expect {
+          TableConfig.from_symbol_keys(
+            name: 'metrics', primary_key: 'id',
+            columns: [
+              { name: 'id' },
+              { name: 'active', replace_with: false,
+                replace_with_fake_data: { seed: 'id', type: 'human_name' } },
+            ],
+          )
+        }.to raise_error(ArgumentError, /cannot be combined/)
+      end
+    end
+
     describe 'reverse_scope' do
       it 'round-trips the via list through JSON' do
         config = TableConfig.from_symbol_keys(
