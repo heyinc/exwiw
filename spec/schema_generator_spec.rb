@@ -424,7 +424,7 @@ module Exwiw
       end
 
       it "matches snapshot fixtures" do
-        described_class.new(models: models, output_dir: output_dir).generate!
+        described_class.new(models: models, output_dir: output_dir, safe_new_columns: false).generate!
 
         fixtures = Dir[File.join("spec/schema_output_snapshots", "*.json")].sort
         expect(fixtures).not_to be_empty, "no snapshot fixtures found under spec/schema_output_snapshots"
