@@ -469,6 +469,15 @@ module Exwiw
         expect(price["replace_with"]).to eq(0)
       end
 
+      it "masks with the column's own default rather than the per-type constant" do
+        # order_items.quantity is `default: 1`, and masking it with 0 would give
+        # the dump a value the application never chose for a new row.
+        generate_safe([OrderItem])
+
+        quantity = config_for("order_items")["columns"].find { |c| c["name"] == "quantity" }
+        expect(quantity["replace_with"]).to eq(1)
+      end
+
       it "leaves the generated config unchanged when off" do
         described_class.new(models: [User], output_dir: output_dir, safe_new_columns: false).generate!
 

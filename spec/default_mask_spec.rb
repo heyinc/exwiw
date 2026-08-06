@@ -1,12 +1,15 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "bigdecimal"
 
 module Exwiw
   RSpec.describe DefaultMask do
-    def mask_for(type, name: "col", limit: nil, primary_key: "id", array: false, unique: false)
+    def mask_for(type, name: "col", limit: nil, primary_key: "id", array: false, unique: false,
+                 column_default: nil)
       described_class.for(
-        name: name, type: type, limit: limit, primary_key: primary_key, array: array, unique: unique
+        name: name, type: type, limit: limit, primary_key: primary_key, array: array, unique: unique,
+        column_default: column_default
       )
     end
 
@@ -69,6 +72,40 @@ module Exwiw
       it "leaves an array column unmasked whatever its member type" do
         expect(mask_for(:integer, array: true)).to be_nil
         expect(mask_for(:string, array: true)).to be_nil
+      end
+    end
+
+    describe "a column with its own default" do
+      # Masking a `default: true` flag with `false` would turn the feature off
+      # for every row in the dump, so the column's own default wins.
+      it "masks with the default instead of the per-type constant" do
+        expect(mask_for(:boolean, column_default: true)).to eq(true)
+        expect(mask_for(:boolean, column_default: false)).to eq(false)
+        expect(mask_for(:integer, column_default: 5)).to eq(5)
+        expect(mask_for(:float, column_default: 1.5)).to eq(1.5)
+      end
+
+      it "converts a default that replace_with cannot hold as-is" do
+        expect(mask_for(:decimal, column_default: BigDecimal("9.99"))).to eq(9.99)
+        expect(mask_for(:datetime, column_default: Time.utc(2020, 1, 2, 3, 4, 5)))
+          .to eq("2020-01-02 03:04:05")
+        expect(mask_for(:date, column_default: Date.new(2020, 1, 2))).to eq("2020-01-02")
+        expect(mask_for(:jsonb, column_default: { "a" => 1 })).to eq('{"a":1}')
+      end
+
+      # A default computed by the database (`now()`) is not a constant, and
+      # ActiveRecord reports it as nil, so it arrives here as "no default".
+      it "falls back to the constant when the column has no default" do
+        expect(mask_for(:boolean, column_default: nil)).to eq(false)
+        expect(mask_for(:integer, column_default: nil)).to eq(0)
+      end
+
+      it "keeps the per-type constant for text, whose mask has to vary per row" do
+        expect(mask_for(:string, column_default: "pending")).to eq("masked-{id}")
+      end
+
+      it "still refuses a constant default on a unique-indexed column" do
+        expect(mask_for(:integer, column_default: 5, unique: true)).to be_nil
       end
     end
 

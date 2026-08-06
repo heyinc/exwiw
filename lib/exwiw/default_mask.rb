@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "date"
+
 module Exwiw
   # The `replace_with` value safe mode attaches to a newly discovered column.
   #
@@ -23,23 +25,49 @@ module Exwiw
     # `primary_key` is what keeps a text mask unique per row, so without one text
     # is left unmasked too. Under a unique index (`unique`) only a mask that
     # varies per row is allowed, or every row would collide on restore.
-    def for(name:, type:, limit:, primary_key:, array: false, unique: false)
+    def for(name:, type:, limit:, primary_key:, array: false, unique: false, column_default: nil)
       return nil if array
 
       mask =
         case type
-        when :integer, :decimal, :float then 0
-        when :boolean then false
-        when :date then FIXED_DATE
-        when :datetime, :timestamp, :time then FIXED_TIME
-        when :json, :jsonb then EMPTY_JSON
         when :string, :text then text_mask(name, limit, primary_key)
+        else constant_mask(type, column_default)
         end
 
       return nil if mask.nil?
       return nil if unique && !varies_per_row?(mask, primary_key)
 
       mask
+    end
+
+    # The column's own default wins over the per-type constant: it is a value the
+    # column provably holds, and it is what the application treats as neutral, so
+    # masking a `default: true` flag does not silently turn the feature off for
+    # every row. A default computed by the database (`now()`) is not a constant
+    # and arrives here as nil, so it falls through.
+    def constant_mask(type, column_default)
+      from_default = scalar_default(column_default)
+      return from_default unless from_default.nil?
+
+      case type
+      when :integer, :decimal, :float then 0
+      when :boolean then false
+      when :date then FIXED_DATE
+      when :datetime, :timestamp, :time then FIXED_TIME
+      when :json, :jsonb then EMPTY_JSON
+      end
+    end
+
+    # A default as a value `replace_with` accepts, or nil when it is not one.
+    def scalar_default(value)
+      case value
+      when nil then nil
+      when true, false, Integer, Float, String then value
+      when Numeric then value.to_f
+      when Time, DateTime then value.strftime("%Y-%m-%d %H:%M:%S")
+      when Date then value.strftime("%Y-%m-%d")
+      when Hash, Array then value.to_json
+      end
     end
 
     def text_mask(name, limit, primary_key)
