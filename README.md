@@ -369,9 +369,9 @@ EXWIW_NEW_COLUMNS=plain bundle exec rake exwiw:schema:generate   # opt out
 ```
 
 Opting out is for the **first-time bootstrap** of a config, where every column of every table is
-new and safe mode would flag the whole thing at once. Everywhere else the default is what makes
-the guarantee hold: a check that only ever sees the safe output cannot be defeated by someone
-running the plain command out of habit.
+new and safe mode would flag the whole thing at once. Use it nowhere else: `schema:check`
+compares against the committed config, so a column committed under `plain` is indistinguishable
+from one whose masking was decided, and reads as clean from then on.
 
 The default mask depends on the column type: `masked-{primary key}` for text (with
 `@example.com` appended when the column name mentions mail, so it stays a valid address),
