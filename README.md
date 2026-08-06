@@ -369,14 +369,15 @@ EXWIW_NEW_COLUMNS=plain bundle exec rake exwiw:schema:generate   # opt out
 ```
 
 Opting out is for the **first-time bootstrap** of a config, where every column of every table is
-new and safe mode would flag the whole thing at once. Use it nowhere else: `schema:check`
-compares against the committed config, so a column committed under `plain` is indistinguishable
-from one whose masking was decided, and reads as clean from then on.
+new and safe mode would flag the whole thing at once. Use it nowhere else: a column committed
+under `plain` carries no flag, so nothing afterwards can tell it apart from one whose masking was
+decided.
 
 A column that has a **default of its own** is masked with that default: it is a value the column
 provably holds, and it is what the application treats as neutral, so masking a `default: true`
 flag does not quietly turn the feature off for every row in the dump. A default the database
-computes (`now()`) is not a constant and does not count. Otherwise the mask depends on the column
+computes (`now()`) is not a constant and does not count, and neither does a JSON object — `{...}`
+in a mask is a column placeholder, so those fall back to `{}`. Otherwise the mask depends on the column
 type: `masked-{primary key}` for text (with `@example.com` appended when the column name mentions
 mail, so it stays a valid address), `0` for numbers, `false` for booleans, a fixed date/timestamp,
 and `{}` for JSON. Text always takes the template rather than its default, since the mask has to

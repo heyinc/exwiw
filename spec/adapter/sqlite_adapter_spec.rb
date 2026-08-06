@@ -466,6 +466,21 @@ module Exwiw
           expect(json_adapter.execute(masked_ast).to_a).to eq([[1, "{}"]])
         end
 
+        it "keeps a JSON array default literal, brackets and all" do
+          array = Exwiw::TableConfig.from_symbol_keys(
+            name: "docs",
+            primary_key: "id",
+            belongs_tos: [],
+            columns: [{ name: "id" }, { name: "payload", replace_with: '["a","b"]' }],
+          )
+          ast = QueryAst::Select.new.tap do |select|
+            select.from(array.name)
+            select.select(array.columns)
+          end
+
+          expect(json_adapter.execute(ast).to_a).to eq([[1, '["a","b"]']])
+        end
+
         it "escapes a quote in the template instead of ending the SQL literal" do
           quoted = Exwiw::TableConfig.from_symbol_keys(
             name: "docs",

@@ -90,7 +90,28 @@ module Exwiw
         expect(mask_for(:datetime, column_default: Time.utc(2020, 1, 2, 3, 4, 5)))
           .to eq("2020-01-02 03:04:05")
         expect(mask_for(:date, column_default: Date.new(2020, 1, 2))).to eq("2020-01-02")
-        expect(mask_for(:jsonb, column_default: { "a" => 1 })).to eq('{"a":1}')
+      end
+
+      describe "a JSON default" do
+        # `{"a":1}` in a String mask reads as a placeholder naming a column
+        # `"a":1`, which compiles to `CONCAT(t."""a"":1")` and fails the
+        # extraction — the same trap as the empty `{}` did.
+        it "falls back to the empty-JSON constant when it would be read as a placeholder" do
+          expect(mask_for(:jsonb, column_default: { "a" => 1 })).to eq("{}")
+          expect(mask_for(:json, column_default: { "a" => { "b" => 2 } })).to eq("{}")
+        end
+
+        it "keeps a default with no braces to misread" do
+          expect(mask_for(:jsonb, column_default: [])).to eq("[]")
+          expect(mask_for(:jsonb, column_default: %w[events sales])).to eq('["events","sales"]')
+          expect(mask_for(:jsonb, column_default: {})).to eq("{}")
+        end
+
+        # Serialized by column type, not by Ruby class, or a string default
+        # would lose its quoting and stop being valid JSON.
+        it "keeps a string default quoted as JSON" do
+          expect(mask_for(:jsonb, column_default: "x")).to eq('"x"')
+        end
       end
 
       # A default computed by the database (`now()`) is not a constant, and
