@@ -13,12 +13,18 @@ namespace :exwiw do
       ENV["EXWIW_SCHEMA_DIR_PATH"] || Exwiw::ConfigFile.schema_dir || "exwiw/schema"
     end
 
+    # Safe mode is on unless EXWIW_NEW_COLUMNS=plain, which a first-time
+    # bootstrap wants: there every column is new, so safe mode would flag the
+    # whole config at once. See SchemaGenerator#initialize.
+    safe_new_columns = lambda { ENV["EXWIW_NEW_COLUMNS"] != "plain" }
+
     desc "Generate schema from application"
     task generate: :environment do
       require "exwiw"
 
       groups = Exwiw::SchemaGenerator.from_rails_application(
         output_dir: resolve_schema_dir.call,
+        safe_new_columns: safe_new_columns.call,
       ).generate!
 
       # Surface cross-database belongs_tos the generator auto-ignored: these

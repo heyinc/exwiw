@@ -43,14 +43,20 @@ module Exwiw
     # belongs_to to it.
     ACTIVE_STORAGE_VARIANT_RECORDS_TABLE = "active_storage_variant_records"
 
-    def self.from_rails_application(output_dir:)
+    def self.from_rails_application(output_dir:, safe_new_columns: true)
       Rails.application.eager_load!
-      new(models: ActiveRecord::Base.descendants, output_dir: output_dir)
+      new(models: ActiveRecord::Base.descendants, output_dir: output_dir, safe_new_columns: safe_new_columns)
     end
 
-    def initialize(models:, output_dir:)
+    # `safe_new_columns` (the default) emits every column masked — as far as its
+    # type allows, see DefaultMask — and flagged `needs_mask_decision: true`.
+    # #merge lets an existing entry win, so in practice only columns a migration
+    # has just added keep that treatment. Pass false to bootstrap a config, where
+    # every column is new and flagging all of them at once is noise.
+    def initialize(models:, output_dir:, safe_new_columns: true)
       @models = models
       @output_dir = output_dir
+      @safe_new_columns = safe_new_columns
     end
 
     def generate!
@@ -239,16 +245,69 @@ module Exwiw
             columns: representative.column_names.map { |name| { name: name } },
           )
         else
+          belongs_tos = aggregate_belongs_tos(model_group)
           TableConfig.from_symbol_keys(
             name: table_name,
             primary_key: primary_key,
-            belongs_tos: aggregate_belongs_tos(model_group),
-            columns: representative.column_names.map { |name| { name: name } },
+            belongs_tos: belongs_tos,
+            columns: build_columns(representative, primary_key, belongs_tos, conn),
           )
         end
       end
 
       tables_from_models + build_rails_managed_tables(conn)
+    end
+
+    # The `columns` entries for a table: just the name, or — in safe mode — also
+    # a default mask and the `needs_mask_decision` flag. The primary key and the
+    # foreign keys/types the belongs_tos join on are flagged but never masked,
+    # since masking them would break the joins.
+    private def build_columns(representative, primary_key, belongs_tos, conn)
+      names = representative.column_names
+      return names.map { |name| { name: name } } unless @safe_new_columns
+
+      structural = belongs_tos.flat_map { |bt| [bt[:foreign_key], bt[:foreign_type]] }.compact.to_set
+      structural << primary_key if primary_key
+      columns_by_name = representative.columns.each_with_object({}) { |column, acc| acc[column.name] = column }
+      unique = unique_column_names(conn, representative.table_name)
+      defaults = representative.column_defaults
+
+      names.map do |name|
+        entry = { name: name, needs_mask_decision: true }
+        next entry if structural.include?(name)
+
+        column = columns_by_name[name]
+        mask = column && DefaultMask.for(
+          name: name,
+          type: column.type,
+          limit: column.limit,
+          primary_key: primary_key,
+          # `integer[]` reports `:integer`, so a scalar default would not fit.
+          array: column.respond_to?(:array?) && column.array?,
+          unique: unique.nil? || unique.include?(name),
+          column_default: defaults[name],
+        )
+        mask.nil? ? entry : entry.merge(replace_with: mask)
+      end
+    end
+
+    # Columns covered by a unique index, or nil when they could not be read —
+    # callers treat that as "assume every column is unique", since masking a
+    # unique column with a constant breaks the restore the dump feeds.
+    #
+    # `Array()` because an expression index reports a String (`lower((email)::text)`)
+    # rather than a list; wrapping keeps it from being walked character by
+    # character, and it simply never matches a column name.
+    private def unique_column_names(conn, table_name)
+      conn.indexes(table_name).select(&:unique).flat_map { |index| Array(index.columns) }.to_set
+    rescue StandardError => e
+      # Once per run: a systematic failure would otherwise repeat per table.
+      unless @warned_missing_indexes
+        @warned_missing_indexes = true
+        warn "exwiw: could not read the indexes of '#{table_name}' (#{e.class}); " \
+             "treating every column as unique-indexed so no constant mask is emitted."
+      end
+      nil
     end
 
     private def concrete_models

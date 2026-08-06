@@ -351,6 +351,52 @@ EXWIW_SCHEMA_DIR_PATH=custom_directory bundle exec rake exwiw:schema:generate
 
 As with the CLI, a relative `schema_dir` in the config file is resolved relative to the config file's own directory.
 
+#### Safe mode (masking new columns by default)
+
+A migration that adds a column would otherwise leave `schema:generate` emitting it unmasked, so
+it starts being exported the moment the config is regenerated — before anyone has judged whether
+it holds personal data. So `schema:generate` runs in **safe mode by default**: every column the
+config does not have yet is emitted **masked** and flagged
+[`needs_mask_decision: true`](#needs_mask_decision).
+
+Columns already in the config keep whatever they say — the merge that preserves `replace_with` /
+`comment` / `ignore` preserves a resolved decision too — so in practice this marks exactly the
+columns a migration just added.
+
+```bash
+bundle exec rake exwiw:schema:generate           # safe mode
+EXWIW_NEW_COLUMNS=plain bundle exec rake exwiw:schema:generate   # opt out
+```
+
+Opting out is for the **first-time bootstrap** of a config, where every column of every table is
+new and safe mode would flag the whole thing at once. Use it nowhere else: a column committed
+under `plain` carries no flag, so nothing afterwards can tell it apart from one whose masking was
+decided.
+
+A column that has a **default of its own** is masked with that default: it is a value the column
+provably holds, and it is what the application treats as neutral, so masking a `default: true`
+flag does not quietly turn the feature off for every row in the dump. A default the database
+computes (`now()`) is not a constant and does not count, and neither does a JSON object — `{...}`
+in a mask is a column placeholder, so those fall back to `{}`. Otherwise the mask depends on the column
+type: `masked-{primary key}` for text (with `@example.com` appended when the column name mentions
+mail, so it stays a valid address), `0` for numbers, `false` for booleans, a fixed date/timestamp,
+and `{}` for JSON. Text always takes the template rather than its default, since the mask has to
+vary per row. Three kinds of
+column are flagged but deliberately **not** masked:
+
+- **The primary key, and the foreign keys/types the `belongs_tos` join on.** Masking them
+  would break the joins and leave the dump referencing rows that were never exported.
+- **Types no constant safely fits** — `uuid`, `binary`, enums, array columns (which report their
+  member type, so a scalar default would not fit), and text columns too short to hold the masked
+  value. An invalid default would fail the restore the dump feeds, which is worse than exporting
+  the column while the flag keeps the change from being merged.
+- **Columns covered by a unique index**, unless the mask varies per row (the text masks do, via
+  the primary key). A constant would collapse every row onto one value and break the restore with
+  a duplicate key.
+
+Safe mode is ActiveRecord-only for now: `schema:generate_mongoid` does not flag new fields yet,
+though the `needs_mask_decision` key itself is understood on a MongoDB field.
+
 #### Tidying stale config (`schema:tidy`)
 
 `schema:generate` adds and updates config files for the tables it finds, but it never deletes the config file of a table that has been dropped from the application. To reconcile the existing config against the current schema, run:
@@ -545,9 +591,10 @@ nobody has decided on yet:
 ```
 
 Extraction ignores the key entirely — what the column exports is whatever `replace_with` /
-`ignore` say. It exists so the decision can be tracked and required: the generator attaches it
-to a newly discovered column, and a check can refuse to merge a change while any column still
-carries one. Resolving it means removing the key — after keeping the mask (ideally recording why
+`ignore` say. It exists so the decision can be tracked and required:
+[safe mode](#safe-mode-masking-new-columns-by-default) attaches it to every newly discovered
+column together with a default mask, and a check can refuse to merge a change while any column
+still carries one. Resolving it means removing the key — after keeping the mask (ideally recording why
 in `comment`), replacing it with a real masking rule, dropping `replace_with` to export the raw
 value, or setting `ignore: true`.
 

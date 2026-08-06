@@ -270,7 +270,7 @@ module Exwiw
       # A quote in a literal is doubled; a backslash is not, so a hand-written
       # mask containing one means what MySQL makes of it.
       private def mask_template_parts(ast, column)
-        column.value.scan(/\{[^{}]+\}|[^{}]+|[{}]/).map do |part|
+        column.value.scan(/#{Exwiw::MaskValue::PLACEHOLDER}|[^{}]+|[{}]/).map do |part|
           if part.size > 1 && part.start_with?("{")
             qualified_name(ast.from_table_name, part[1..-2])
           else
