@@ -414,6 +414,43 @@ Because it reads the database directly, a table that still exists in the databas
 
 It respects `EXWIW_SCHEMA_DIR_PATH` and the per-database subdirectory layout in the same way as `schema:generate`. Unlike `generate`, `tidy` never adds or regenerates entries — every surviving table/column (including hand-edited `comment` / `ignore` / `replace_with`) is left untouched, so it is safe to run on a customized config. The task prints which tables and columns it removed (or that the config was already tidy). Stale `belongs_tos` are not pruned by `tidy`; rerun `schema:generate` to refresh those.
 
+#### Checking the config against the schema
+
+`schema:check` reports how the committed config differs from what the application would
+generate now — without writing anything, so it can run on a working tree it must not modify:
+
+```bash
+bundle exec rake exwiw:schema:check
+```
+
+It regenerates into a throwaway copy of the config directory (safe mode + `tidy`) and prints
+the comparison as JSON, then exits non-zero when anything needs attention:
+
+```json
+{
+  "added_tables": [],
+  "added_columns": ["users.contact_email"],
+  "removed_tables": [],
+  "removed_columns": [],
+  "changed_tables": ["users"],
+  "needs_mask_decision": ["orders.memo"]
+}
+```
+
+`added_*` / `removed_*` / `changed_tables` mean the config no longer matches the schema — run
+`schema:generate` and `schema:tidy` to reconcile it. `needs_mask_decision` lists the columns
+whose masking nobody has decided on yet (see [the flag](#needs_mask_decision)). The exit code
+makes it usable as a CI check that keeps a schema change from being merged until both are
+resolved; the JSON is stable and sorted, so it can be posted as-is. In a multi-database app each
+entry is prefixed with its database (`primary/users.email`), so the same table name in two
+databases stays distinct.
+
+Set `EXWIW_SCHEMA_CHECK_OUTPUT=<path>` to have the same JSON written to a file, which spares a
+caller from assuming stdout carries nothing else (application boot is free to print).
+
+Like safe mode, this is ActiveRecord-only — it regenerates through `SchemaGenerator`, so a
+Mongoid config directory is not supported yet.
+
 #### Multiple databases
 
 If the application uses Rails' multiple-database support (`connects_to`), `schema:generate` buckets models by the database they connect to and writes each database's config files into its own subdirectory of the output directory, named after the database config name (`primary`, `analytics`, ...):
@@ -591,12 +628,13 @@ nobody has decided on yet:
 ```
 
 Extraction ignores the key entirely — what the column exports is whatever `replace_with` /
-`ignore` say. It exists so the decision can be tracked and required:
+`ignore` say. It exists so the decision can be tracked and required: `schema:generate`'s
 [safe mode](#safe-mode-masking-new-columns-by-default) attaches it to every newly discovered
-column together with a default mask, and a check can refuse to merge a change while any column
-still carries one. Resolving it means removing the key — after keeping the mask (ideally recording why
-in `comment`), replacing it with a real masking rule, dropping `replace_with` to export the raw
-value, or setting `ignore: true`.
+column together with a default mask, and [`schema:check`](#checking-the-config-against-the-schema)
+reports the columns that still carry it, so CI can keep a pull request red until each one is
+resolved. Resolving it means removing the key — after keeping the mask (ideally recording why
+in `comment`), replacing it with a real masking rule, dropping `replace_with` to export the
+raw value, or setting `ignore: true`.
 
 Like `comment` / `ignore`, the on-disk state wins over regeneration: once removed,
 `schema:generate` does not bring it back.
