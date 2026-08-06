@@ -13,11 +13,17 @@ namespace :exwiw do
       ENV["EXWIW_SCHEMA_DIR_PATH"] || Exwiw::ConfigFile.schema_dir || "exwiw/schema"
     end
 
-    # Safe mode (EXWIW_NEW_COLUMNS=safe): emit every column the config does not
-    # have yet masked and flagged `needs_mask_decision: true`, so a column added
-    # by a migration cannot reach a dump before someone decides how it should be
-    # masked. Off by default — the generated config is unchanged without it.
-    safe_new_columns = lambda { ENV["EXWIW_NEW_COLUMNS"] == "safe" }
+    # Safe mode: emit every column the config does not have yet masked and
+    # flagged `needs_mask_decision: true`, so a column added by a migration
+    # cannot reach a dump before someone decides how it should be masked.
+    #
+    # On by default, because the guarantee only holds if the command people
+    # actually run is the safe one — an opt-in flag would leave a plain
+    # `schema:generate` quietly committing an unmasked column that `schema:check`
+    # then reports as clean. `EXWIW_NEW_COLUMNS=plain` opts out, which is what a
+    # first-time bootstrap wants (every column of every table is new there, so
+    # safe mode would flag the entire config at once).
+    safe_new_columns = lambda { ENV["EXWIW_NEW_COLUMNS"] != "plain" }
 
     desc "Generate schema from application"
     task generate: :environment do
@@ -50,11 +56,16 @@ namespace :exwiw do
       require "exwiw"
 
       report = Exwiw::SchemaCheck.from_rails_application(schema_dir: resolve_schema_dir.call).run
-      puts JSON.pretty_generate(report)
+      json = JSON.pretty_generate(report)
+      puts json
+      # Writing the report to a file as well lets a caller (CI) read it without
+      # having to assume stdout carries nothing but the JSON — application boot
+      # is free to print whatever it likes.
+      File.write(ENV["EXWIW_SCHEMA_CHECK_OUTPUT"], json + "\n") if ENV["EXWIW_SCHEMA_CHECK_OUTPUT"]
 
       unless Exwiw::SchemaCheck.clean?(report)
         $stderr.puts "exwiw: the schema config is out of date or has undecided masking; " \
-                     "run `EXWIW_NEW_COLUMNS=safe rake exwiw:schema:generate exwiw:schema:tidy` " \
+                     "run `rake exwiw:schema:generate exwiw:schema:tidy` " \
                      "and resolve every `needs_mask_decision` column."
         exit 1
       end

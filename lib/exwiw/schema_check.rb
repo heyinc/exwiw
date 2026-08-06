@@ -56,11 +56,20 @@ module Exwiw
 
     # Every config file under `dir`, keyed by its path relative to `dir` so the
     # per-database subdirectories of a multi-database app stay distinct.
+    #
+    # Hand-editing these files is the workflow this check exists to drive, so a
+    # syntax error is a likely outcome and has to name the file it is in rather
+    # than surfacing as a bare parse error from somewhere in the run.
     private def read_configs(dir)
       return {} unless Dir.exist?(dir)
 
       Dir[File.join(dir, "**", "*.json")].each_with_object({}) do |path, acc|
-        acc[Pathname.new(path).relative_path_from(Pathname.new(dir)).to_s] = JSON.parse(File.read(path))
+        key = Pathname.new(path).relative_path_from(Pathname.new(dir)).to_s
+        begin
+          acc[key] = JSON.parse(File.read(path))
+        rescue JSON::ParserError => e
+          raise JSON::ParserError, "invalid JSON in schema config '#{path}': #{e.message}"
+        end
       end
     end
 
@@ -72,20 +81,20 @@ module Exwiw
         after = regenerated[key]
 
         if before.nil?
-          report["added_tables"] << table_name(key, after)
+          report["added_tables"] << table_label(key, after)
           next
         end
         if after.nil?
-          report["removed_tables"] << table_name(key, before)
+          report["removed_tables"] << table_label(key, before)
           next
         end
         next if before == after
 
-        name = table_name(key, before)
-        report["changed_tables"] << name
+        label = table_label(key, before)
+        report["changed_tables"] << label
         added, removed = column_diff(before, after)
-        report["added_columns"] += added.map { |column| "#{name}.#{column}" }
-        report["removed_columns"] += removed.map { |column| "#{name}.#{column}" }
+        report["added_columns"] += added.sort.map { |column| "#{label}.#{column}" }
+        report["removed_columns"] += removed.sort.map { |column| "#{label}.#{column}" }
       end
 
       report
@@ -97,19 +106,26 @@ module Exwiw
       [after_names - before_names, before_names - after_names]
     end
 
+    # `fields` is the MongoDB config's spelling of `columns`.
     private def column_names(config)
-      (config["columns"] || []).map { |column| column["name"] }
+      (config["columns"] || config["fields"] || []).map { |column| column["name"] }
     end
 
-    private def table_name(key, config)
-      config&.fetch("name", nil) || File.basename(key, ".json")
+    # How a table is named in the report. A multi-database app keeps one
+    # subdirectory per database and the same table name can appear in several of
+    # them, so the database is part of the label — otherwise the entries collide
+    # (every database has its own `schema_migrations`).
+    private def table_label(key, config)
+      name = config&.fetch("name", nil) || File.basename(key, ".json")
+      db = File.dirname(key)
+      db == "." ? name : "#{db}/#{name}"
     end
 
     private def flagged_columns(committed)
       committed.flat_map do |key, config|
-        (config["columns"] || [])
+        (config["columns"] || config["fields"] || [])
           .select { |column| column["needs_mask_decision"] }
-          .map { |column| "#{table_name(key, config)}.#{column['name']}" }
+          .map { |column| "#{table_label(key, config)}.#{column['name']}" }
       end.sort
     end
   end
