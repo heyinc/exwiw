@@ -4,6 +4,8 @@
 
 ### Added
 
+- **A column/field can carry `needs_mask_decision: true`, marking a masking decision nobody has made yet.** Extraction ignores the key entirely — what the column exports is whatever `replace_with` / `ignore` say — so it is purely a decision-tracking bit that tooling can attach and report, letting a check refuse to merge a schema change while any column still carries one. The on-disk state wins over regeneration: removing the key is how the decision is recorded, so a regenerated config must not restore it.
+
 - **`replace_with` accepts a non-String value, so a column that is not text can be masked without changing its type.** A String mask is rendered as a template and emitted as text, which is the wrong shape for an integer/boolean column (and would change a MongoDB field's BSON type). A JSON scalar — `"replace_with": 0`, `false`, `1.5` — is used verbatim instead: the SQL adapters emit it as a typed literal rather than concatenating it into text, and the MongoDB adapter assigns the value as-is. `{}` placeholders are only interpreted in the String form, and NULL preservation applies to both. Because `false` is a valid mask value and falsy in Ruby, the checks that decide whether a column is masked now test for nil, so a `replace_with: false` column is no longer emitted unmasked.
 
 ### Fixed

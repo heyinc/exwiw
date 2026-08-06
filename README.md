@@ -535,6 +535,25 @@ Individual `columns` (SQL) / `fields` (MongoDB) and `belongs_tos` entries accept
 
 The ignored entries are removed only at runtime, right after the config is loaded from file; the JSON on disk keeps them. Both `comment` and `ignore` are **preserved across `exwiw:schema:generate` / `exwiw:mongoid:schema:generate` regenerations** (the hand-edited value wins over the auto-generated config), just like `replace_with`. This applies to the MongoDB `MongodbCollectionConfig` (`fields` / `belongs_tos`) as well.
 
+### `needs_mask_decision`
+
+A column/field may also carry `needs_mask_decision: true`, marking a column whose masking
+nobody has decided on yet:
+
+```json
+{ "name": "contact_email", "replace_with": "masked-{id}@example.com", "needs_mask_decision": true }
+```
+
+Extraction ignores the key entirely — what the column exports is whatever `replace_with` /
+`ignore` say. It exists so the decision can be tracked and required: the generator attaches it
+to a newly discovered column, and a check can refuse to merge a change while any column still
+carries one. Resolving it means removing the key — after keeping the mask (ideally recording why
+in `comment`), replacing it with a real masking rule, dropping `replace_with` to export the raw
+value, or setting `ignore: true`.
+
+Like `comment` / `ignore`, the on-disk state wins over regeneration: once removed,
+`schema:generate` does not bring it back.
+
 ### Polymorphic `belongs_to`
 
 A Rails polymorphic association (`belongs_to :reviewable, polymorphic: true`) does not point at a single table — the target row is selected at runtime by a type column. exwiw models this as **one `belongs_to` entry per concrete target table**, each carrying two extra fields:

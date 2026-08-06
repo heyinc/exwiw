@@ -457,6 +457,42 @@ module Exwiw
       end
     end
 
+    describe 'needs_mask_decision' do
+      it 'round-trips through JSON and is omitted when unset' do
+        config = TableConfig.from_symbol_keys(
+          name: 'users',
+          primary_key: 'id',
+          columns: [
+            { name: 'id' },
+            { name: 'email', replace_with: 'masked-{id}@example.com', needs_mask_decision: true },
+          ],
+        )
+        reloaded = TableConfig.from(JSON.parse(JSON.generate(config.to_hash)))
+
+        expect(reloaded.columns[1].needs_mask_decision).to eq(true)
+        expect(reloaded.columns[0].to_hash).not_to have_key('needs_mask_decision')
+      end
+
+      it 'keeps the resolved state across merge with a regenerated config' do
+        current = TableConfig.from_symbol_keys(
+          name: 'users', primary_key: 'id',
+          columns: [
+            { name: 'id' },
+            { name: 'email', comment: 'PII' },
+            { name: 'nickname', replace_with: 'masked-{id}', needs_mask_decision: true },
+          ],
+        )
+        regenerated = TableConfig.from_symbol_keys(
+          name: 'users', primary_key: 'id',
+          columns: [{ name: 'id' }, { name: 'email' }, { name: 'nickname' }],
+        )
+        merged = current.merge(regenerated)
+
+        expect(merged.columns[1].needs_mask_decision).to be_nil
+        expect(merged.columns[2].needs_mask_decision).to eq(true)
+      end
+    end
+
     describe 'scalar replace_with' do
       it 'round-trips non-String mask values through JSON with their type' do
         config = TableConfig.from_symbol_keys(

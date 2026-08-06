@@ -23,6 +23,10 @@ module Exwiw
     # once the config is loaded (see MongodbCollectionConfig#reject_ignored_members!).
     attribute :comment, optional(String), skip_serializing_if_nil: true
     attribute :ignore, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
+    # See TableColumn#needs_mask_decision.
+    attribute :needs_mask_decision,
+              Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)),
+              skip_serializing_if_nil: true
 
     def self.from_symbol_keys(hash)
       from(hash.transform_keys(&:to_s))
