@@ -17,10 +17,9 @@ module Exwiw
     # INSERT) once the config is loaded (see TableConfig#reject_ignored_members!).
     attribute :comment, optional(String), skip_serializing_if_nil: true
     attribute :ignore, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
-    # Marks a column whose masking has not been decided by a human yet: emitted
-    # by `schema:generate` in safe mode together with a default mask, and
-    # reported by `schema:check` so CI can require the decision. Extraction never
-    # reads it — the masking is whatever `replace_with` says.
+    # Marks a column whose masking nobody has decided on yet. Extraction never
+    # reads it; `schema:generate` emits it and `schema:check` reports it, so CI
+    # can require the decision.
     attribute :needs_mask_decision,
               Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)),
               skip_serializing_if_nil: true

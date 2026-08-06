@@ -1,38 +1,28 @@
 # frozen_string_literal: true
 
 module Exwiw
-  # The `replace_with` value `schema:generate`'s safe mode attaches to a newly
-  # discovered column (see SchemaGenerator#build_tables_for).
+  # The `replace_with` value safe mode attaches to a newly discovered column.
   #
-  # Only types a constant can safely stand in for are masked. A default that the
-  # target column cannot hold — a text literal in a `uuid` column, a scalar in an
-  # array column, or a value longer than a short `varchar` — would fail the
-  # restore the dump feeds, which is worse than exporting the column while its
-  # `needs_mask_decision` flag keeps the change from being merged. So an
-  # unmaskable column is flagged and left as-is rather than masked with something
-  # invalid.
+  # Only types a constant can safely stand in for are masked: a default the
+  # column cannot hold would fail the restore the dump feeds, which is worse
+  # than exporting the column while its `needs_mask_decision` flag keeps the
+  # change from being merged.
   module DefaultMask
     FIXED_DATE = "2000-01-01"
     FIXED_TIME = "2000-01-01 00:00:00"
     EMPTY_JSON = "{}"
 
-    # A masked text value is `masked-<primary key>`, so it stays unique under a
-    # unique index. Skip the mask when the column is too short to hold that for
-    # a realistic key, since the length is only known per row at dump time.
+    # Skip the mask when the column is too short to hold `masked-<primary key>`
+    # for a realistic key; the rendered length is only known per row at dump time.
     MIN_TEXT_LIMIT = 20
     MIN_EMAIL_LIMIT = 40
 
     module_function
 
-    # The default mask for a column, or nil when there is no safe constant for
-    # it. `primary_key` is the template reference that keeps text masks unique;
-    # with no single primary key there is nothing to key them on, so text is left
-    # unmasked too.
-    #
-    # `unique` marks a column covered by a unique index: a constant would collapse
-    # every row onto one value and break the restore with a duplicate key, so only
-    # a mask that varies per row (one interpolating the primary key) is allowed
-    # there.
+    # The default mask for a column, or nil when no safe constant fits it.
+    # `primary_key` is what keeps a text mask unique per row, so without one text
+    # is left unmasked too. Under a unique index (`unique`) only a mask that
+    # varies per row is allowed, or every row would collide on restore.
     def for(name:, type:, limit:, primary_key:, array: false, unique: false)
       return nil if array
 

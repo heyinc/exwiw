@@ -43,18 +43,17 @@ module Exwiw
     # belongs_to to it.
     ACTIVE_STORAGE_VARIANT_RECORDS_TABLE = "active_storage_variant_records"
 
-    def self.from_rails_application(output_dir:, safe_new_columns: false)
+    def self.from_rails_application(output_dir:, safe_new_columns: true)
       Rails.application.eager_load!
       new(models: ActiveRecord::Base.descendants, output_dir: output_dir, safe_new_columns: safe_new_columns)
     end
 
-    # `safe_new_columns` turns on safe mode: every column is emitted masked (as
-    # far as its type allows, see DefaultMask) and flagged
-    # `needs_mask_decision: true`. Only columns the config does not have yet keep
-    # that treatment — #merge lets an existing entry win — so in practice it
-    # applies to columns a migration has just added, which would otherwise be
-    # exported unmasked without anyone looking at them.
-    def initialize(models:, output_dir:, safe_new_columns: false)
+    # `safe_new_columns` (the default) emits every column masked — as far as its
+    # type allows, see DefaultMask — and flagged `needs_mask_decision: true`.
+    # #merge lets an existing entry win, so in practice only columns a migration
+    # has just added keep that treatment. Pass false to bootstrap a config, where
+    # every column is new and flagging all of them at once is noise.
+    def initialize(models:, output_dir:, safe_new_columns: true)
       @models = models
       @output_dir = output_dir
       @safe_new_columns = safe_new_columns
@@ -259,14 +258,10 @@ module Exwiw
       tables_from_models + build_rails_managed_tables(conn)
     end
 
-    # The `columns` entries for a table. Outside safe mode (and for the ignored
-    # tables, which are never extracted) a column is just its name.
-    #
-    # In safe mode each column also gets a default mask and the
-    # `needs_mask_decision` flag. The keys that hold the export together —
-    # the primary key and the foreign keys/types the belongs_tos join on — are
-    # flagged but never masked: masking them would break the joins and leave the
-    # dump with dangling references.
+    # The `columns` entries for a table: just the name, or — in safe mode — also
+    # a default mask and the `needs_mask_decision` flag. The primary key and the
+    # foreign keys/types the belongs_tos join on are flagged but never masked,
+    # since masking them would break the joins.
     private def build_columns(representative, primary_key, belongs_tos, conn)
       names = representative.column_names
       return names.map { |name| { name: name } } unless @safe_new_columns
@@ -286,22 +281,23 @@ module Exwiw
           type: column.type,
           limit: column.limit,
           primary_key: primary_key,
-          # An array column reports its member type (`integer[]` is `:integer`),
-          # so a scalar default would be rejected by the column on restore.
+          # `integer[]` reports `:integer`, so a scalar default would not fit.
           array: column.respond_to?(:array?) && column.array?,
-          unique: unique.include?(name),
+          unique: unique.nil? || unique.include?(name),
         )
         mask.nil? ? entry : entry.merge(replace_with: mask)
       end
     end
 
-    # Columns covered by a unique index, which a constant mask would collapse
-    # onto one value. An expression index yields no plain column name, so it
-    # simply never matches.
+    # Columns covered by a unique index, or nil when they could not be read —
+    # callers treat that as "assume every column is unique", since masking a
+    # unique column with a constant breaks the restore the dump feeds.
     private def unique_column_names(conn, table_name)
       conn.indexes(table_name).select(&:unique).flat_map { |index| Array(index.columns) }.to_set
-    rescue StandardError
-      Set.new
+    rescue StandardError => e
+      warn "exwiw: could not read the indexes of '#{table_name}' (#{e.class}); " \
+           "treating every column as unique-indexed so no constant mask is emitted."
+      nil
     end
 
     private def concrete_models

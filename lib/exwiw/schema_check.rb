@@ -8,11 +8,8 @@ require "tmpdir"
 module Exwiw
   # Reports how the committed schema config differs from what the application
   # would generate now, plus the columns still waiting for a masking decision.
-  #
-  # Regenerating into a copy of the config directory rather than over it means
-  # the check can run on a working tree it must not modify (CI), and the
-  # comparison covers exactly what `schema:generate` + `schema:tidy` would do:
-  # tables and columns added by a migration, and entries whose table is gone.
+  # Regenerating into a copy rather than over the config directory lets it run
+  # on a working tree it must not modify (CI). ActiveRecord only.
   class SchemaCheck
     CATEGORIES = %w[
       added_tables added_columns removed_tables removed_columns changed_tables needs_mask_decision
@@ -28,8 +25,8 @@ module Exwiw
       @schema_dir = schema_dir
     end
 
-    # The report as a plain Hash, ready to serialize. Every list is sorted so a
-    # given state always produces the same output (it ends up in a CI comment).
+    # The report as a plain Hash. Every list is sorted, so a given state always
+    # produces the same output (it ends up in a CI comment).
     def run
       committed = read_configs(@schema_dir)
       regenerated = Dir.mktmpdir do |tmp_dir|
@@ -50,16 +47,13 @@ module Exwiw
 
     private def regenerate_into(tmp_dir)
       FileUtils.cp_r(File.join(@schema_dir, "."), tmp_dir) if Dir.exist?(@schema_dir)
-      SchemaGenerator.new(models: @models, output_dir: tmp_dir, safe_new_columns: true).generate!
+      SchemaGenerator.new(models: @models, output_dir: tmp_dir).generate!
       SchemaGenerator.new(models: @models, output_dir: tmp_dir).tidy!
     end
 
     # Every config file under `dir`, keyed by its path relative to `dir` so the
-    # per-database subdirectories of a multi-database app stay distinct.
-    #
-    # Hand-editing these files is the workflow this check exists to drive, so a
-    # syntax error is a likely outcome and has to name the file it is in rather
-    # than surfacing as a bare parse error from somewhere in the run.
+    # per-database subdirectories stay distinct. Hand-editing these files is the
+    # workflow this drives, so a syntax error has to name the file it is in.
     private def read_configs(dir)
       return {} unless Dir.exist?(dir)
 
@@ -111,10 +105,8 @@ module Exwiw
       (config["columns"] || config["fields"] || []).map { |column| column["name"] }
     end
 
-    # How a table is named in the report. A multi-database app keeps one
-    # subdirectory per database and the same table name can appear in several of
-    # them, so the database is part of the label — otherwise the entries collide
-    # (every database has its own `schema_migrations`).
+    # How a table is named in the report. The database is part of the label, or
+    # the same table name in two of them collides (each has `schema_migrations`).
     private def table_label(key, config)
       name = config&.fetch("name", nil) || File.basename(key, ".json")
       db = File.dirname(key)

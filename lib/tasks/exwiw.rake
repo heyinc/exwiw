@@ -13,16 +13,9 @@ namespace :exwiw do
       ENV["EXWIW_SCHEMA_DIR_PATH"] || Exwiw::ConfigFile.schema_dir || "exwiw/schema"
     end
 
-    # Safe mode: emit every column the config does not have yet masked and
-    # flagged `needs_mask_decision: true`, so a column added by a migration
-    # cannot reach a dump before someone decides how it should be masked.
-    #
-    # On by default, because the guarantee only holds if the command people
-    # actually run is the safe one — an opt-in flag would leave a plain
-    # `schema:generate` quietly committing an unmasked column that `schema:check`
-    # then reports as clean. `EXWIW_NEW_COLUMNS=plain` opts out, which is what a
-    # first-time bootstrap wants (every column of every table is new there, so
-    # safe mode would flag the entire config at once).
+    # Safe mode is on unless EXWIW_NEW_COLUMNS=plain, which a first-time
+    # bootstrap wants: there every column is new, so safe mode would flag the
+    # whole config at once. See SchemaGenerator#initialize.
     safe_new_columns = lambda { ENV["EXWIW_NEW_COLUMNS"] != "plain" }
 
     desc "Generate schema from application"
@@ -58,9 +51,7 @@ namespace :exwiw do
       report = Exwiw::SchemaCheck.from_rails_application(schema_dir: resolve_schema_dir.call).run
       json = JSON.pretty_generate(report)
       puts json
-      # Writing the report to a file as well lets a caller (CI) read it without
-      # having to assume stdout carries nothing but the JSON — application boot
-      # is free to print whatever it likes.
+      # A file too, so a caller need not assume stdout carries only the JSON.
       File.write(ENV["EXWIW_SCHEMA_CHECK_OUTPUT"], json + "\n") if ENV["EXWIW_SCHEMA_CHECK_OUTPUT"]
 
       unless Exwiw::SchemaCheck.clean?(report)

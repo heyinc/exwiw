@@ -29,8 +29,10 @@ module Exwiw
       end
     end
 
+    # A config as it looks once every column's masking has been decided, which
+    # is the committed state these examples start from.
     def generate_current_config
-      SchemaGenerator.new(models: models, output_dir: schema_dir).generate!
+      SchemaGenerator.new(models: models, output_dir: schema_dir, safe_new_columns: false).generate!
     end
 
     def config_path(table_name)
