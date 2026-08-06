@@ -5,11 +5,12 @@ module Exwiw
   # discovered column (see SchemaGenerator#build_tables_for).
   #
   # Only types a constant can safely stand in for are masked. A default that the
-  # target column cannot hold — a text literal in a `uuid` column, or a value
-  # longer than a short `varchar` — would fail the restore the dump feeds, which
-  # is worse than exporting the column while its `needs_mask_decision` flag keeps
-  # the change from being merged. So an unmaskable type is flagged and left
-  # as-is rather than masked with something invalid.
+  # target column cannot hold — a text literal in a `uuid` column, a scalar in an
+  # array column, or a value longer than a short `varchar` — would fail the
+  # restore the dump feeds, which is worse than exporting the column while its
+  # `needs_mask_decision` flag keeps the change from being merged. So an
+  # unmaskable column is flagged and left as-is rather than masked with something
+  # invalid.
   module DefaultMask
     FIXED_DATE = "2000-01-01"
     FIXED_TIME = "2000-01-01 00:00:00"
@@ -23,19 +24,32 @@ module Exwiw
 
     module_function
 
-    # The default mask for a column, or nil when the type has no safe constant.
-    # `primary_key` is the template reference that keeps text masks unique; with
-    # no single primary key there is nothing to key them on, so text is left
+    # The default mask for a column, or nil when there is no safe constant for
+    # it. `primary_key` is the template reference that keeps text masks unique;
+    # with no single primary key there is nothing to key them on, so text is left
     # unmasked too.
-    def for(name:, type:, limit:, primary_key:)
-      case type
-      when :integer, :decimal, :float then 0
-      when :boolean then false
-      when :date then FIXED_DATE
-      when :datetime, :timestamp, :time then FIXED_TIME
-      when :json, :jsonb then EMPTY_JSON
-      when :string, :text then text_mask(name, limit, primary_key)
-      end
+    #
+    # `unique` marks a column covered by a unique index: a constant would collapse
+    # every row onto one value and break the restore with a duplicate key, so only
+    # a mask that varies per row (one interpolating the primary key) is allowed
+    # there.
+    def for(name:, type:, limit:, primary_key:, array: false, unique: false)
+      return nil if array
+
+      mask =
+        case type
+        when :integer, :decimal, :float then 0
+        when :boolean then false
+        when :date then FIXED_DATE
+        when :datetime, :timestamp, :time then FIXED_TIME
+        when :json, :jsonb then EMPTY_JSON
+        when :string, :text then text_mask(name, limit, primary_key)
+        end
+
+      return nil if mask.nil?
+      return nil if unique && !varies_per_row?(mask, primary_key)
+
+      mask
     end
 
     def text_mask(name, limit, primary_key)
@@ -50,6 +64,10 @@ module Exwiw
 
         "masked-{#{primary_key}}"
       end
+    end
+
+    def varies_per_row?(mask, primary_key)
+      mask.is_a?(String) && mask.include?("{#{primary_key}}")
     end
   end
 end

@@ -491,15 +491,25 @@ module Exwiw
         end
         File.write(path, JSON.pretty_generate(resolved) + "\n")
 
-        # A migration adds a column; only that one comes back flagged.
+        # A migration adds a column; only that one comes back flagged. Stub the
+        # column object too, not just the name, or the new column would come back
+        # unmasked simply because the generator could not resolve its type.
+        # `array?` is PostgreSQL-only, which is why the generator asks with
+        # respond_to? — the double is the generic column, without it.
+        memo = instance_double(
+          ActiveRecord::ConnectionAdapters::Column,
+          name: "memo", type: :string, limit: nil,
+        )
         allow(User).to receive(:column_names).and_return(User.column_names + ["memo"])
+        allow(User).to receive(:columns).and_return(User.columns + [memo])
         generate_safe([User])
 
         columns = config_for("users")["columns"]
         expect(columns.find { |c| c["name"] == "name" })
           .to eq({ "name" => "name", "replace_with" => "masked-{id}", "comment" => "PII" })
         expect(columns.find { |c| c["name"] == "email" }).to eq({ "name" => "email" })
-        expect(columns.find { |c| c["name"] == "memo" }).to eq({ "name" => "memo", "needs_mask_decision" => true })
+        expect(columns.find { |c| c["name"] == "memo" })
+          .to eq({ "name" => "memo", "replace_with" => "masked-{id}", "needs_mask_decision" => true })
       end
     end
 

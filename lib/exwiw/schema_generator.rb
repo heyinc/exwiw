@@ -251,7 +251,7 @@ module Exwiw
             name: table_name,
             primary_key: primary_key,
             belongs_tos: belongs_tos,
-            columns: build_columns(representative, primary_key, belongs_tos),
+            columns: build_columns(representative, primary_key, belongs_tos, conn),
           )
         end
       end
@@ -267,13 +267,14 @@ module Exwiw
     # the primary key and the foreign keys/types the belongs_tos join on — are
     # flagged but never masked: masking them would break the joins and leave the
     # dump with dangling references.
-    private def build_columns(representative, primary_key, belongs_tos)
+    private def build_columns(representative, primary_key, belongs_tos, conn)
       names = representative.column_names
       return names.map { |name| { name: name } } unless @safe_new_columns
 
       structural = belongs_tos.flat_map { |bt| [bt[:foreign_key], bt[:foreign_type]] }.compact.to_set
       structural << primary_key if primary_key
       columns_by_name = representative.columns.each_with_object({}) { |column, acc| acc[column.name] = column }
+      unique = unique_column_names(conn, representative.table_name)
 
       names.map do |name|
         entry = { name: name, needs_mask_decision: true }
@@ -281,10 +282,26 @@ module Exwiw
 
         column = columns_by_name[name]
         mask = column && DefaultMask.for(
-          name: name, type: column.type, limit: column.limit, primary_key: primary_key
+          name: name,
+          type: column.type,
+          limit: column.limit,
+          primary_key: primary_key,
+          # An array column reports its member type (`integer[]` is `:integer`),
+          # so a scalar default would be rejected by the column on restore.
+          array: column.respond_to?(:array?) && column.array?,
+          unique: unique.include?(name),
         )
         mask.nil? ? entry : entry.merge(replace_with: mask)
       end
+    end
+
+    # Columns covered by a unique index, which a constant mask would collapse
+    # onto one value. An expression index yields no plain column name, so it
+    # simply never matches.
+    private def unique_column_names(conn, table_name)
+      conn.indexes(table_name).select(&:unique).flat_map { |index| Array(index.columns) }.to_set
+    rescue StandardError
+      Set.new
     end
 
     private def concrete_models

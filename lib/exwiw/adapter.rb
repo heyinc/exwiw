@@ -263,6 +263,25 @@ module Exwiw
         "CASE WHEN #{qualified_name(ast.from_table_name, column.name)} IS NOT NULL THEN #{masked_expr} ELSE NULL END"
       end
 
+      # Split a `replace_with` template into the SQL expressions it concatenates:
+      # a `{column}` placeholder becomes that column's qualified name, everything
+      # else a quoted literal.
+      #
+      # A brace pair with nothing between it (`{}`) is NOT a placeholder — there
+      # is no column named "" — so it is emitted literally, which is what makes
+      # `"replace_with": "{}"` a usable empty-JSON mask and matches both the
+      # MongoDB adapter (its placeholder pattern requires one or more characters)
+      # and the documented behavior.
+      private def mask_template_parts(ast, column)
+        column.value.scan(/\{[^{}]+\}|[^{}]+|[{}]/).map do |part|
+          if part.size > 1 && part.start_with?("{")
+            qualified_name(ast.from_table_name, part[1..-2])
+          else
+            "'#{part}'"
+          end
+        end
+      end
+
       # A non-String `replace_with` (see Exwiw::MaskValue) is a constant used
       # verbatim, so it is emitted as a typed SQL literal rather than being
       # concatenated into text: an integer column masked with `0` keeps its
