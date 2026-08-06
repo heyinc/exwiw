@@ -13,6 +13,11 @@ module Exwiw
     FIXED_DATE = "2000-01-01"
     FIXED_TIME = "2000-01-01 00:00:00"
     EMPTY_JSON = "{}"
+    JSON_TYPES = %i[json jsonb].freeze
+
+    # A `{...}` in a String mask is a column placeholder, so a default holding
+    # one would compile into a reference to a column that is not there.
+    PLACEHOLDER = /\{[^{}]+\}/
 
     # Skip the mask when the column is too short to hold `masked-<primary key>`
     # for a realistic key; the rendered length is only known per row at dump time.
@@ -41,12 +46,11 @@ module Exwiw
     end
 
     # The column's own default wins over the per-type constant: it is a value the
-    # column provably holds, and it is what the application treats as neutral, so
-    # masking a `default: true` flag does not silently turn the feature off for
-    # every row. A default computed by the database (`now()`) is not a constant
-    # and arrives here as nil, so it falls through.
+    # column provably holds and the one the application treats as neutral, so
+    # masking a `default: true` flag does not turn the feature off for every row.
+    # A default the database computes (`now()`) arrives as nil and falls through.
     def constant_mask(type, column_default)
-      from_default = scalar_default(column_default)
+      from_default = default_value(type, column_default)
       return from_default unless from_default.nil?
 
       case type
@@ -58,7 +62,18 @@ module Exwiw
       end
     end
 
-    # A default as a value `replace_with` accepts, or nil when it is not one.
+    # The default as a mask value, or nil when it cannot be one. A JSON column's
+    # default is serialized as JSON whatever Ruby class it arrives as, so a string
+    # default keeps its quoting and an object is rejected rather than mis-parsed.
+    def default_value(type, value)
+      return nil if value.nil?
+
+      mask = JSON_TYPES.include?(type) ? value.to_json : scalar_default(value)
+      return nil if mask.is_a?(String) && mask.match?(PLACEHOLDER)
+
+      mask
+    end
+
     def scalar_default(value)
       case value
       when nil then nil
