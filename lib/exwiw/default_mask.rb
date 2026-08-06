@@ -15,9 +15,6 @@ module Exwiw
     EMPTY_JSON = "{}"
     JSON_TYPES = %i[json jsonb].freeze
 
-    # A `{...}` in a String mask is a column placeholder, so a default holding
-    # one would compile into a reference to a column that is not there.
-    PLACEHOLDER = /\{[^{}]+\}/
 
     # Skip the mask when the column is too short to hold `masked-<primary key>`
     # for a realistic key; the rendered length is only known per row at dump time.
@@ -64,12 +61,14 @@ module Exwiw
 
     # The default as a mask value, or nil when it cannot be one. A JSON column's
     # default is serialized as JSON whatever Ruby class it arrives as, so a string
-    # default keeps its quoting and an object is rejected rather than mis-parsed.
+    # default keeps its quoting. Anything whose JSON contains an object is
+    # rejected rather than mis-parsed, so an array of objects falls back to the
+    # empty-JSON constant too.
     def default_value(type, value)
       return nil if value.nil?
 
       mask = JSON_TYPES.include?(type) ? value.to_json : scalar_default(value)
-      return nil if mask.is_a?(String) && mask.match?(PLACEHOLDER)
+      return nil if mask.is_a?(String) && mask.match?(MaskValue::PLACEHOLDER)
 
       mask
     end

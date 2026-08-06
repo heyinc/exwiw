@@ -7,6 +7,12 @@ module Exwiw
   class MaskValue < Serdes::TypeBase
     PERMITTED = [String, Integer, Float].freeze
 
+    # What counts as a `{column}` placeholder in a template. An empty brace pair
+    # names no column and is therefore not one, which is what lets `{}` be an
+    # empty-JSON mask. Shared so the adapters that parse a template and the
+    # generator that has to avoid emitting one cannot drift apart.
+    PLACEHOLDER = /\{[^{}]+\}/
+
     def permit?(value)
       value == true || value == false || PERMITTED.any? { |type| value.is_a?(type) }
     end
