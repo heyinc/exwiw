@@ -373,9 +373,14 @@ new and safe mode would flag the whole thing at once. Use it nowhere else: `sche
 compares against the committed config, so a column committed under `plain` is indistinguishable
 from one whose masking was decided, and reads as clean from then on.
 
-The default mask depends on the column type: `masked-{primary key}` for text (with
-`@example.com` appended when the column name mentions mail, so it stays a valid address),
-`0` for numbers, `false` for booleans, a fixed date/timestamp, and `{}` for JSON. Three kinds of
+A column that has a **default of its own** is masked with that default: it is a value the column
+provably holds, and it is what the application treats as neutral, so masking a `default: true`
+flag does not quietly turn the feature off for every row in the dump. A default the database
+computes (`now()`) is not a constant and does not count. Otherwise the mask depends on the column
+type: `masked-{primary key}` for text (with `@example.com` appended when the column name mentions
+mail, so it stays a valid address), `0` for numbers, `false` for booleans, a fixed date/timestamp,
+and `{}` for JSON. Text always takes the template rather than its default, since the mask has to
+vary per row. Three kinds of
 column are flagged but deliberately **not** masked:
 
 - **The primary key, and the foreign keys/types the `belongs_tos` join on.** Masking them

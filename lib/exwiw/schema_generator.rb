@@ -270,6 +270,7 @@ module Exwiw
       structural << primary_key if primary_key
       columns_by_name = representative.columns.each_with_object({}) { |column, acc| acc[column.name] = column }
       unique = unique_column_names(conn, representative.table_name)
+      defaults = representative.column_defaults
 
       names.map do |name|
         entry = { name: name, needs_mask_decision: true }
@@ -284,6 +285,7 @@ module Exwiw
           # `integer[]` reports `:integer`, so a scalar default would not fit.
           array: column.respond_to?(:array?) && column.array?,
           unique: unique.nil? || unique.include?(name),
+          column_default: defaults[name],
         )
         mask.nil? ? entry : entry.merge(replace_with: mask)
       end
