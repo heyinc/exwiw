@@ -15,7 +15,6 @@ module Exwiw
     EMPTY_JSON = "{}"
     JSON_TYPES = %i[json jsonb].freeze
 
-
     # Skip the mask when the column is too short to hold `masked-<primary key>`
     # for a realistic key; the rendered length is only known per row at dump time.
     MIN_TEXT_LIMIT = 20
