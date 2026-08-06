@@ -5,7 +5,7 @@ module Exwiw
     include Serdes
 
     attribute :name, String
-    attribute :replace_with, optional(String), skip_serializing_if_nil: true
+    attribute :replace_with, Serdes::OptionalType.new(MaskValue.new), skip_serializing_if_nil: true
     attribute :raw_sql, optional(String), skip_serializing_if_nil: true
     # Ruby-process-side masking modes, applied to the fetched rows by
     # RowTransformer (SQL adapters only) — unlike replace_with/raw_sql, which

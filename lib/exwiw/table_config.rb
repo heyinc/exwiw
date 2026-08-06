@@ -259,7 +259,7 @@ module Exwiw
       ruby_side = [column.map && "map", column.replace_with_fake_data && "replace_with_fake_data"].compact
       return if ruby_side.empty?
 
-      sql_side = [column.raw_sql && "raw_sql", column.replace_with && "replace_with"].compact
+      sql_side = [column.raw_sql && "raw_sql", !column.replace_with.nil? && "replace_with"].select { |v| v }
       if ruby_side.size > 1 || sql_side.any?
         raise ArgumentError,
               "Table '#{name}' column '#{column.name}': #{(ruby_side + sql_side).join('/')} cannot be combined; " \

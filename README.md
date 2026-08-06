@@ -826,6 +826,23 @@ absent field) is left as-is instead of being replaced by the masked literal, so 
 string is a real value and is still masked. Because of this you do not need to hand-write a
 `raw_sql` `CASE WHEN ... IS NOT NULL ...` to keep NULLs.
 
+A **non-String** value (number or boolean) is used verbatim instead of being rendered as a
+template, so a column that is not text keeps its type:
+
+```jsonc
+{ "name": "score",  "replace_with": 0 }      // integer column -> SELECT emits the literal 0
+{ "name": "active", "replace_with": false }  // boolean column
+{ "name": "email",  "replace_with": "masked-{id}@example.com" }  // template, as above
+```
+
+The SQL adapters emit it as a typed literal (not concatenated into text) and the MongoDB
+adapter assigns it as-is, so the field keeps its BSON type. NULL preservation applies to both
+forms.
+
+In the String form, a `{...}` placeholder must name a column: an empty brace pair (`{}`) names
+nothing, so it is emitted literally — which is what makes `"replace_with": "{}"` a usable
+empty-JSON mask, on every adapter.
+
 #### `raw_sql`
 
 It will used instead of the original value.

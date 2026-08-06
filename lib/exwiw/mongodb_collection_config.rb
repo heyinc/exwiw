@@ -139,7 +139,7 @@ module Exwiw
         merged.fields = passed.fields.map do |pf|
           receiver = receiver_field_by_name[pf.name]
           if receiver
-            pf.replace_with = receiver.replace_with if receiver.replace_with
+            pf.replace_with = receiver.replace_with unless receiver.replace_with.nil?
             pf.replace_with_fake_data = receiver.replace_with_fake_data if receiver.replace_with_fake_data
             pf.comment = receiver.comment if receiver.comment
             pf.ignore = receiver.ignore unless receiver.ignore.nil?
@@ -162,7 +162,7 @@ module Exwiw
         fake_data = field.replace_with_fake_data
         next unless fake_data
 
-        if field.replace_with
+        unless field.replace_with.nil?
           raise ArgumentError,
                 "MongodbCollectionConfig '#{name}' field '#{field.name}': replace_with and " \
                 "replace_with_fake_data cannot be combined; use only one."
