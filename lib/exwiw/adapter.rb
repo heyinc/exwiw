@@ -267,6 +267,8 @@ module Exwiw
       # `{column}` placeholder becomes that column's qualified name, everything
       # else a quoted literal. An empty brace pair names no column, so it stays
       # literal — which is what makes `"replace_with": "{}"` an empty-JSON mask.
+      # A quote in a literal is doubled; a backslash is not, so a hand-written
+      # mask containing one means what MySQL makes of it.
       private def mask_template_parts(ast, column)
         column.value.scan(/\{[^{}]+\}|[^{}]+|[{}]/).map do |part|
           if part.size > 1 && part.start_with?("{")

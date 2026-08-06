@@ -47,7 +47,8 @@ module Exwiw
 
     private def regenerate_into(tmp_dir)
       FileUtils.cp_r(File.join(@schema_dir, "."), tmp_dir) if Dir.exist?(@schema_dir)
-      SchemaGenerator.new(models: @models, output_dir: tmp_dir).generate!
+      # Explicit: safe mode is not optional here, whatever the library default is.
+      SchemaGenerator.new(models: @models, output_dir: tmp_dir, safe_new_columns: true).generate!
       SchemaGenerator.new(models: @models, output_dir: tmp_dir).tidy!
     end
 

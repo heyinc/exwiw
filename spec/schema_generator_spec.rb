@@ -478,6 +478,20 @@ module Exwiw
         ])
       end
 
+      it "emits no constant mask when the table's indexes cannot be read" do
+        # Failing open here would put constant masks back on unique columns and
+        # break the restore, so an unreadable index list is treated as "every
+        # column is unique".
+        allow(User.connection).to receive(:indexes).and_raise(ActiveRecord::StatementInvalid)
+
+        expect { generate_safe([User]) }.to output(/treating every column as unique-indexed/).to_stderr
+
+        columns = config_for("users")["columns"].to_h { |c| [c["name"], c["replace_with"]] }
+        expect(columns["created_at"]).to be_nil
+        # A text mask interpolates the primary key, so it stays unique per row.
+        expect(columns["name"]).to eq("masked-{id}")
+      end
+
       it "keeps a decision a human already made and only flags what is new" do
         generate_safe([User])
         path = File.join(output_dir, "users.json")

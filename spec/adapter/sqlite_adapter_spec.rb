@@ -465,6 +465,21 @@ module Exwiw
         it "keeps an empty brace pair literal instead of reading it as a placeholder" do
           expect(json_adapter.execute(masked_ast).to_a).to eq([[1, "{}"]])
         end
+
+        it "escapes a quote in the template instead of ending the SQL literal" do
+          quoted = Exwiw::TableConfig.from_symbol_keys(
+            name: "docs",
+            primary_key: "id",
+            belongs_tos: [],
+            columns: [{ name: "id" }, { name: "payload", replace_with: "it's {id}" }],
+          )
+          ast = QueryAst::Select.new.tap do |select|
+            select.from(quoted.name)
+            select.select(quoted.columns)
+          end
+
+          expect(json_adapter.execute(ast).to_a).to eq([[1, "it's 1"]])
+        end
       end
 
       # Ruby-side masking against a real sqlite cursor: sqlite yields native

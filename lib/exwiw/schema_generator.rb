@@ -292,11 +292,19 @@ module Exwiw
     # Columns covered by a unique index, or nil when they could not be read —
     # callers treat that as "assume every column is unique", since masking a
     # unique column with a constant breaks the restore the dump feeds.
+    #
+    # `Array()` because an expression index reports a String (`lower((email)::text)`)
+    # rather than a list; wrapping keeps it from being walked character by
+    # character, and it simply never matches a column name.
     private def unique_column_names(conn, table_name)
       conn.indexes(table_name).select(&:unique).flat_map { |index| Array(index.columns) }.to_set
     rescue StandardError => e
-      warn "exwiw: could not read the indexes of '#{table_name}' (#{e.class}); " \
-           "treating every column as unique-indexed so no constant mask is emitted."
+      # Once per run: a systematic failure would otherwise repeat per table.
+      unless @warned_missing_indexes
+        @warned_missing_indexes = true
+        warn "exwiw: could not read the indexes of '#{table_name}' (#{e.class}); " \
+             "treating every column as unique-indexed so no constant mask is emitted."
+      end
       nil
     end
 
