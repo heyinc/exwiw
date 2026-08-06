@@ -44,6 +44,24 @@ namespace :exwiw do
       end
     end
 
+    desc "Report how the committed schema config differs from the application, without changing it"
+    task check: :environment do
+      require "exwiw"
+
+      report = Exwiw::SchemaCheck.from_rails_application(schema_dir: resolve_schema_dir.call).run
+      json = JSON.pretty_generate(report)
+      puts json
+      # A file too, so a caller need not assume stdout carries only the JSON.
+      File.write(ENV["EXWIW_SCHEMA_CHECK_OUTPUT"], json + "\n") if ENV["EXWIW_SCHEMA_CHECK_OUTPUT"]
+
+      unless Exwiw::SchemaCheck.clean?(report)
+        $stderr.puts "exwiw: the schema config is out of date or has undecided masking; " \
+                     "run `rake exwiw:schema:generate exwiw:schema:tidy` " \
+                     "and resolve every `needs_mask_decision` column."
+        exit 1
+      end
+    end
+
     desc "Remove tables/columns from the schema config that no longer exist in the application"
     task tidy: :environment do
       require "exwiw"
