@@ -263,6 +263,33 @@ module Exwiw
         "CASE WHEN #{qualified_name(ast.from_table_name, column.name)} IS NOT NULL THEN #{masked_expr} ELSE NULL END"
       end
 
+      # Split a `replace_with` template into the expressions it concatenates: a
+      # `{column}` placeholder becomes that column's qualified name, everything
+      # else a quoted literal. An empty brace pair names no column, so it stays
+      # literal — which is what makes `"replace_with": "{}"` an empty-JSON mask.
+      # A quote in a literal is doubled; a backslash is not, so a hand-written
+      # mask containing one means what MySQL makes of it.
+      private def mask_template_parts(ast, column)
+        column.value.scan(/\{[^{}]+\}|[^{}]+|[{}]/).map do |part|
+          if part.size > 1 && part.start_with?("{")
+            qualified_name(ast.from_table_name, part[1..-2])
+          else
+            "'#{part.gsub("'", "''")}'"
+          end
+        end
+      end
+
+      # A non-String `replace_with` (see Exwiw::MaskValue) is emitted as a typed
+      # literal rather than concatenated into text, so an integer column masked
+      # with `0` keeps its numeric type.
+      private def scalar_literal(value)
+        case value
+        when true then "TRUE"
+        when false then "FALSE"
+        else value.to_s
+        end
+      end
+
       # Split an outer query's WHERE clauses into the scope id-set clauses to
       # lift into a materialized derived-table JOIN (see each adapter's
       # #compile_scope_join) and the remaining plain clauses (kept in WHERE).

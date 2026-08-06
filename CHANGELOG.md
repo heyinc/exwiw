@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`replace_with` accepts a non-String value, so a column that is not text can be masked without changing its type.** A String mask is rendered as a template and emitted as text, which is the wrong shape for an integer/boolean column (and would change a MongoDB field's BSON type). A JSON scalar — `"replace_with": 0`, `false`, `1.5` — is used verbatim instead: the SQL adapters emit it as a typed literal rather than concatenating it into text, and the MongoDB adapter assigns the value as-is. `{}` placeholders are only interpreted in the String form, and NULL preservation applies to both. Because `false` is a valid mask value and falsy in Ruby, the checks that decide whether a column is masked now test for nil, so a `replace_with: false` column is no longer emitted unmasked.
+
+### Fixed
+
+- **A `{}` in a `replace_with` template is emitted literally instead of compiling to a reference to a column with no name.** The SQL adapters read `{...}` as a placeholder even when it was empty, so `"replace_with": "{}"` compiled to `CONCAT(t."")` (`t.``` on mysql, `(t."")` on sqlite) and the extraction failed on that table. The MongoDB adapter never had the bug — its placeholder pattern requires at least one character — so the same config meant two different things per adapter. A brace pair with nothing between it names no column and is now a literal everywhere, which is what makes `{}` usable as an empty-JSON mask (the default safe-mode mask for a `json`/`jsonb` column). Templates that name a real column are unaffected, byte for byte.
+
 ## [0.9.20] - 2026-08-05
 
 ### Changed

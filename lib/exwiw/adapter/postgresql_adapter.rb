@@ -588,14 +588,11 @@ module Exwiw
         when Exwiw::QueryAst::ColumnValue::RawSql
           column.value
         when Exwiw::QueryAst::ColumnValue::ReplaceWith
-          parts = column.value.scan(/[^{}]+|\{[^{}]*\}/).map do |part|
-            if part.start_with?('{')
-              name = part[1..-2]
-              qualified_name(ast.from_table_name, name)
-            else
-              "'#{part}'"
-            end
+          if Exwiw::MaskValue.scalar?(column.value)
+            return null_preserving(ast, column, scalar_literal(column.value))
           end
+
+          parts = mask_template_parts(ast, column)
 
           replaced = parts.join(", ")
           null_preserving(ast, column, "CONCAT(#{replaced})")

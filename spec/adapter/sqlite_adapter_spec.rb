@@ -378,6 +378,110 @@ module Exwiw
         end
       end
 
+      describe "scalar (non-String) replace_with" do
+        let(:db_file) { Tempfile.new(["scalar_mask", ".sqlite3"]) }
+        let(:scalar_connection_config) do
+          ConnectionConfig.new(
+            adapter: adapter_name,
+            database_name: db_file.path,
+            host: nil,
+            port: nil,
+            user: nil,
+            password: nil,
+          )
+        end
+        let(:scalar_adapter) { described_class.new(scalar_connection_config, logger) }
+        let(:masked_ast) do
+          table = Exwiw::TableConfig.from_symbol_keys(
+            name: "metrics",
+            primary_key: "id",
+            belongs_tos: [],
+            columns: [
+              { name: "id" },
+              { name: "score", replace_with: 0 },
+              { name: "active", replace_with: false },
+              { name: "ratio", replace_with: 1.5 },
+              { name: "note", replace_with: "masked-{id}" },
+            ],
+          )
+          QueryAst::Select.new.tap do |ast|
+            ast.from(table.name)
+            ast.select(table.columns)
+          end
+        end
+
+        before do
+          db = ::SQLite3::Database.new(db_file.path)
+          db.execute("CREATE TABLE metrics (id INTEGER PRIMARY KEY, score INTEGER, active BOOLEAN, ratio REAL, note TEXT)")
+          db.execute("INSERT INTO metrics VALUES (1, 42, 1, 3.25, 'secret')")
+          db.execute("INSERT INTO metrics VALUES (2, NULL, NULL, NULL, NULL)")
+          db.close
+        end
+
+        it "masks with the value's own type instead of concatenating it into text" do
+          expect(scalar_adapter.execute(masked_ast).to_a).to eq([
+            [1, 0, 0, 1.5, "masked-1"],
+            [2, nil, nil, nil, nil],
+          ])
+        end
+      end
+
+      describe "a template with no placeholder in it" do
+        let(:db_file) { Tempfile.new(["empty_json_mask", ".sqlite3"]) }
+        let(:json_connection_config) do
+          ConnectionConfig.new(
+            adapter: adapter_name,
+            database_name: db_file.path,
+            host: nil,
+            port: nil,
+            user: nil,
+            password: nil,
+          )
+        end
+        let(:json_adapter) { described_class.new(json_connection_config, logger) }
+        let(:masked_ast) do
+          table = Exwiw::TableConfig.from_symbol_keys(
+            name: "docs",
+            primary_key: "id",
+            belongs_tos: [],
+            columns: [{ name: "id" }, { name: "payload", replace_with: "{}" }],
+          )
+          QueryAst::Select.new.tap do |ast|
+            ast.from(table.name)
+            ast.select(table.columns)
+          end
+        end
+
+        before do
+          db = ::SQLite3::Database.new(db_file.path)
+          db.execute("CREATE TABLE docs (id INTEGER PRIMARY KEY, payload TEXT)")
+          db.execute(%{INSERT INTO docs VALUES (1, '{"secret":1}')})
+          db.close
+        end
+
+        # An empty brace pair names no column, so it has to stay a literal —
+        # otherwise the empty-JSON mask compiles to `docs.""` and the extraction
+        # fails on a column that safe mode masks by default.
+        it "keeps an empty brace pair literal instead of reading it as a placeholder" do
+          expect(json_adapter.execute(masked_ast).to_a).to eq([[1, "{}"]])
+        end
+
+        it "escapes a quote in the template instead of ending the SQL literal" do
+          quoted = Exwiw::TableConfig.from_symbol_keys(
+            name: "docs",
+            primary_key: "id",
+            belongs_tos: [],
+            columns: [{ name: "id" }, { name: "payload", replace_with: "it's {id}" }],
+          )
+          ast = QueryAst::Select.new.tap do |select|
+            select.from(quoted.name)
+            select.select(quoted.columns)
+          end
+
+          expect(json_adapter.execute(ast).to_a).to eq([[1, "it's 1"]])
+        end
+      end
+
       # Ruby-side masking against a real sqlite cursor: sqlite yields native
       # Integer ids, so this proves the seed's to_s normalization on real
       # driver output (pg/mysql yield strings; RowTransformer specs cover the

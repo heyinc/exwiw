@@ -733,9 +733,12 @@ module Exwiw
 
       private def build_mask_plan(config)
         masked_fields = config.fields.each_with_object([]) do |field, acc|
-          next unless field.replace_with
+          next if field.replace_with.nil?
 
-          acc << [field.name, compile_template(field.replace_with)]
+          # A non-String replace_with (see Exwiw::MaskValue) is stored verbatim
+          # so the field keeps its BSON type; only a template compiles to segments.
+          mask = Exwiw::MaskValue.scalar?(field.replace_with) ? field.replace_with : compile_template(field.replace_with)
+          acc << [field.name, mask]
         end
         faked_fields = build_faked_fields(config)
         embedded = embedded_children_of(config).map do |child|
@@ -779,13 +782,13 @@ module Exwiw
       # masked value — matching the SQL adapters, where replace_with runs in the
       # database before the Ruby-side fake transform sees the row.
       private def apply_mask_plan!(doc, plan)
-        plan.masked_fields.each do |name, segments|
+        plan.masked_fields.each do |name, mask|
           # Preserve a NULL / absent source value instead of clobbering it into a
           # masked literal. `doc[name].nil?` is true for both an explicit nil and
           # an absent key, so an absent key is left absent (not created).
           next if doc[name].nil?
 
-          doc[name] = render_template(segments, doc)
+          doc[name] = mask.is_a?(Array) ? render_template(mask, doc) : mask
         end
         plan.faked_fields.each do |name, deriver, seed_field|
           # NULL-preserving like replace_with (an absent key stays absent). The
