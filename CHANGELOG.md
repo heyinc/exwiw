@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `schema:generate` no longer drops a hand-set `bulk_insert_chunk_size` when regenerating an existing config. The key is user-owned — the generator never emits it — but the merge took it from the freshly generated side (always empty) instead of carrying the existing value over like `filter`, `scope_column` and the other user-owned keys, so every regeneration silently deleted it.
+
 ## [0.9.21] - 2026-08-06
 
 ### Changed
