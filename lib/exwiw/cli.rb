@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'fileutils'
 require 'logger'
 require 'optparse'
 require 'pathname'
@@ -11,7 +12,18 @@ require 'exwiw'
 
 module Exwiw
   class CLI
-    KNOWN_SUBCOMMANDS = %w[export explain].freeze
+    KNOWN_SUBCOMMANDS = %w[export explain schema].freeze
+
+    # The verbs `exwiw schema` takes, mirroring the `exwiw:schema:*` rake tasks
+    # a Rails application would run instead.
+    SCHEMA_VERBS = %w[generate check tidy].freeze
+
+    # `schema check` exit codes. 1 means "the config needs work" — that is the
+    # signal CI acts on — so a failure to *perform* the check (an unreachable
+    # database, a malformed config) must not use it, or an infrastructure
+    # problem reads as a schema problem and gets "fixed" by regenerating.
+    SCHEMA_CHECK_DIRTY_EXIT = 1
+    SCHEMA_CHECK_ERROR_EXIT = 2
 
     # Config file loaded automatically when --config is omitted, if one exists in
     # the current directory. Kept at the project root (rather than under exwiw/)
@@ -52,7 +64,8 @@ module Exwiw
     REJECTED_CONNECTION_KEYS = %w[host port user database uri password].freeze
 
     # Keys that only make sense for `export`. They are skipped when merging config
-    # for `explain` so a shared config file does not trip validate_explain_only!.
+    # for `explain` so a shared config file does not trip validate_explain_only!,
+    # and for `schema`, which performs no export at all.
     EXPORT_ONLY_CONFIG_KEYS = %w[output_dir output_format insert_only after_insert_hook parallel_workers].freeze
 
     def self.start(argv)
@@ -69,6 +82,16 @@ module Exwiw
           "export"
         end
 
+      # `schema` is the one subcommand taking a verb of its own
+      # (`exwiw schema generate`), so the next positional argument belongs to
+      # it. An unknown or missing verb is not consumed here — validation
+      # reports it with the list of valid ones rather than OptionParser
+      # failing on a stray argument.
+      @schema_verb =
+        if @subcommand == "schema" && !@argv.empty? && !@argv.first.start_with?("-")
+          @argv.shift
+        end
+
       @help = @argv.empty?
 
       @database_host = nil
@@ -78,6 +101,7 @@ module Exwiw
       @connection_uri = nil
       @output_dir = nil
       @schema_dir = nil
+      @from_db = false
       @config_file_path = nil
       @database_adapter = nil
       @database_name = nil
@@ -151,7 +175,92 @@ module Exwiw
           io: $stdout,
           explain_verbosity: @explain_verbosity,
         ).run
+      when "schema"
+        run_schema(connection_config)
       end
+    end
+
+    # `exwiw schema generate|check|tidy --from-db`: the same three operations
+    # the `exwiw:schema:*` rake tasks perform for a Rails application, driven
+    # from a database connection instead of from the application's models.
+    private def run_schema(connection_config)
+      introspector = DbIntrospector.build(connection_config)
+
+      case @schema_verb
+      when "generate" then run_schema_generate(introspector)
+      when "tidy" then run_schema_tidy(introspector)
+      when "check" then run_schema_check(introspector)
+      end
+    end
+
+    private def run_schema_generate(introspector)
+      DbSchemaGenerator.new(
+        introspector: introspector,
+        output_dir: @schema_dir,
+        safe_new_columns: schema_safe_new_columns?,
+      ).generate!
+
+      puts "exwiw: wrote the schema config for #{@database_name} to #{@schema_dir}."
+    end
+
+    private def run_schema_tidy(introspector)
+      result = DbSchemaGenerator.new(introspector: introspector, output_dir: @schema_dir).tidy!
+
+      if result.empty?
+        puts "exwiw: schema config is already tidy; nothing to remove."
+        return
+      end
+
+      result.removed_tables.each do |name|
+        puts "exwiw: removed config for table '#{name}' (no longer exists in the database)."
+      end
+      result.removed_columns.each do |table_name, columns|
+        puts "exwiw: removed column(s) #{columns.join(', ')} from '#{table_name}' (no longer in the table)."
+      end
+      result.removed_belongs_tos.each do |table_name, targets|
+        puts "exwiw: removed belongs_to(s) to #{targets.join(', ')} from '#{table_name}' " \
+             "(the target table no longer exists)."
+      end
+    end
+
+    private def run_schema_check(introspector)
+      # Regenerate exactly as `generate` + `tidy` would, into the copy
+      # SchemaCheck hands over, so the report is the diff against a config that
+      # has been through both steps rather than only the first.
+      regenerator = lambda do |tmp_dir|
+        # Explicit: safe mode is not optional here, whatever the library default is.
+        DbSchemaGenerator.new(introspector: introspector, output_dir: tmp_dir, safe_new_columns: true).generate!
+        DbSchemaGenerator.new(introspector: introspector, output_dir: tmp_dir).tidy!
+      end
+
+      report =
+        begin
+          SchemaCheck.new(schema_dir: @schema_dir, regenerator: regenerator).run
+        rescue StandardError => e
+          # See SCHEMA_CHECK_ERROR_EXIT: not being able to run the check is a
+          # different answer from "the config is out of date".
+          $stderr.puts "exwiw: could not run the schema check (#{e.class}: #{e.message})"
+          exit SCHEMA_CHECK_ERROR_EXIT
+        end
+
+      json = JSON.pretty_generate(report)
+      puts json
+      # A file too, so a caller need not assume stdout carries only the JSON.
+      File.write(ENV["EXWIW_SCHEMA_CHECK_OUTPUT"], json + "\n") if ENV["EXWIW_SCHEMA_CHECK_OUTPUT"]
+
+      return if SchemaCheck.clean?(report)
+
+      $stderr.puts "exwiw: the schema config is out of date or has undecided masking; " \
+                   "run `exwiw schema generate --from-db` (then `exwiw schema tidy --from-db`) " \
+                   "and resolve every `needs_mask_decision` column."
+      exit SCHEMA_CHECK_DIRTY_EXIT
+    end
+
+    # Safe mode is on unless EXWIW_NEW_COLUMNS=plain, matching the rake task: a
+    # first-time bootstrap wants it off, since there every column is new and
+    # flagging the whole config at once is noise.
+    private def schema_safe_new_columns?
+      ENV["EXWIW_NEW_COLUMNS"] != "plain"
     end
 
     private def validate_options!
@@ -186,6 +295,16 @@ module Exwiw
       if @subcommand == "explain"
         validate_explain_only!
         resolve_explain_verbosity!
+      end
+
+      # `schema` shares only the connection options with the other subcommands:
+      # it neither extracts rows nor reads a dump target, so every check below
+      # is about an export it will not perform. Its own requirements — a schema
+      # source, an introspectable adapter, a schema dir the verb can use — are
+      # validated instead.
+      if @subcommand == "schema"
+        validate_schema_options!
+        return
       end
 
       if @database_adapter != "sqlite"
@@ -315,7 +434,9 @@ module Exwiw
 
       # For `explain`, drop export-only keys so a config shared with `export`
       # does not make validate_explain_only! reject the run.
-      config = config.reject { |k, _| EXPORT_ONLY_CONFIG_KEYS.include?(k) } if @subcommand == "explain"
+      if @subcommand == "explain" || @subcommand == "schema"
+        config = config.reject { |k, _| EXPORT_ONLY_CONFIG_KEYS.include?(k) }
+      end
 
       @database_adapter ||= config["adapter"]
       @schema_dir ||= expand_dir(config["schema_dir"], base)
@@ -494,6 +615,66 @@ module Exwiw
       exit 1
     end
 
+    # Everything `exwiw schema <verb>` needs, and nothing the export path
+    # requires. Runs instead of the export/explain validations, not after them.
+    private def validate_schema_options!
+      unless SCHEMA_VERBS.include?(@schema_verb)
+        $stderr.puts "Usage: exwiw schema #{SCHEMA_VERBS.join('|')} --from-db [options] " \
+                     "(got #{@schema_verb.inspect})"
+        exit 1
+      end
+
+      # The schema source is spelled out rather than assumed. Reading a live
+      # database is one way to describe an application's schema and not the
+      # only conceivable one, so the flag keeps the command unambiguous today
+      # and leaves the reader expecting alternatives tomorrow.
+      unless @from_db
+        $stderr.puts "`exwiw schema #{@schema_verb}` requires --from-db to say where the schema is read from " \
+                     "(a live database connection). A Rails application can use the exwiw:schema:#{@schema_verb} " \
+                     "rake task instead, which reads its models."
+        exit 1
+      end
+
+      unless DbIntrospector::SUPPORTED_ADAPTERS.include?(@database_adapter)
+        $stderr.puts "--from-db supports the #{DbIntrospector::SUPPORTED_ADAPTERS.join(' and ')} adapters only " \
+                     "(got '#{@database_adapter}'). sqlite and mongodb schemas are not read this way."
+        exit 1
+      end
+
+      {
+        "Target database host" => @database_host,
+        "Target database port" => @database_port,
+        "Target database name" => @database_name,
+        "Database user" => @database_user,
+      }.each do |name, value|
+        if value.nil?
+          $stderr.puts "#{name} is required"
+          exit 1
+        end
+      end
+
+      # Deliberately no DATABASE_PASSWORD requirement, unlike export: schema
+      # generation is commonly run in CI against a throwaway database started
+      # with trust/empty authentication, and refusing an empty password would
+      # make the check unrunnable exactly where it is most wanted. The password
+      # is still used when set.
+
+      if @schema_dir.nil?
+        $stderr.puts "Schema dir is required (pass --schema-dir or set schema_dir in the config file)"
+        exit 1
+      end
+
+      # `generate` is also the bootstrap command, so it creates the directory;
+      # `check` and `tidy` only ever read an existing config, and a missing
+      # directory there means the wrong path far more often than an empty one.
+      if @schema_verb == "generate"
+        FileUtils.mkdir_p(@schema_dir)
+      elsif !Dir.exist?(@schema_dir)
+        $stderr.puts "Schema dir does not exist: #{@schema_dir}"
+        exit 1
+      end
+    end
+
     private def validate_explain_only!
       rejected = []
       rejected << "--output-dir" unless @output_dir.nil?
@@ -603,6 +784,11 @@ module Exwiw
                       For mongodb, set verbosity via EXWIW_MONGODB_EXPLAIN_VERBOSITY
                       or `explain_verbosity:` in config (queryPlanner (default,
                       no query is executed) | executionStats | allPlansExecution).
+            schema    Maintain the schema config (generate | check | tidy) by
+                      reading a live database, for applications that cannot be
+                      loaded to generate it from their models. Requires --from-db;
+                      mysql and postgresql only. `check` prints a JSON report and
+                      exits 1 when the config needs work.
         BANNER
         opts.version = Exwiw::VERSION
 
@@ -617,6 +803,7 @@ module Exwiw
           v = v.end_with?("/") ? v[0..-2] : v
           @schema_dir = File.expand_path(v)
         end
+        opts.on("--from-db", "Read the schema from the database the connection options point at (schema subcommand only; mysql/postgresql). Required by `exwiw schema`.") { @from_db = true }
         opts.on("-c", "--config=CONFIG_FILE_PATH", "Path to the exwiw config YAML. Defaults to ./#{DEFAULT_CONFIG_PATHS.first} (or .#{File.extname(DEFAULT_CONFIG_PATHS.last)}) when present. CLI options take precedence; paths inside the file are resolved relative to the file.") do |v|
           @config_file_path = File.expand_path(v)
         end
