@@ -190,6 +190,44 @@ module Exwiw
           expect(config["columns"].map { |c| c["name"] }).to eq(["value"])
         end
 
+        # The two signposts above tell the user to name a primary key by hand,
+        # which is only worth doing if the next run keeps it: the database still
+        # reports none, so nothing but the config itself records the decision.
+        it "keeps a primary key declared by hand on a table the database has none for" do
+          generate
+          config = config_for("#{prefix}_keyless")
+          config.delete("ignore")
+          config.delete("comment")
+          config["primary_key"] = "value"
+          write_config("#{prefix}_keyless", config)
+
+          generate
+
+          regenerated = config_for("#{prefix}_keyless")
+          expect(regenerated["primary_key"]).to eq("value")
+          expect(regenerated).not_to have_key("ignore")
+          # The table is now an ordinary one, so its columns are masked like any
+          # other rather than being emitted as bare names.
+          expect(regenerated["columns"].map { |c| c["name"] }).to eq(["value"])
+        end
+
+        it "keeps a primary key declared by hand on a composite-primary-key table" do
+          generate
+          config = config_for("#{prefix}_composites")
+          config.delete("ignore")
+          config.delete("type")
+          config.delete("comment")
+          config["primary_key"] = "organization_id"
+          write_config("#{prefix}_composites", config)
+
+          generate
+
+          regenerated = config_for("#{prefix}_composites")
+          expect(regenerated["primary_key"]).to eq("organization_id")
+          expect(regenerated).not_to have_key("type")
+          expect(regenerated).not_to have_key("ignore")
+        end
+
         it "keeps a masking decision a human already made" do
           generate
           config = config_for("#{prefix}_orders")

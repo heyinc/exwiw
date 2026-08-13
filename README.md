@@ -524,7 +524,10 @@ exwiw schema tidy --from-db -a postgresql -h db.example.com -p 5432 -u app --dat
 The database is read through its catalog only: tables, columns and their types/defaults, primary
 keys, unique indexes and foreign keys. Views are skipped, since they hold no rows of their own,
 and a table with no primary key is emitted with `ignore: true` and a comment saying what to add
-to export it (exwiw identifies and joins rows by primary key).
+to export it (exwiw identifies and joins rows by primary key). Following that advice sticks: a
+`primary_key` written by hand — on a table the database reports none for, or one column of a
+composite key that identifies a row on its own — is kept by later runs, which then treat the table
+as an ordinary one rather than re-imposing the signpost `type` / `comment`.
 
 **`belongs_tos` are only ever added, never rewritten.** A foreign-key constraint is weaker
 evidence than an application model: plenty of schemas express a relation only in application code,

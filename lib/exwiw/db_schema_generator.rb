@@ -124,7 +124,8 @@ module Exwiw
     # all. ActiveRecord always reports one (a model without it cannot be
     # queried), but a database is free to have none.
     private def build_table(table_name, existing)
-      primary_key = @introspector.primary_key(table_name)
+      introspected_primary_key = @introspector.primary_key(table_name)
+      primary_key = declared_primary_key(introspected_primary_key, existing)
       belongs_tos = merged_belongs_tos(table_name, existing)
       column_names = @introspector.columns(table_name).map(&:name)
 
@@ -132,13 +133,13 @@ module Exwiw
       # generated — with `primary_key` omitted, `ignore: true` and a `type`
       # marking it unsupported — so it can serve as a signpost for adding
       # support later, and so a user can wire it up by hand meanwhile.
-      if primary_key.is_a?(Array)
+      if primary_key.nil? && introspected_primary_key.is_a?(Array)
         TableConfig.from_symbol_keys(
           name: table_name,
           type: TableConfig::UNSUPPORTED_COMPOSITE_PRIMARY_KEY,
           ignore: true,
           comment: "exwiw does not support composite primary keys " \
-                   "(#{primary_key.join(', ')}); data extraction is skipped.",
+                   "(#{introspected_primary_key.join(', ')}); data extraction is skipped.",
           belongs_tos: belongs_tos,
           columns: column_names.map { |name| { name: name } },
         )
@@ -166,6 +167,32 @@ module Exwiw
           columns: build_columns(table_name, primary_key, belongs_tos),
         )
       end
+    end
+
+    # The primary key to build a table's config from: the one the database
+    # reports, or — when it reports none exwiw can use — the one the config on
+    # disk declares.
+    #
+    # The fallback is what makes the two signpost shapes below actionable. Both
+    # tell the user to name a primary key by hand ("set `primary_key` to a
+    # column that uniquely identifies a row and remove `ignore`"), and a table
+    # can be perfectly extractable that way — a natural key with a unique index
+    # but no PK constraint, or one column of a composite key that is unique on
+    # its own. Without this, following those instructions would not survive the
+    # next run: `TableConfig#merge` takes `primary_key` from the generated side,
+    # which is still nil because the database is unchanged, so the hand-set key
+    # would be dropped and the table left with nothing to join or filter on —
+    # silently, since the regenerated config is also what `schema check`
+    # compares against.
+    #
+    # A declared key also selects the ordinary table shape, so the `type` /
+    # `comment` signposts are not re-imposed on a table the user has since wired
+    # up (`ignore` is receiver-owned in the merge and already stays removed).
+    private def declared_primary_key(introspected_primary_key, existing)
+      return introspected_primary_key if introspected_primary_key.is_a?(String)
+
+      declared = existing&.primary_key
+      declared.is_a?(String) ? declared : nil
     end
 
     # The belongs_tos to generate for a table: everything the existing config
