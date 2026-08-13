@@ -3,6 +3,8 @@ require 'exwiw/cli'
 require 'tmpdir'
 require 'fileutils'
 
+require_relative 'support/db_fixtures'
+
 module Exwiw
   RSpec.describe CLI do
     describe 'subcommand parsing' do
@@ -443,6 +445,216 @@ module Exwiw
                 '--database=app', '--schema-dir=e2e/sqlite-schema']
         expect { run_cli(argv) }.to raise_error(SystemExit)
           .and output(/Invalid adapter.*mysql, sqlite, postgresql, mongodb.*aliases.*mysql2/m).to_stderr
+      end
+    end
+
+    describe 'schema subcommand' do
+      def run_cli(argv)
+        CLI.new(argv).run
+      end
+
+      it 'recognizes "schema" and its verb' do
+        cli = CLI.new(['schema', 'generate', '--from-db', '--adapter=mysql', '--host=localhost',
+                       '--port=3306', '--user=root', '--database=app', '--schema-dir=e2e/mysql-schema'])
+        expect(cli.instance_variable_get(:@subcommand)).to eq('schema')
+        expect(cli.instance_variable_get(:@schema_verb)).to eq('generate')
+      end
+
+      it 'rejects an unknown verb with the list of valid ones' do
+        argv = ['schema', 'regenerate', '--from-db', '--adapter=mysql', '--host=localhost',
+                '--port=3306', '--user=root', '--database=app', '--schema-dir=e2e/mysql-schema']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/Usage: exwiw schema generate\|check\|tidy --from-db/).to_stderr
+      end
+
+      it 'requires --from-db, so the schema source is never implicit' do
+        argv = ['schema', 'check', '--adapter=mysql', '--host=localhost', '--port=3306',
+                '--user=root', '--database=app', '--schema-dir=e2e/mysql-schema']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/requires --from-db/).to_stderr
+      end
+
+      it 'rejects an adapter whose schema cannot be read from the database' do
+        argv = ['schema', 'check', '--from-db', '--adapter=sqlite',
+                '--database=tmp/test.sqlite3', '--schema-dir=e2e/sqlite-schema']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--from-db supports the mysql and postgresql adapters only/).to_stderr
+      end
+
+      it 'rejects the mongodb adapter, whose schema lives in the application' do
+        argv = ['schema', 'check', '--from-db', '--adapter=mongodb', '--host=localhost',
+                '--port=27017', '--database=app', '--schema-dir=e2e/mongodb-schema']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--from-db supports the mysql and postgresql adapters only/).to_stderr
+      end
+
+      # Unlike export: a schema check commonly runs against a throwaway CI
+      # database started with trust authentication, where refusing an empty
+      # password would make it unrunnable.
+      it 'accepts an absent DATABASE_PASSWORD' do
+        original = ENV['DATABASE_PASSWORD']
+        ENV.delete('DATABASE_PASSWORD')
+        cli = CLI.new(['schema', 'check', '--from-db', '--adapter=mysql', '--host=localhost',
+                       '--port=3306', '--user=root', '--database=app', '--schema-dir=e2e/mysql-schema'])
+        expect { cli.send(:validate_options!) }.not_to raise_error
+      ensure
+        ENV['DATABASE_PASSWORD'] = original
+      end
+
+      it 'still requires DATABASE_PASSWORD for an export' do
+        original = ENV['DATABASE_PASSWORD']
+        ENV.delete('DATABASE_PASSWORD')
+        cli = CLI.new(['--adapter=mysql', '--host=localhost', '--port=3306',
+                       '--user=root', '--database=app', '--schema-dir=e2e/mysql-schema'])
+        expect { cli.send(:validate_options!) }.to raise_error(SystemExit)
+          .and output(/DATABASE_PASSWORD/).to_stderr
+      ensure
+        ENV['DATABASE_PASSWORD'] = original
+      end
+
+      it 'requires an existing schema dir for check' do
+        argv = ['schema', 'check', '--from-db', '--adapter=mysql', '--host=localhost', '--port=3306',
+                '--user=root', '--database=app', '--schema-dir=/no/such/schema/dir']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/Schema dir does not exist/).to_stderr
+      end
+
+      # Driven against the real test database, so the whole path — connection,
+      # introspection, generation, report — is exercised the way a user runs it.
+      describe 'against a live database' do
+        let(:adapter) { :postgresql }
+        let(:connection_config) { DbFixtures.connection_config(adapter) }
+        let(:schema_dir) { @schema_dir }
+
+        around do |example|
+          original = ENV['DATABASE_PASSWORD']
+          ENV['DATABASE_PASSWORD'] = connection_config.password
+          Dir.mktmpdir do |dir|
+            @schema_dir = dir
+            example.run
+          end
+        ensure
+          ENV['DATABASE_PASSWORD'] = original
+        end
+
+        def schema_argv(verb, extra = [])
+          ['schema', verb, '--from-db',
+           "--adapter=#{connection_config.adapter}",
+           "--host=#{connection_config.host}",
+           "--port=#{connection_config.port}",
+           "--user=#{connection_config.user}",
+           "--database=#{connection_config.database_name}",
+           "--schema-dir=#{schema_dir}", *extra]
+        end
+
+        # Safe mode would flag every column of a first generation, which is
+        # exactly the bootstrap case EXWIW_NEW_COLUMNS=plain exists for — and
+        # the only way to reach a clean check in one step.
+        def generate_plain
+          original = ENV['EXWIW_NEW_COLUMNS']
+          ENV['EXWIW_NEW_COLUMNS'] = 'plain'
+          expect { run_cli(schema_argv('generate')) }.to output(/wrote the schema config/).to_stdout
+        ensure
+          ENV['EXWIW_NEW_COLUMNS'] = original
+        end
+
+        it 'generates the config into a schema dir it creates' do
+          nested = File.join(schema_dir, 'created', 'here')
+          expect { run_cli(schema_argv('generate', ["--schema-dir=#{nested}"])) }
+            .to output(/wrote the schema config/).to_stdout
+
+          expect(File).to exist(File.join(nested, 'users.json'))
+        end
+
+        it 'exits 1 with the report and a hint when the config is out of date' do
+          expect { run_cli(schema_argv('check')) }
+            .to raise_error(SystemExit) { |error| expect(error.status).to eq(1) }
+            .and output(/"added_tables": \[\s*"users"|"added_tables"/).to_stdout
+            .and output(/exwiw schema generate --from-db.*needs_mask_decision/m).to_stderr
+        end
+
+        it 'exits 0 and prints the report when the config matches the database' do
+          generate_plain
+
+          expect { capture_stdout { run_cli(schema_argv('check')) } }.not_to raise_error
+          expect(JSON.parse(@stdout).values.flatten).to be_empty
+        end
+
+        it 'reports the columns still waiting for a masking decision' do
+          # A plain (safe mode off) generation is clean; flagging one column by
+          # hand is what an undecided migration column looks like.
+          generate_plain
+          path = File.join(schema_dir, 'users.json')
+          config = JSON.parse(File.read(path))
+          config['columns'].find { |column| column['name'] == 'email' }['needs_mask_decision'] = true
+          File.write(path, JSON.pretty_generate(config) + "\n")
+
+          expect do
+            expect { capture_stdout { run_cli(schema_argv('check')) } }
+              .to raise_error(SystemExit) { |error| expect(error.status).to eq(1) }
+          end.to output(/out of date or has undecided masking/).to_stderr
+          expect(JSON.parse(@stdout)['needs_mask_decision']).to eq(['users.email'])
+        end
+
+        it 'writes the report to EXWIW_SCHEMA_CHECK_OUTPUT as well as stdout' do
+          generate_plain
+          output_path = File.join(schema_dir, 'report.json')
+          original = ENV['EXWIW_SCHEMA_CHECK_OUTPUT']
+          ENV['EXWIW_SCHEMA_CHECK_OUTPUT'] = output_path
+
+          capture_stdout { run_cli(schema_argv('check')) }
+
+          expect(JSON.parse(File.read(output_path))).to have_key('needs_mask_decision')
+        ensure
+          ENV['EXWIW_SCHEMA_CHECK_OUTPUT'] = original
+        end
+
+        # 1 is "the config needs work"; a check that could not run at all has to
+        # be distinguishable from that, or CI treats an unreachable database as
+        # a config problem.
+        it 'exits with a different status when the check cannot run' do
+          argv = schema_argv('check') - ["--port=#{connection_config.port}"] + ['--port=1']
+
+          expect { run_cli(argv) }
+            .to raise_error(SystemExit) { |error| expect(error.status).not_to eq(1) }
+            .and output(/could not run the schema check/).to_stderr
+        end
+
+        it 'tidies a config the database no longer matches' do
+          generate_plain
+          stale_path = File.join(schema_dir, 'legacy_things.json')
+          File.write(stale_path, JSON.pretty_generate(
+            'name' => 'legacy_things', 'primary_key' => 'id',
+            'belongs_tos' => [], 'columns' => [{ 'name' => 'id' }],
+          ) + "\n")
+
+          expect { run_cli(schema_argv('tidy')) }
+            .to output(/removed config for table 'legacy_things'/).to_stdout
+          expect(File).not_to exist(stale_path)
+        end
+
+        it 'reads the adapter and schema dir from the config file' do
+          config_path = File.join(schema_dir, 'exwiw.yml')
+          File.write(config_path, "adapter: #{connection_config.adapter}\nschema_dir: #{schema_dir}\n")
+          argv = ['schema', 'generate', '--from-db', "--config=#{config_path}",
+                  "--host=#{connection_config.host}", "--port=#{connection_config.port}",
+                  "--user=#{connection_config.user}", "--database=#{connection_config.database_name}"]
+
+          expect { run_cli(argv) }.to output(/wrote the schema config/).to_stdout
+          expect(File).to exist(File.join(schema_dir, 'users.json'))
+        end
+
+        # Runs the block with stdout captured into `@stdout`. Kept out of the
+        # return value on purpose: the CLI exits mid-block on a dirty report, so
+        # what it printed first is only reachable through an ivar.
+        def capture_stdout
+          original = $stdout
+          $stdout = StringIO.new
+          yield
+        ensure
+          @stdout = $stdout.string
+          $stdout = original
+        end
       end
     end
 
