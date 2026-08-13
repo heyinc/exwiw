@@ -275,48 +275,136 @@ module Exwiw
       return existing if existing&.ignore
 
       ordered = models.sort_by { |model| [model.fields.size, model.name] }
+      embedded_models, non_embedded_models = ordered.partition(&:embedded?)
 
+      return top_level_collection(collection_name, ordered, existing) if embedded_models.empty?
+
+      # `embedded?` answers "does this class declare an `embedded_in`", which is
+      # not the same question as "does this collection have root documents". A
+      # base class shared by embedded documents (`class Address` with the common
+      # fields, `class BillingAddress < Address` declaring the `embedded_in`)
+      # declares none, yet nothing is ever stored at the root under it either: it
+      # is part of the embedded family, and its fields describe subdocuments.
+      # Treating it as evidence of a root collection would flip the whole family
+      # to a top-level config and DELETE the `embedded_in` that masks those
+      # subdocuments — the same worst-case failure as below, in the opposite
+      # direction. So a non-embedded model with embedded descendants in this very
+      # group is read as their base class, not as a root model.
+      #
+      # Deliberately conservative: a model whose descendants are embedded is
+      # treated as their base even if the application also stored root documents
+      # under it. That shape keeps exactly the behavior (and the limitation) this
+      # generator always had, rather than trading a silent masking regression for
+      # a silent dumping one.
+      root_models = non_embedded_models.reject do |model|
+        embedded_models.any? { |embedded| embedded < model }
+      end
+
+      # What remains is the genuine collision: a collection name claimed by an
+      # unrelated top-level model and an embedded class at once. An embedded class
+      # derives its collection name from its class name alone, so it collides with
+      # any top-level model that stores into a collection of that name — nothing
+      # declares the two to be related, and neither side is wrong.
+      #
+      # Such a collection is genuinely TOP-LEVEL: it has root documents that must
+      # be dumped. Treating the group as embedded because one member is (which is
+      # what "any model is embedded" did) emits an `embedded_in` and an empty
+      # belongs_tos, so `MongodbAdapter#dumpable?` (`!embedded?`) silently never
+      # dumps those root documents, the top-level models' extraction paths are
+      # gone, and — since #merge always takes the generated `embedded_in` — a
+      # hand-maintained top-level config cannot survive regeneration either,
+      # leaving the schema check permanently red with no way to resolve it.
+      # Silently un-dumping a real collection is the worst failure this generator
+      # has, so generate the top-level collection from its root models and say out
+      # loud what is not covered. Only the root models contribute: an embedded
+      # base's fields describe subdocuments, not root documents.
+      #
+      # The embedded namesakes stay uncovered on purpose: masking them needs an
+      # `embedded_in` config, which is written by hand under a synthetic name of
+      # its own (generation and tidy both leave embedded configs alone), the same
+      # pattern any collection exwiw cannot derive an embedding for already uses.
+      if root_models.any?
+        warn_mixed_embedding(collection_name, embedded_models)
+        return top_level_collection(collection_name, root_models, existing)
+      end
+
+      # A purely embedded collection — one class, an embedded hierarchy, or an
+      # embedded family under a plain base. The whole group is passed on so the
+      # base's fields keep being unioned in, exactly as before.
+      embedded_collection(collection_name, ordered)
+    end
+
+    # The config for a collection dumped in its own right: its models' fields and
+    # the belongs_tos its extraction follows.
+    private def top_level_collection(collection_name, models, existing)
+      MongodbCollectionConfig.from_symbol_keys(
+        name: collection_name,
+        primary_key: PRIMARY_KEY,
+        belongs_tos: aggregate_belongs_tos(models, existing),
+        fields: aggregate_fields(models),
+      )
+    end
+
+    # The config for a collection that exists only inside another's documents.
+    # `models` is the whole group, which may include the embedded documents' plain
+    # base class — its fields belong in the union, but only a class that declares
+    # an `embedded_in` can say where the collection lives, hence the `find`.
+    private def embedded_collection(collection_name, models)
       attrs = {
         name: collection_name,
         primary_key: PRIMARY_KEY,
-        fields: aggregate_fields(ordered),
-      }
-
-      if ordered.any?(&:embedded?)
+        fields: aggregate_fields(models),
         # Cross-collection references from inside an embedded array are not
         # supported (MongodbCollectionConfig rejects them), so embedded configs
         # always carry an empty belongs_tos and instead declare where they live.
-        attrs[:belongs_tos] = []
-        begin
-          attrs[:embedded_in] = embedded_in_for(ordered.find(&:embedded?))
-        rescue => e
-          # Known-unrepresentable shapes arrive as UnsupportedEmbedding (with a
-          # concise reason). Without skip_unsupported, re-raise so the historical
-          # fail-loud behavior is preserved. The broad rescue is a deliberate
-          # safety net for skip_unsupported (a best-effort bootstrapping mode):
-          # any other error while deriving the embedding is turned into an
-          # `ignore: true` config too, so a single odd model never aborts the run.
-          raise e unless @skip_unsupported
+        belongs_tos: [],
+      }
 
-          reason =
-            if e.is_a?(UnsupportedEmbedding)
-              e.reason
-            else
-              "raised #{e.class} while deriving embedded_in (#{e.message.lines.first&.strip})"
-            end
+      begin
+        attrs[:embedded_in] = embedded_in_for(models.find(&:embedded?))
+      rescue => e
+        # Known-unrepresentable shapes arrive as UnsupportedEmbedding (with a
+        # concise reason). Without skip_unsupported, re-raise so the historical
+        # fail-loud behavior is preserved. The broad rescue is a deliberate
+        # safety net for skip_unsupported (a best-effort bootstrapping mode):
+        # any other error while deriving the embedding is turned into an
+        # `ignore: true` config too, so a single odd model never aborts the run.
+        raise e unless @skip_unsupported
 
-          # Emit the collection as a top-level config marked `ignore: true` so it
-          # is NOT (wrongly) dumped as its own collection, and record why. The
-          # user can hand-write its embedded_in config later to dump/mask it.
-          warn("exwiw: skip_unsupported: '#{collection_name}' #{reason}; emitting ignore:true (define embedded_in by hand to dump/mask it).")
-          attrs[:ignore] = true
-          attrs[:comment] = "exwiw could not derive embedded_in (#{reason}); marked ignore:true. Define this collection's embedded_in config by hand to dump/mask it."
-        end
-      else
-        attrs[:belongs_tos] = aggregate_belongs_tos(ordered, existing)
+        reason =
+          if e.is_a?(UnsupportedEmbedding)
+            e.reason
+          else
+            "raised #{e.class} while deriving embedded_in (#{e.message.lines.first&.strip})"
+          end
+
+        # Emit the collection as a top-level config marked `ignore: true` so it
+        # is NOT (wrongly) dumped as its own collection, and record why. The
+        # user can hand-write its embedded_in config later to dump/mask it.
+        warn("exwiw: skip_unsupported: '#{collection_name}' #{reason}; emitting ignore:true (define embedded_in by hand to dump/mask it).")
+        attrs[:ignore] = true
+        attrs[:comment] = "exwiw could not derive embedded_in (#{reason}); marked ignore:true. Define this collection's embedded_in config by hand to dump/mask it."
       end
 
       MongodbCollectionConfig.from_symbol_keys(attrs)
+    end
+
+    # Names the collision on stderr, once per affected collection.
+    #
+    # Deliberately NOT recorded as a generated `comment` on the config: #merge
+    # gives a freshly generated comment precedence over the receiver's, so a
+    # marker here would overwrite — on every single run — the note a user wrote
+    # about this very situation. The warning is the surfacing mechanism; the
+    # config file stays the user's.
+    private def warn_mixed_embedding(collection_name, embedded_models)
+      warn(
+        "exwiw: collection '#{collection_name}' is stored into by both top-level and embedded models " \
+        "(embedded: #{embedded_models.map(&:name).sort.join(', ')}); generating it as a TOP-LEVEL collection " \
+        "from its non-embedded model(s) only, so its root documents keep being dumped. The embedded " \
+        "documents of the same name are NOT covered by this config: to mask them, add a config by hand " \
+        "with an `embedded_in` and a distinct `name`/file name of your choosing (generation and tidy leave " \
+        "embedded configs alone)."
+      )
     end
 
     # Mongoid registers only the base class of an inheritance hierarchy in

@@ -384,6 +384,137 @@ module Exwiw
       end
     end
 
+    describe "a collection name shared by embedded and top-level models" do
+      # SharedNameEntryLog stores into "shared_name_entries" while the embedded
+      # SharedNameEntry resolves to the same collection name — the routine
+      # collision between a `store_in` and a name an embedded class derives from
+      # its own class name. Deciding the whole group is embedded (which one
+      # embedded member used to be enough for) emits an `embedded_in`, so
+      # MongodbAdapter#dumpable? silently stops dumping the collection's root
+      # documents and the top-level model's extraction paths disappear.
+      let(:mixed_models) { [MongoidDummy::SharedNameEntry, MongoidDummy::SharedNameEntryLog] }
+      let(:path) { File.join(output_dir, "shared_name_entries.json") }
+
+      def generate_mixed(models_to_use = mixed_models, **options)
+        # Every run over a mixed group warns; asserting it here doubles as
+        # silencing it, so the examples below stay about the emitted config.
+        expect {
+          described_class.new(models: models_to_use, output_dir: output_dir, **options).generate!
+        }.to output(/stored into by both top-level and embedded models/).to_stderr
+      end
+
+      it "generates a top-level config from the non-embedded models alone" do
+        config = nil
+        expect {
+          config = described_class.new(models: mixed_models, output_dir: output_dir)
+                                  .build_collections
+                                  .find { |c| c.name == "shared_name_entries" }
+        }.to output(/'shared_name_entries'.*MongoidDummy::SharedNameEntry\b/m).to_stderr
+
+        # No embedded_in, so the collection keeps being dumped in its own right...
+        expect(config.embedded?).to eq(false)
+        # ...with the top-level model's belongs_to, the extraction path that a
+        # forced-empty belongs_tos would have thrown away...
+        expect(config.belongs_tos.map { |b| [b.table_name, b.foreign_key] })
+          .to contain_exactly(["shops", "shop_id"])
+        # ...and only the top-level model's fields: `memo` belongs to the
+        # embedded namesake, which this config does not describe.
+        expect(config.fields.map(&:name)).to contain_exactly("_id", "title", "shop_id")
+      end
+
+      it "warns which collection collided and which embedded class is left uncovered" do
+        expect {
+          described_class.new(models: mixed_models, output_dir: output_dir).build_collections
+        }.to output(
+          /collection 'shared_name_entries'.*embedded: MongoidDummy::SharedNameEntry\).*add a config by hand/m,
+        ).to_stderr
+      end
+
+      it "still emits an embedded config when only embedded models store into the collection" do
+        # The collision is what makes the collection top-level; on its own the
+        # embedded model is unaffected by any of this.
+        config = described_class.new(models: [MongoidDummy::SharedNameEntry], output_dir: output_dir)
+                                .build_collections
+                                .first
+
+        expect(config.embedded?).to eq(true)
+        expect(config.embedded_in.collection_name).to eq("shared_name_entry_holders")
+        expect(config.fields.map(&:name)).to contain_exactly("_id", "memo")
+      end
+
+      it "keeps generating an embedded config for an embedded family under a plain base class" do
+        # ContactPoint holds the fields its variants share and declares no
+        # `embedded_in`; HomeContactPoint < ContactPoint declares one. The base is
+        # therefore not `embedded?` while storing no root documents either, so the
+        # group only LOOKS mixed. Reading the base as a root model would flip the
+        # family to a top-level config and delete the `embedded_in` that masks
+        # those subdocuments — the same failure as above, in the other direction.
+        config = nil
+        expect {
+          config = described_class.new(
+            models: [MongoidDummy::ContactPoint, MongoidDummy::ContactPointOwner], output_dir: output_dir,
+          ).build_collections.find { |c| c.name == "contact_points" }
+        }.not_to output(/stored into by both top-level and embedded models/).to_stderr
+
+        expect(config.embedded?).to eq(true)
+        expect(config.embedded_in.collection_name).to eq("contact_point_owners")
+        expect(config.embedded_in.path).to eq("home_contact_point")
+        expect(config.belongs_tos).to be_empty
+        # The same union, in the same order, the generator emitted before the
+        # mixed-group handling existed: the base's fields lead, the subclass
+        # appends its own.
+        expect(config.fields.map(&:name)).to eq(["_id", "label", "_type", "note"])
+      end
+
+      it "builds the top-level config from the root models alone when an embedded family shares the name too" do
+        # Three-way: ContactPointLog stores root documents under the name the
+        # embedded family already shares. The collection is top-level, but an
+        # embedded base's fields describe subdocuments, so only the root model
+        # contributes — `label` (base) and `note` (subclass) must not leak in.
+        config = nil
+        expect {
+          config = described_class.new(
+            models: [MongoidDummy::ContactPoint, MongoidDummy::ContactPointLog], output_dir: output_dir,
+          ).build_collections.find { |c| c.name == "contact_points" }
+        }.to output(/stored into by both top-level and embedded models/).to_stderr
+
+        expect(config.embedded?).to eq(false)
+        expect(config.belongs_tos.map(&:foreign_key)).to contain_exactly("shop_id")
+        expect(config.fields.map(&:name)).to contain_exactly("_id", "title", "shop_id")
+      end
+
+      it "preserves a hand-maintained top-level config and regenerates it unchanged" do
+        # The acceptance case: a user maintaining this collection by hand could
+        # never get the schema check green, because the generated `embedded_in`
+        # won the merge on every run. The config must now survive regeneration
+        # untouched, and a second run must produce a byte-identical file.
+        existing = {
+          "name" => "shared_name_entries",
+          "primary_key" => "_id",
+          "comment" => "Top-level collection; the embedded documents of the same name have their own config.",
+          "belongs_tos" => [{ "table_name" => "shops", "foreign_key" => "shop_id" }],
+          "fields" => [
+            { "name" => "_id" },
+            { "name" => "title", "replace_with" => "masked-{_id}", "comment" => "reviewed" },
+            { "name" => "shop_id" },
+          ],
+        }
+        File.write(path, JSON.pretty_generate(existing) + "\n")
+
+        generate_mixed
+        first_run = File.read(path)
+        result = JSON.parse(first_run)
+
+        expect(result).not_to have_key("embedded_in")
+        expect(result["comment"]).to match(/Top-level collection/)
+        expect(result["fields"].find { |f| f["name"] == "title" })
+          .to eq({ "name" => "title", "replace_with" => "masked-{_id}", "comment" => "reviewed" })
+
+        generate_mixed
+        expect(File.read(path)).to eq(first_run)
+      end
+    end
+
     describe "#generate! honoring an explicit ignore on disk (fail-loud default)" do
       # These run WITHOUT skip_unsupported (the default), proving the generator
       # no longer aborts on a construct the user has already triaged by marking

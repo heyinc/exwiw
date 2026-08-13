@@ -487,6 +487,93 @@ module MongoidDummy
     belongs_to :entity, class_name: "MongoidDummy::UuidReferencedParent", primary_key: :uuid
   end
 
+  # One collection name claimed by BOTH an embedded and a top-level model. In a
+  # real application this needs no declaring at all: an embedded class derives its
+  # collection name from its class name alone (`Note` -> "notes"), so it collides
+  # with any top-level model that stores into a collection of that name. Nothing
+  # relates the two, and neither side is wrong. (The dummy models here are
+  # namespaced, which makes every derived name unique, so both sides name the
+  # collection explicitly to reproduce the same group.)
+  #
+  # The collection is genuinely top-level — `SharedNameEntryLog` has root
+  # documents that must be dumped — so the generator must emit a top-level config
+  # built from the non-embedded model alone (its `belongs_to :shop` and its own
+  # `title` field, without the embedded model's `memo`), never an `embedded_in`
+  # that would silently stop the root documents from being dumped. The embedded
+  # namesake is masked through a hand-written `embedded_in` config under a name of
+  # its own instead.
+  #
+  # Each side carries a field the other does not, so which models a mixed group's
+  # fields were built from is visible in the output. Kept OUT of `MODELS`/`SEED`
+  # and exercised in isolation.
+  class SharedNameEntry
+    include Mongoid::Document
+    store_in collection: "shared_name_entries"
+
+    field :memo, type: String
+
+    embedded_in :holder, class_name: "MongoidDummy::SharedNameEntryHolder"
+  end
+
+  class SharedNameEntryHolder
+    include Mongoid::Document
+    store_in collection: "shared_name_entry_holders"
+
+    embeds_many :shared_name_entries, class_name: "MongoidDummy::SharedNameEntry"
+  end
+
+  class SharedNameEntryLog
+    include Mongoid::Document
+    store_in collection: "shared_name_entries"
+
+    field :title, type: String
+
+    belongs_to :shop, class_name: "MongoidDummy::Shop"
+  end
+
+  # An embedded family under a PLAIN base class: `ContactPoint` holds the fields
+  # every variant shares and declares no `embedded_in`, while its subclasses do
+  # (and inherit its collection name). The base is therefore not `embedded?` even
+  # though nothing is ever stored at the root under it — `embedded?` answers "does
+  # this class declare an `embedded_in`", which is not the same question as "does
+  # this collection have root documents".
+  #
+  # So the group looks mixed while being entirely embedded, and the generator must
+  # still emit an `embedded_in` config unioning the base's fields with the
+  # subclass's: flipping it to a top-level config would delete the config that
+  # masks those subdocuments. `ContactPointLog` additionally stores root documents
+  # under the same name, making the group three-way — the base's fields must not
+  # leak into the top-level config that case produces, since they describe
+  # subdocuments. Kept OUT of `MODELS`/`SEED` and exercised in isolation.
+  class ContactPoint
+    include Mongoid::Document
+    store_in collection: "contact_points"
+
+    field :label, type: String
+  end
+
+  class HomeContactPoint < ContactPoint
+    field :note, type: String
+
+    embedded_in :owner, class_name: "MongoidDummy::ContactPointOwner"
+  end
+
+  class ContactPointOwner
+    include Mongoid::Document
+    store_in collection: "contact_point_owners"
+
+    embeds_one :home_contact_point, class_name: "MongoidDummy::HomeContactPoint"
+  end
+
+  class ContactPointLog
+    include Mongoid::Document
+    store_in collection: "contact_points"
+
+    field :title, type: String
+
+    belongs_to :shop, class_name: "MongoidDummy::Shop"
+  end
+
   # Two referenced `belongs_to` sharing ONE foreign key: `owner_id` holds a shop
   # reference, and a second relation reads the same stored value as the `uuid` of
   # another collection (`primary_key: :uuid`, so it emits `references`). A foreign
