@@ -9,7 +9,13 @@ module Exwiw
   # Reports how the committed schema config differs from what the application
   # would generate now, plus the columns still waiting for a masking decision.
   # Regenerating into a copy rather than over the config directory lets it run
-  # on a working tree it must not modify (CI). ActiveRecord only.
+  # on a working tree it must not modify (CI).
+  #
+  # The diff/report side is source-agnostic (it reads JSON config files); what
+  # varies per schema source is only how to regenerate, injected as
+  # `regenerator` — a callable that receives a directory pre-seeded with a copy
+  # of the committed config and rewrites it the way `generate!` + `tidy!`
+  # would. `models:` remains as the ActiveRecord shorthand for it.
   class SchemaCheck
     CATEGORIES = %w[
       added_tables added_columns removed_tables removed_columns changed_tables needs_mask_decision
@@ -20,9 +26,13 @@ module Exwiw
       new(models: ActiveRecord::Base.descendants, schema_dir: schema_dir)
     end
 
-    def initialize(models:, schema_dir:)
-      @models = models
+    def initialize(schema_dir:, models: nil, regenerator: nil)
+      if models.nil? && regenerator.nil?
+        raise ArgumentError, "SchemaCheck requires either models: or regenerator:"
+      end
+
       @schema_dir = schema_dir
+      @regenerator = regenerator || active_record_regenerator(models)
     end
 
     # The report as a plain Hash. Every list is sorted, so a given state always
@@ -47,9 +57,15 @@ module Exwiw
 
     private def regenerate_into(tmp_dir)
       FileUtils.cp_r(File.join(@schema_dir, "."), tmp_dir) if Dir.exist?(@schema_dir)
-      # Explicit: safe mode is not optional here, whatever the library default is.
-      SchemaGenerator.new(models: @models, output_dir: tmp_dir, safe_new_columns: true).generate!
-      SchemaGenerator.new(models: @models, output_dir: tmp_dir).tidy!
+      @regenerator.call(tmp_dir)
+    end
+
+    private def active_record_regenerator(models)
+      lambda do |tmp_dir|
+        # Explicit: safe mode is not optional here, whatever the library default is.
+        SchemaGenerator.new(models: models, output_dir: tmp_dir, safe_new_columns: true).generate!
+        SchemaGenerator.new(models: models, output_dir: tmp_dir).tidy!
+      end
     end
 
     # Every config file under `dir`, keyed by its path relative to `dir` so the
