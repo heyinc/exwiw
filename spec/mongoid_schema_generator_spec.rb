@@ -873,6 +873,28 @@ module Exwiw
         expect(File).to exist(File.join(output_dir, "renamed.json"))
       end
 
+      it "keeps a hand-written embedded config whose name matches no collection" do
+        # Two embedded classes sharing a collection name leave only one of them
+        # generated, so the other is written by hand under a name saying where it
+        # lives. That name matches no model by construction, which is exactly why
+        # tidy must not read it as dead: the file carries the masking rules for
+        # those subdocuments, and deleting it exports them raw.
+        described_class.new(models: models, output_dir: output_dir).generate!
+        path = File.join(output_dir, "users_billing_addresses.json")
+        File.write(path, JSON.pretty_generate(
+          "name" => "users_billing_addresses",
+          "primary_key" => "_id",
+          "belongs_tos" => [],
+          "embedded_in" => { "collection_name" => "users", "path" => "billing_address" },
+          "fields" => [{ "name" => "_id" }, { "name" => "tel", "replace_with" => "masked" }],
+        ) + "\n")
+
+        result = described_class.new(models: models, output_dir: output_dir).tidy!
+
+        expect(result).to be_empty
+        expect(File).to exist(path)
+      end
+
       it "reports nothing to remove for a config that matches the models" do
         described_class.new(models: models, output_dir: output_dir).generate!
 

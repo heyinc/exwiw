@@ -138,6 +138,9 @@ module Exwiw
     # from (`models_by_collection_name`, descendants expanded and embedded models
     # included), so the two can never disagree about which files are live.
     #
+    # A config declaring `embedded_in` is never deleted, whatever its name — see
+    # #hand_written_embedded_config?.
+    #
     # Returns a `SchemaGenerator::TidyResult` — reused rather than duplicated,
     # since a removal report is the same shape whatever the ORM — describing the
     # removals so callers (e.g. the rake task) can report them. Its
@@ -149,14 +152,38 @@ module Exwiw
       live_names = models_by_collection_name.keys
 
       Dir[File.join(@output_dir, "*.json")].sort.each do |path|
-        name = collection_name_in(path)
+        config = read_raw_config(path)
+        name = declared_name(config, path)
         next if live_names.include?(name)
+        next if hand_written_embedded_config?(config)
 
         File.delete(path)
         result.add_removed_table(name)
       end
 
       result
+    end
+
+    # Whether a config on disk describes an embedded collection this generator
+    # could not have written, and whose liveness it therefore cannot judge.
+    #
+    # `generate!` writes one config per *collection name*, so when two embedded
+    # classes share a collection name — which they routinely do, since an embedded
+    # class's collection name is derived from the class name alone (`Address`
+    # embedded under two different parents is `addresses` both times) — only one
+    # of them is emitted. The other can only be expressed by hand, under a name
+    # that says where it lives (`orders_deliveries_addresses`) rather than naming
+    # a collection. Such a name matches no model by construction, so "no model
+    # stores into it" is not evidence that it is dead: it is evidence that the
+    # config exists precisely because generation cannot reach it.
+    #
+    # Deleting one is silent and expensive — an embedded config carries the
+    # masking rules applied to those subdocuments, so removing it exports them
+    # raw, and nothing else in the pipeline notices. So an `embedded_in` config
+    # is kept whatever its name; a genuinely dead one is removed by hand, which is
+    # also how it arrived.
+    private def hand_written_embedded_config?(config)
+      config.is_a?(Hash) && !config["embedded_in"].nil?
     end
 
     # The collection -> models grouping both `build_collections` and `tidy!` work
@@ -171,17 +198,21 @@ module Exwiw
       expand_with_descendants(concrete_models).group_by { |model| model.collection_name.to_s }
     end
 
-    # The collection a config file on disk declares itself to be. Read as plain
-    # JSON rather than through `MongodbCollectionConfig.from` on purpose: a stale
-    # file is exactly the one that may no longer satisfy the current validations
-    # (an unknown key, a belongs_to whose target is gone), and tidy has to be able
-    # to delete such a file rather than abort on it. A file without a readable
-    # `name` falls back to its basename, which is the name `write_files` gives it.
-    private def collection_name_in(path)
-      config = JSON.parse(File.read(path))
-      (config.is_a?(Hash) && config["name"]) || File.basename(path, ".json")
+    # A config file on disk as plain JSON, rather than through
+    # `MongodbCollectionConfig.from` on purpose: a stale file is exactly the one
+    # that may no longer satisfy the current validations (an unknown key, a
+    # belongs_to whose target is gone), and tidy has to be able to delete such a
+    # file rather than abort on it. Unparseable JSON reads as no config at all.
+    private def read_raw_config(path)
+      JSON.parse(File.read(path))
     rescue JSON::ParserError
-      File.basename(path, ".json")
+      nil
+    end
+
+    # The collection a config declares itself to be. Without a readable `name` it
+    # falls back to the file's basename, which is the name `write_files` gives it.
+    private def declared_name(config, path)
+      (config.is_a?(Hash) && config["name"]) || File.basename(path, ".json")
     end
 
     # Loads the configs already on disk so the generator can honor an explicit
