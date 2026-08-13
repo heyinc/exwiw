@@ -10,6 +10,8 @@
 
 - **Regenerating a Mongoid config no longer re-masks a field somebody deliberately unmasked.** `MongodbCollectionConfig#merge` kept the generated side's `replace_with` when the on-disk field had none — harmless while the generator emitted no masks, but wrong under safe mode, which proposes default masks: a field whose flag was resolved as "export raw" would silently get its mask back on the next regeneration. For a field the config already has, every decision-owned attribute (`replace_with`, `replace_with_fake_data`, `comment`, `ignore`, `needs_mask_decision`) now comes from the on-disk side even when unset; only structural facts (`name`, `mongoid_field_name`) track the model.
 
+- `schema:generate` no longer drops a hand-set `bulk_insert_chunk_size` when regenerating an existing config. The key is user-owned — the generator never emits it — but the merge took it from the freshly generated side (always empty) instead of carrying the existing value over like `filter`, `scope_column` and the other user-owned keys, so every regeneration silently deleted it.
+
 ## [0.9.21] - 2026-08-06
 
 ### Changed

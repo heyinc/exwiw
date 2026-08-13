@@ -170,9 +170,9 @@ module Exwiw
         merged_table.type = passed_table.type
         merged_table.comment = comment
         merged_table.filter = filter
-        merged_table.bulk_insert_chunk_size = passed_table.bulk_insert_chunk_size
         merged_table.ignore = ignore
         # User-owned, never regenerated: carry over from the existing config.
+        merged_table.bulk_insert_chunk_size = bulk_insert_chunk_size
         merged_table.scope_exempt = scope_exempt
         merged_table.scope_column = scope_column
         merged_table.reverse_scope = reverse_scope

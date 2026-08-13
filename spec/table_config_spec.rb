@@ -457,6 +457,22 @@ module Exwiw
       end
     end
 
+    describe 'bulk_insert_chunk_size' do
+      it 'preserves the user-set value across merge with a regenerated config' do
+        current = TableConfig.from_symbol_keys(
+          name: 'orders', primary_key: 'id',
+          bulk_insert_chunk_size: 10_000,
+          columns: [{ name: 'id' }],
+        )
+        regenerated = TableConfig.from_symbol_keys(
+          name: 'orders', primary_key: 'id',
+          columns: [{ name: 'id' }, { name: 'added' }],
+        )
+        merged = current.merge(regenerated)
+        expect(merged.bulk_insert_chunk_size).to eq(10_000)
+      end
+    end
+
     describe 'needs_mask_decision' do
       it 'round-trips through JSON and is omitted when unset' do
         config = TableConfig.from_symbol_keys(
