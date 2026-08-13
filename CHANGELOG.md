@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`exwiw schema generate|check|tidy --from-db` regenerates and checks a schema config straight from a live database connection, so an application exwiw cannot load — any language, no Rails — gets the same safe-mode / check workflow.** The introspectors (MySQL and PostgreSQL) read tables, single-column primary keys, ordinal-ordered columns with types mapped to the same symbols `DefaultMask` masks by, unique indexes, and single-column foreign-key constraints; views and composite foreign keys are out (the latter skipped with a warning), a composite primary key is emitted as the same `ignore: true` signpost the ActiveRecord generator writes, and a table with **no** primary key — which ActiveRecord can never report but a database is free to have — is emitted `ignore: true` with a comment naming the fix. Safe mode matches `schema:generate` (`EXWIW_NEW_COLUMNS=plain` opts out) and `schema check` matches `rake exwiw:schema:check` (same JSON report, `EXWIW_SCHEMA_CHECK_OUTPUT`, exit 1 on drift or an unresolved `needs_mask_decision` — and exit 2 when the check could not run at all, so an unreachable database never reads as "config out of date"). One deliberate departure from the model-driven generator: **introspection only ever adds a `belongs_to`, never rewrites the list.** A foreign-key constraint is strictly weaker evidence than an application model — plenty of schemas express a relation only in application code, and hand-written belongs_tos are load-bearing extraction paths — so the existing config's relations are kept verbatim (their foreign-key columns are protected from default masks too) and constraint-discovered edges are appended; removal is `schema tidy`'s explicit job, driven by the target table actually being gone, with `ignore: true` tombstones kept. Connection settings come from the same flags/env the exporter uses; `DATABASE_PASSWORD` may be empty here (CI databases commonly run with trust auth), while `export`'s requirement is unchanged.
+
 ## [0.9.21] - 2026-08-06
 
 ### Changed
