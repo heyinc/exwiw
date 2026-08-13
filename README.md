@@ -19,7 +19,7 @@ You want to export only the data you want to export.
 
 - Export the full list of INSERT sql for the specified conditions.
 - Provide serveral masking options for sensitive columns.
-- Provide config generator for ActiveRecord.
+- Provide config generator for ActiveRecord, for Mongoid, and from a live database connection (any application, any language).
 
 ## Installation
 
@@ -56,10 +56,11 @@ driver implements that auth handshake itself and sidesteps the issue.
 
 ## Usage
 
-exwiw has two subcommands:
+exwiw has three subcommands:
 
 - `export` (default) — generate INSERT/COPY SQL files. If the subcommand is omitted, `export` is assumed.
 - `explain` — print each query `export` would run together with its `EXPLAIN` output. SQL adapters compile the SELECT without executing it; mongodb runs the server's explain (defaulting to the execution-free `queryPlanner`).
+- `schema generate|check|tidy --from-db` — maintain the schema config by reading a live database, for applications that cannot be loaded to generate it from their models. See [Non-Rails applications](#non-rails-applications-exwiw-schema---from-db).
 
 ### `exwiw export`
 
@@ -326,7 +327,7 @@ Notes:
 - **Database connection settings stay on the CLI/environment.** `host`, `port`, `user`, `database`, `uri`, and `password` are **rejected** in the config file (exwiw exits with an error). `adapter` is the one connection-related key that *is* allowed in the file.
 - **Relative paths in the config (`schema_dir`, `output_dir`, `after_insert_hook`) are resolved relative to the config file's own directory**, not the current working directory. So with the config at the project root, `schema_dir: exwiw/schema` reads naturally, and an absolute `--config=/path/to/exwiw.yml` works no matter where you run from. (CLI path flags remain relative to the current directory — each source resolves relative to where it is written.) Absolute paths are used as-is.
 - Unknown keys are rejected so a typo surfaces immediately.
-- Export-only keys (`output_dir`, `output_format`, `insert_only`, `after_insert_hook`) are ignored when running `explain`, so a single config file can be shared by both subcommands.
+- Export-only keys (`output_dir`, `output_format`, `insert_only`, `after_insert_hook`) are ignored when running `explain` or `schema`, so a single config file can be shared by every subcommand.
 - `explain_verbosity` sets the mongodb `explain` verbosity (`queryPlanner` | `executionStats` | `allPlansExecution`, default `queryPlanner`); the `EXWIW_MONGODB_EXPLAIN_VERBOSITY` env var overrides it. Ignored by the SQL adapters and by `export`. See [MongoDB support](docs/mongodb.md#exwiw-explain-verbosity).
 - `mongodb_query_timeout_ms` sets the global, server-enforced query timeout (mongodb only); the `--mongodb-query-timeout-ms` CLI flag overrides it. Ignored by the SQL adapters. See [MongoDB support](docs/mongodb.md).
 
@@ -448,8 +449,10 @@ databases stays distinct.
 Set `EXWIW_SCHEMA_CHECK_OUTPUT=<path>` to have the same JSON written to a file, which spares a
 caller from assuming stdout carries nothing else (application boot is free to print).
 
-Like safe mode, this is ActiveRecord-only — it regenerates through `SchemaGenerator`, so a
-Mongoid config directory is not supported yet.
+Like safe mode, this rake task is ActiveRecord-only — it regenerates through `SchemaGenerator`,
+so a Mongoid config directory is not supported yet. An application that cannot be loaded to
+generate from its models can run the same check against its database instead: see
+[Non-Rails applications](#non-rails-applications-exwiw-schema---from-db).
 
 #### Multiple databases
 
@@ -482,6 +485,71 @@ bundle exec rake exwiw:schema:generate_mongoid
 ```
 
 What it derives from each model (fields, `belongs_tos`, `embedded_in`, STI handling), how to annotate constructs exwiw cannot represent with `ignore` / `ignore_type`, and the `EXWIW_SKIP_UNSUPPORTED=1` bootstrap flag are all documented in [MongoDB support](docs/mongodb.md#generating-config-from-mongoid-models).
+
+#### Non-Rails applications (`exwiw schema ... --from-db`)
+
+The rake tasks above read the application's models, which requires loading the application — so
+they are only available where that is possible. For an application written in any other language
+(or a Ruby one exwiw cannot boot), the same three operations are available on the CLI, reading
+the **database** instead of the models:
+
+```bash
+# generate / refresh the config from the live schema
+exwiw schema generate --from-db -a postgresql -h db.example.com -p 5432 -u app --database=app --schema-dir=exwiw/schema
+
+# report how the committed config differs from the database (exits 1 when it needs work)
+exwiw schema check --from-db -a postgresql -h db.example.com -p 5432 -u app --database=app --schema-dir=exwiw/schema
+
+# remove tables/columns/relations the database no longer has
+exwiw schema tidy --from-db -a postgresql -h db.example.com -p 5432 -u app --database=app --schema-dir=exwiw/schema
+```
+
+- `--from-db` is **required**: the schema source is always stated explicitly rather than inferred.
+- mysql and postgresql only. sqlite is not supported, and a MongoDB schema lives in the
+  application rather than the database (use `schema:generate_mongoid`).
+- The usual connection flags and `DATABASE_PASSWORD` apply, and `adapter` / `schema_dir` may come
+  from [the config file](#config-file-exwiwyml) instead (`--schema-dir` wins). Unlike `export`,
+  an empty or absent `DATABASE_PASSWORD` is accepted, since these commands are commonly pointed
+  at a CI database that runs with trust authentication.
+- `generate` creates the schema directory if it does not exist; `check` and `tidy` require it.
+- Everything else behaves as the rake tasks do: [safe mode](#safe-mode-masking-new-columns-by-default)
+  is on unless `EXWIW_NEW_COLUMNS=plain`, `check` prints the same JSON report, honours
+  `EXWIW_SCHEMA_CHECK_OUTPUT`, and exits 1 when the config needs attention. A check that could
+  not *run* (an unreachable database, a malformed config) exits with a different status, so CI
+  can tell the two apart.
+- One run covers one database — the connection addresses one — so the files are written flat into
+  the schema directory. There is no per-database subdirectory layout here; a second database is a
+  second run against a second connection.
+
+The database is read through its catalog only: tables, columns and their types/defaults, primary
+keys, unique indexes and foreign keys. Views are skipped, since they hold no rows of their own,
+and a table with no primary key is emitted with `ignore: true` and a comment saying what to add
+to export it (exwiw identifies and joins rows by primary key).
+
+**`belongs_tos` are only ever added, never rewritten.** A foreign-key constraint is weaker
+evidence than an application model: plenty of schemas express a relation only in application code,
+and a `belongs_to` is the path extraction follows to reach a table, so silently dropping one
+narrows the dump. Regeneration therefore keeps every relation the config already declares —
+in its existing order, with its `comment` / `ignore` / `ignore_type` — and appends only the
+foreign-key-backed relations that are not there yet. A hand-written relation's foreign-key column
+is treated as structural too, so safe mode never masks it. Removing a relation is `tidy`'s job:
+it drops a `belongs_to` whose target table no longer exists in the database (an `ignore: true`
+entry is kept, since it records a decision), alongside the tables and columns that are gone.
+
+So a relation the database does not know about is declared once, by hand, and survives from then
+on:
+
+```json
+{
+    "name": "orders",
+    "primary_key": "id",
+    "belongs_tos": [{
+        "table_name": "buyers",
+        "foreign_key": "buyer_id",
+        "comment": "enforced in the application; no foreign key in the database"
+    }]
+}
+```
 
 ### Configuration
 
