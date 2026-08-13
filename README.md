@@ -351,6 +351,12 @@ EXWIW_SCHEMA_DIR_PATH=custom_directory bundle exec rake exwiw:schema:generate
 
 As with the CLI, a relative `schema_dir` in the config file is resolved relative to the config file's own directory.
 
+An application with more than one schema source — ActiveRecord models and Mongoid documents, say —
+should give each source its own directory (`EXWIW_SCHEMA_DIR_PATH`), because every task judges the
+whole directory against the one source it reads. Left sharing a directory, `tidy` / `check` see the
+other source's configs as belonging to tables and collections that no longer exist, and report or
+remove them.
+
 #### Safe mode (masking new columns by default)
 
 A migration that adds a column would otherwise leave `schema:generate` emitting it unmasked, so
@@ -394,8 +400,15 @@ column are flagged but deliberately **not** masked:
   the primary key). A constant would collapse every row onto one value and break the restore with
   a duplicate key.
 
-Safe mode is ActiveRecord-only for now: `schema:generate_mongoid` does not flag new fields yet,
-though the `needs_mask_decision` key itself is understood on a MongoDB field.
+`schema:generate_mongoid` runs in safe mode too, on the same `EXWIW_NEW_COLUMNS=plain` opt-out. The
+masks come from the Mongoid field type (`String`, `Integer`, `Float`, `BigDecimal`,
+`Mongoid::Boolean`, `Date`, `Time` / `DateTime` / `ActiveSupport::TimeWithZone`); a field of any
+other type — `Hash`, `Array`, a typeless field, a BSON type — is flagged but not masked, as is a
+field covered by a unique index unless its mask varies per document. The structural fields are the
+`_id` primary key, the STI discriminator (`_type`) and every `belongs_to` foreign key of the
+collection: flagged, never masked. The foreign keys are read from the models, so the ones the
+config itself drops (a polymorphic `belongs_to`, a `belongs_to` on an embedded document) are
+covered too.
 
 #### Tidying stale config (`schema:tidy`)
 
@@ -448,8 +461,10 @@ databases stays distinct.
 Set `EXWIW_SCHEMA_CHECK_OUTPUT=<path>` to have the same JSON written to a file, which spares a
 caller from assuming stdout carries nothing else (application boot is free to print).
 
-Like safe mode, this is ActiveRecord-only — it regenerates through `SchemaGenerator`, so a
-Mongoid config directory is not supported yet.
+A Mongoid config directory has its own task, `schema:check_mongoid`, with the same output,
+the same `EXWIW_SCHEMA_CHECK_OUTPUT` file and the same exit code — it just regenerates through
+`MongoidSchemaGenerator` (safe mode + `tidy_mongoid`) instead. Collections and fields are
+reported under the same keys as tables and columns.
 
 #### Multiple databases
 
@@ -479,9 +494,13 @@ For MongoDB applications backed by [Mongoid](https://www.mongodb.com/docs/mongoi
 
 ```bash
 bundle exec rake exwiw:schema:generate_mongoid
+bundle exec rake exwiw:schema:tidy_mongoid   # delete the config of a collection no model stores into
+bundle exec rake exwiw:schema:check_mongoid  # report the difference without changing anything
 ```
 
 What it derives from each model (fields, `belongs_tos`, `embedded_in`, STI handling), how to annotate constructs exwiw cannot represent with `ignore` / `ignore_type`, and the `EXWIW_SKIP_UNSUPPORTED=1` bootstrap flag are all documented in [MongoDB support](docs/mongodb.md#generating-config-from-mongoid-models).
+
+`tidy_mongoid` reconciles against the *models* rather than a live connection (MongoDB has no schema to read, and a collection exists only once something is written to it): a config file whose collection no model stores into any more is deleted, and nothing else is touched — fields already track the models through `generate_mongoid`. `check_mongoid` runs both into a throwaway copy, so it never writes to the working tree.
 
 ### Configuration
 
@@ -628,10 +647,11 @@ nobody has decided on yet:
 ```
 
 Extraction ignores the key entirely — what the column exports is whatever `replace_with` /
-`ignore` say. It exists so the decision can be tracked and required: `schema:generate`'s
+`ignore` say. It exists so the decision can be tracked and required:
 [safe mode](#safe-mode-masking-new-columns-by-default) attaches it to every newly discovered
-column together with a default mask, and [`schema:check`](#checking-the-config-against-the-schema)
-reports the columns that still carry it, so CI can keep a pull request red until each one is
+column/field together with a default mask, and
+[`schema:check`](#checking-the-config-against-the-schema) — `schema:check_mongoid` for a Mongoid
+config — reports the ones that still carry it, so CI can keep a pull request red until each is
 resolved. Resolving it means removing the key — after keeping the mask (ideally recording why
 in `comment`), replacing it with a real masking rule, dropping `replace_with` to export the
 raw value, or setting `ignore: true`.

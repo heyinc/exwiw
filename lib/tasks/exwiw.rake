@@ -100,7 +100,44 @@ namespace :exwiw do
       Exwiw::MongoidSchemaGenerator.from_rails_application(
         output_dir: resolve_schema_dir.call,
         skip_unsupported: ENV["EXWIW_SKIP_UNSUPPORTED"] == "1",
+        # Same convention as `generate`: safe unless EXWIW_NEW_COLUMNS=plain.
+        safe_new_columns: safe_new_columns.call,
       ).generate!
+    end
+
+    desc "Remove collections from the schema config that no longer exist in the Mongoid application"
+    task tidy_mongoid: :environment do
+      require "exwiw"
+
+      result = Exwiw::MongoidSchemaGenerator.from_rails_application(
+        output_dir: resolve_schema_dir.call,
+      ).tidy!
+
+      if result.empty?
+        puts "exwiw: schema config is already tidy; nothing to remove."
+      else
+        result.removed_tables.each do |name|
+          puts "exwiw: removed config for collection '#{name}' (no longer exists in the application)."
+        end
+      end
+    end
+
+    desc "Report how the committed schema config differs from the Mongoid application, without changing it"
+    task check_mongoid: :environment do
+      require "exwiw"
+
+      report = Exwiw::SchemaCheck.from_mongoid_application(schema_dir: resolve_schema_dir.call).run
+      json = JSON.pretty_generate(report)
+      puts json
+      # A file too, so a caller need not assume stdout carries only the JSON.
+      File.write(ENV["EXWIW_SCHEMA_CHECK_OUTPUT"], json + "\n") if ENV["EXWIW_SCHEMA_CHECK_OUTPUT"]
+
+      unless Exwiw::SchemaCheck.clean?(report)
+        $stderr.puts "exwiw: the schema config is out of date or has undecided masking; " \
+                     "run `rake exwiw:schema:generate_mongoid exwiw:schema:tidy_mongoid` " \
+                     "and resolve every `needs_mask_decision` field."
+        exit 1
+      end
     end
   end
 end

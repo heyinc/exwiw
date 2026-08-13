@@ -448,6 +448,78 @@ module Exwiw
         # ...and its foreign-key column survives as an ordinary field.
         expect(result["fields"].map { |f| f["name"] }).to include("ghost_id")
       end
+
+      it "applies an ignore:true belongs_to only to the relation it names, keeping its foreign-key twin live" do
+        # SharedForeignKeyReferencer declares two belongs_to on the SAME foreign
+        # key: one to "shops", one reading that value as another collection's
+        # `uuid`. A foreign key therefore does not identify a relation, and while
+        # the ignored entry was matched by foreign key alone it stood for both:
+        # the second relation came back as a copy of the entry, `uniq` collapsed
+        # the two, and its edge disappeared from the config.
+        path = File.join(output_dir, "shared_foreign_key_referencers.json")
+        existing = {
+          "name" => "shared_foreign_key_referencers",
+          "primary_key" => "_id",
+          "belongs_tos" => [
+            {
+              "table_name" => "shops",
+              "foreign_key" => "owner_id",
+              "ignore" => true,
+              "ignore_type" => "need_code_fix",
+              "comment" => "FIXME: the shop edge is not wanted in the export.",
+            },
+          ],
+          "fields" => [{ "name" => "_id" }, { "name" => "owner_id" }],
+        }
+        File.write(path, JSON.pretty_generate(existing))
+
+        described_class.new(
+          models: [MongoidDummy::SharedForeignKeyReferencer], output_dir: output_dir,
+        ).generate!
+
+        belongs_tos = JSON.parse(File.read(path))["belongs_tos"]
+        # The user's entry survives verbatim...
+        expect(belongs_tos).to include(
+          "table_name" => "shops",
+          "foreign_key" => "owner_id",
+          "ignore" => true,
+          "ignore_type" => "need_code_fix",
+          "comment" => "FIXME: the shop edge is not wanted in the export.",
+        )
+        # ...while the other relation on the same foreign key is emitted live,
+        # with the `references` its `primary_key:` implies.
+        expect(belongs_tos).to include(
+          "table_name" => "uuid_referenced_parents",
+          "foreign_key" => "owner_id",
+          "references" => "uuid",
+        )
+      end
+
+      it "still preserves an ignore:true belongs_to that names no target collection" do
+        # The minimal form of the annotation: a stale relation's target is gone,
+        # so there is nothing to name. Matching then falls back to the foreign key
+        # alone — otherwise a user writing the minimal form would have their
+        # decision dropped and the edge resurrected.
+        path = File.join(output_dir, "shared_foreign_key_referencers.json")
+        existing = {
+          "name" => "shared_foreign_key_referencers",
+          "primary_key" => "_id",
+          "belongs_tos" => [
+            { "foreign_key" => "owner_id", "ignore" => true, "comment" => "FIXME: not wanted." },
+          ],
+          "fields" => [{ "name" => "_id" }, { "name" => "owner_id" }],
+        }
+        File.write(path, JSON.pretty_generate(existing))
+
+        described_class.new(
+          models: [MongoidDummy::SharedForeignKeyReferencer], output_dir: output_dir,
+        ).generate!
+
+        belongs_tos = JSON.parse(File.read(path))["belongs_tos"]
+        expect(belongs_tos).to eq([
+          { "foreign_key" => "owner_id", "ignore" => true, "comment" => "FIXME: not wanted." },
+        ])
+      end
     end
 
     describe "#generate!" do
@@ -585,7 +657,10 @@ module Exwiw
       it "matches the generated-config snapshots" do
         snapshot_dir = File.expand_path("mongoid_schema_output_snapshots", __dir__)
 
-        described_class.new(models: models, output_dir: output_dir).generate!
+        # Safe mode off, so the snapshots freeze the structural output (fields,
+        # belongs_tos, embedded_in) rather than a mask per field; safe mode's
+        # emission is pinned by its own examples below.
+        described_class.new(models: models, output_dir: output_dir, safe_new_columns: false).generate!
         actual_paths = Dir[File.join(output_dir, "*.json")].sort
 
         if ENV["UPDATE_SNAPSHOTS"]
@@ -613,6 +688,237 @@ module Exwiw
       end
     end
 
+    describe "safe mode" do
+      def generate_safe(models_to_use = models)
+        described_class.new(models: models_to_use, output_dir: output_dir, safe_new_columns: true).generate!
+      end
+
+      def config_for(collection_name)
+        JSON.parse(File.read(File.join(output_dir, "#{collection_name}.json")))
+      end
+
+      def fields_of(collection_name)
+        config_for(collection_name)["fields"].to_h { |f| [f["name"], f] }
+      end
+
+      it "masks each field with a default its Mongoid type can hold and flags it for a decision" do
+        generate_safe([MongoidDummy::TypedDocument])
+
+        expect(config_for("typed_documents")["fields"]).to eq([
+          # Structural: the primary key and the belongs_to foreign key are
+          # flagged but never masked.
+          { "name" => "_id", "needs_mask_decision" => true },
+          { "name" => "title", "replace_with" => "masked-{_id}", "needs_mask_decision" => true },
+          # A field whose name mentions mail keeps the mask a valid address.
+          { "name" => "contact_email", "replace_with" => "masked-{_id}@example.com", "needs_mask_decision" => true },
+          { "name" => "count", "replace_with" => 0, "needs_mask_decision" => true },
+          { "name" => "ratio", "replace_with" => 0, "needs_mask_decision" => true },
+          { "name" => "amount", "replace_with" => 0, "needs_mask_decision" => true },
+          # `default: true` wins over the per-type `false`, so masking the flag
+          # does not turn the feature off for every document in the dump.
+          { "name" => "active", "replace_with" => true, "needs_mask_decision" => true },
+          { "name" => "published_on", "replace_with" => "2000-01-01", "needs_mask_decision" => true },
+          { "name" => "published_at", "replace_with" => "2000-01-01 00:00:00", "needs_mask_decision" => true },
+          # No constant fits a Hash / Array / typeless field, so they are flagged
+          # and left unmasked rather than restored as a value the application
+          # cannot read.
+          { "name" => "payload", "needs_mask_decision" => true },
+          { "name" => "labels", "needs_mask_decision" => true },
+          { "name" => "anything", "needs_mask_decision" => true },
+          # Covered by a unique index: a constant would collapse every document
+          # onto one value and break the restore with a duplicate key.
+          { "name" => "serial", "needs_mask_decision" => true },
+          { "name" => "shop_id", "needs_mask_decision" => true },
+        ])
+      end
+
+      it "keeps a text mask on a field a unique index covers, since it varies per document" do
+        # Shop#name is unique-indexed, but its mask interpolates the primary key,
+        # so every restored document still gets a distinct value.
+        generate_safe([MongoidDummy::Shop])
+
+        expect(fields_of("shops")["name"]["replace_with"]).to eq("masked-{_id}")
+      end
+
+      it "flags the STI discriminator and every subclass foreign key without masking them" do
+        # The unioned "events" config carries the auto-added `_type` (which is
+        # what tells a PurchaseEvent from a LoginEvent inside the shared
+        # collection) plus the base's `shop_id` and the subclass's `order_id`.
+        # Masking any of them would break the dump's own lookups.
+        generate_safe([MongoidDummy::Event])
+
+        fields = fields_of("events")
+        expect(fields.values_at("_type", "shop_id", "order_id")).to eq([
+          { "name" => "_type", "needs_mask_decision" => true },
+          { "name" => "shop_id", "needs_mask_decision" => true },
+          { "name" => "order_id", "needs_mask_decision" => true },
+        ])
+        # A plain subclass field is still masked like any other.
+        expect(fields["ip_address"]["replace_with"]).to eq("masked-{_id}")
+      end
+
+      it "flags the foreign key and type of a polymorphic belongs_to the config drops" do
+        # Review#reviewable is excluded from belongs_tos (no single target
+        # collection), but its auto-added reviewable_id/reviewable_type still
+        # identify another collection's document, so masking either would rewrite
+        # a live reference. They are structural despite the dropped relation.
+        generate_safe([MongoidDummy::Review])
+
+        fields = fields_of("reviews")
+        expect(fields["reviewable_id"]).to eq({ "name" => "reviewable_id", "needs_mask_decision" => true })
+        expect(fields["reviewable_type"]).to eq({ "name" => "reviewable_type", "needs_mask_decision" => true })
+      end
+
+      it "flags the fields of an embedded collection, foreign key included" do
+        # An embedded config's belongs_tos are always empty, so its structural
+        # fields cannot be read off them: Comment#author_id is dropped as a
+        # relation yet still references a users document, and must stay unmasked.
+        generate_safe([MongoidDummy::Comment])
+
+        expect(config_for("comments")["fields"]).to eq([
+          { "name" => "_id", "needs_mask_decision" => true },
+          { "name" => "body", "replace_with" => "masked-{_id}", "needs_mask_decision" => true },
+          { "name" => "author_id", "needs_mask_decision" => true },
+        ])
+      end
+
+      it "leaves the generated config unchanged when off" do
+        described_class.new(
+          models: [MongoidDummy::Comment], output_dir: output_dir, safe_new_columns: false,
+        ).generate!
+
+        expect(config_for("comments")["fields"]).to eq([
+          { "name" => "_id" }, { "name" => "body" }, { "name" => "author_id" },
+        ])
+      end
+
+      it "keeps a decision a human already made and only flags what is new" do
+        # The whole point of the flag: it marks the fields nobody has judged yet,
+        # so a resolved decision — whichever way it went — must survive every
+        # later regeneration untouched.
+        generate_safe([MongoidDummy::TypedDocument])
+        path = File.join(output_dir, "typed_documents.json")
+        resolved = JSON.parse(File.read(path))
+        resolved["fields"] = resolved["fields"].map do |field|
+          case field["name"]
+          when "title" then { "name" => "title", "replace_with" => "masked-{_id}", "comment" => "PII" }
+          # Deliberately unmasked: this field is exported raw.
+          when "contact_email" then { "name" => "contact_email" }
+          else field.reject { |key, _| key == "needs_mask_decision" }
+          end
+        end
+        File.write(path, JSON.pretty_generate(resolved) + "\n")
+
+        generate_safe([MongoidDummy::TypedDocument])
+
+        fields = fields_of("typed_documents")
+        expect(fields["title"]).to eq({ "name" => "title", "replace_with" => "masked-{_id}", "comment" => "PII" })
+        expect(fields["contact_email"]).to eq({ "name" => "contact_email" })
+        expect(fields["count"]).to eq({ "name" => "count", "replace_with" => 0 })
+      end
+    end
+
+    describe "#tidy!" do
+      def write_config(name, hash)
+        File.write(File.join(output_dir, "#{name}.json"), JSON.pretty_generate(hash) + "\n")
+      end
+
+      it "deletes the config file of a collection no model stores into any more" do
+        described_class.new(models: models, output_dir: output_dir).generate!
+        write_config("legacy_things", {
+          "name" => "legacy_things",
+          "primary_key" => "_id",
+          "belongs_tos" => [],
+          "fields" => [{ "name" => "_id" }, { "name" => "value" }],
+        })
+
+        result = described_class.new(models: models, output_dir: output_dir).tidy!
+
+        expect(File).not_to exist(File.join(output_dir, "legacy_things.json"))
+        expect(File).to exist(File.join(output_dir, "shops.json"))
+        # Embedded collections are part of the same grouping generate! writes
+        # from, so their configs are live too and must not be swept away.
+        expect(File).to exist(File.join(output_dir, "posts.json"))
+        expect(result.removed_tables).to contain_exactly("legacy_things")
+        expect(result.removed_columns).to be_empty
+      end
+
+      it "keeps the config of a live collection the user has deliberately ignored" do
+        # `ignore: true` is a decision about extraction, not a statement that the
+        # collection is gone — its model still stores into it, so the config (and
+        # the annotation explaining why it is ignored) has to survive.
+        described_class.new(models: [MongoidDummy::SystemAnnouncement], output_dir: output_dir).generate!
+        path = File.join(output_dir, "system_announcements.json")
+        config = JSON.parse(File.read(path))
+        config["ignore"] = true
+        config["ignore_type"] = "unsupported"
+        File.write(path, JSON.pretty_generate(config) + "\n")
+
+        result = described_class.new(models: [MongoidDummy::SystemAnnouncement], output_dir: output_dir).tidy!
+
+        expect(result).to be_empty
+        expect(JSON.parse(File.read(path))["ignore_type"]).to eq("unsupported")
+      end
+
+      it "identifies a stale file by the collection it declares, not by its filename" do
+        # The file name is only how write_files spells the collection name; a
+        # hand-placed file can disagree, and what decides is the `name` inside.
+        described_class.new(models: [MongoidDummy::Shop], output_dir: output_dir).generate!
+        FileUtils.cp(File.join(output_dir, "shops.json"), File.join(output_dir, "renamed.json"))
+
+        result = described_class.new(models: [MongoidDummy::Shop], output_dir: output_dir).tidy!
+
+        # Both files declare the live "shops" collection, so neither is stale.
+        expect(result).to be_empty
+        expect(File).to exist(File.join(output_dir, "renamed.json"))
+      end
+
+      it "keeps a hand-written embedded config whose name matches no collection" do
+        # Two embedded classes sharing a collection name leave only one of them
+        # generated, so the other is written by hand under a name saying where it
+        # lives. That name matches no model by construction, which is exactly why
+        # tidy must not read it as dead: the file carries the masking rules for
+        # those subdocuments, and deleting it exports them raw.
+        described_class.new(models: models, output_dir: output_dir).generate!
+        path = File.join(output_dir, "users_billing_addresses.json")
+        File.write(path, JSON.pretty_generate(
+          "name" => "users_billing_addresses",
+          "primary_key" => "_id",
+          "belongs_tos" => [],
+          "embedded_in" => { "collection_name" => "users", "path" => "billing_address" },
+          "fields" => [{ "name" => "_id" }, { "name" => "tel", "replace_with" => "masked" }],
+        ) + "\n")
+
+        result = described_class.new(models: models, output_dir: output_dir).tidy!
+
+        expect(result).to be_empty
+        expect(File).to exist(path)
+      end
+
+      it "leaves a file it cannot parse in place" do
+        # Broken JSON says nothing about what the file describes, and the name it
+        # would fall back to — the basename — matches no collection precisely
+        # when the file is a hand-written embedded config, so deleting it would
+        # bypass the guard above for the files that need it most.
+        described_class.new(models: models, output_dir: output_dir).generate!
+        path = File.join(output_dir, "users_billing_addresses.json")
+        File.write(path, "{ not json")
+
+        result = nil
+        expect { result = described_class.new(models: models, output_dir: output_dir).tidy! }
+          .to output(/not valid JSON/).to_stderr
+
+        expect(result).to be_empty
+        expect(File).to exist(path)
+      end
+
+      it "reports nothing to remove for a config that matches the models" do
+        described_class.new(models: models, output_dir: output_dir).generate!
+
+        expect(described_class.new(models: models, output_dir: output_dir).tidy!).to be_empty
+      end
+    end
+
     # End-to-end check that the *generated* configs are actually consumable by
     # the MongoDB dump path: feed the dummy app's seed documents through
     # MongodbAdapter's masking using nothing but the generated config shapes.
@@ -634,10 +940,14 @@ module Exwiw
       end
       let(:adapter) { Adapter::MongodbAdapter.new(connection_config, logger) }
 
-      # Generated configs carry no masking by default; inject representative
-      # `replace_with` rules so the masking pass has something to do.
+      # Safe mode off so the only masking rules in play are the representative
+      # ones injected right below — what is under test here is that the generated
+      # *structure* addresses every embedded subdocument, not which defaults safe
+      # mode proposes.
       let(:config_by_name) do
-        collections = described_class.new(models: models, output_dir: output_dir).build_collections
+        collections = described_class.new(
+          models: models, output_dir: output_dir, safe_new_columns: false,
+        ).build_collections
         by_name = collections.each_with_object({}) { |c, h| h[c.name] = c }
 
         set_replace_with(by_name.fetch("users"), "name", "masked{_id}")
@@ -770,7 +1080,12 @@ module Exwiw
       end
       let(:adapter) { Adapter::MongodbAdapter.new(connection_config, logger) }
       let(:config_by_name) do
-        collections = described_class.new(models: models, output_dir: output_dir).build_collections
+        # Safe mode off: this asserts the untouched BSON values (created_at /
+        # updated_at) serialize as Extended JSON, so the only masks are the two
+        # injected here.
+        collections = described_class.new(
+          models: models, output_dir: output_dir, safe_new_columns: false,
+        ).build_collections
         by_name = collections.each_with_object({}) { |c, h| h[c.name] = c }
         by_name.fetch("users").fields.find { |f| f.name == "name" }.replace_with = "masked{_id}"
         by_name.fetch("posts").fields.find { |f| f.name == "title" }.replace_with = "masked-title-{_id}"
@@ -812,6 +1127,49 @@ module Exwiw
         expect(post["_id"]).to eq("$oid" => "5f5e7c1e1c9d440000000002")
         expect(post["title"]).to eq("masked-title-5f5e7c1e1c9d440000000002")
         expect(post["created_at"]).to eq("$date" => "2026-01-01T00:00:00Z")
+      end
+    end
+
+    # End-to-end check that the `{_id}` placeholder safe mode puts into a text
+    # mask is one the MongoDB dump path actually interpolates. The generator is
+    # only allowed to emit such a template because MongodbAdapter compiles it and
+    # renders it per document (see #compile_template / #render_template); if it
+    # did not, every masked string field would restore as the literal
+    # "masked-{_id}" and collide on any unique index. Nothing else pins that
+    # contract from the safe-mode side, so it is asserted end to end here.
+    describe "safe mode's default masks drive MongodbAdapter masking" do
+      let(:logger) { Logger.new(nil) }
+      let(:connection_config) do
+        ConnectionConfig.new(
+          adapter: "mongodb",
+          database_name: "exwiw_test",
+          host: "127.0.0.1",
+          port: 27017,
+          user: nil,
+          password: nil,
+        )
+      end
+      let(:adapter) { Adapter::MongodbAdapter.new(connection_config, logger) }
+
+      it "renders the generated {_id} placeholder per document instead of storing it literally" do
+        by_name = described_class.new(
+          models: [MongoidDummy::User], output_dir: output_dir, safe_new_columns: true,
+        ).build_collections.each_with_object({}) { |c, h| h[c.name] = c }
+        users_config = by_name.fetch("users")
+        adapter.build_query(users_config, Exwiw::DumpTarget.new(table_name: "users", ids: []), by_name)
+
+        oid = BSON::ObjectId.from_string("5f5e7c1e1c9d440000000001")
+        masked = JSON.parse(adapter.to_bulk_insert([{
+          "_id" => oid, "name" => "Alice", "email" => "alice@example.com", "shop_id" => 1,
+        }], users_config))
+
+        expect(masked["name"]).to eq("masked-5f5e7c1e1c9d440000000001")
+        expect(masked["email"]).to eq("masked-5f5e7c1e1c9d440000000001@example.com")
+        # Structural fields are exempt from safe mode's masks, so the id the
+        # templates resolved against — and the foreign key the extraction follows
+        # — are exported as they are.
+        expect(masked["_id"]).to eq("$oid" => "5f5e7c1e1c9d440000000001")
+        expect(masked["shop_id"]).to eq(1)
       end
     end
 
