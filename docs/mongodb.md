@@ -138,7 +138,7 @@ For MongoDB applications backed by [Mongoid](https://www.mongodb.com/docs/mongoi
 bundle exec rake exwiw:schema:generate_mongoid
 ```
 
-It is a distinct task and class (`Exwiw::MongoidSchemaGenerator`) from the ActiveRecord generator because the two ORMs expose entirely different metadata. From each model it derives:
+It is a distinct task and class (`Exwiw::MongoidSchemaGenerator`) from the ActiveRecord generator because the two ORMs expose entirely different metadata. Every application document model is described, except one declared `store_in collection: nil` — the way an application says a document class is never persisted and only wants Mongoid's casting: it has no collection name to describe, so it is skipped (and does not count as a live collection when tidying). From each remaining model it derives:
 
 - the collection name and the `_id` primary key,
 - `fields` from the declared Mongoid fields (referenced `belongs_to` foreign keys such as `shop_id`, and the `created_at` / `updated_at` columns added by `Mongoid::Timestamps`, are ordinary fields — their BSON `ObjectId` / `Date` values serialize as MongoDB Extended JSON at dump time). For an aliased field (`field :ctry, as: :country`), the generator emits the **stored** document key (`ctry`), never the Ruby accessor (`country`), so masking and projection target the key that actually appears in the document, and additionally records the accessor as `mongoid_field_name` on that field so the short key stays understandable (association aliases such as `shop => shop_id` and the built-in `id => _id` are not field renames and are not annotated),
