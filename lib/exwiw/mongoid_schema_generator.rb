@@ -31,21 +31,68 @@ module Exwiw
       end
     end
 
+    # Every generated collection is keyed by the MongoDB document id. Named so
+    # the value the configs carry and the value `DefaultMask` interpolates into a
+    # text mask (`masked-{_id}`) provably come from one place.
+    PRIMARY_KEY = "_id"
+
+    # Mongoid field types (`Model.fields[name].type`, a Ruby class) mapped to the
+    # type symbols `DefaultMask.for` understands, so safe mode can reuse the very
+    # same default masks the ActiveRecord generator emits.
+    #
+    # Keyed by class NAME rather than by the class itself: this constant is
+    # evaluated when exwiw is loaded, which happens in processes that never load
+    # Mongoid (the CLI), so naming `Mongoid::Boolean` here would raise. A name
+    # comparison also sidesteps `DateTime < Date` — an ancestry test would have to
+    # order its branches, while exact names cannot be confused for one another.
+    #
+    # Everything absent from this map (Hash, Array, Object — which is also what a
+    # typeless/dynamic field reports — BSON types, Mongoid::StringifiedSymbol, ...)
+    # deliberately gets NO default mask: a constant that does not fit the field
+    # would be restored as a value the application cannot read, which is worse
+    # than exporting the field while its `needs_mask_decision` flag keeps the
+    # change from being merged.
+    MASKABLE_FIELD_TYPES = {
+      "String" => :string,
+      "Integer" => :integer,
+      "Float" => :float,
+      "BigDecimal" => :decimal,
+      "Mongoid::Boolean" => :boolean,
+      "Time" => :datetime,
+      "DateTime" => :datetime,
+      "ActiveSupport::TimeWithZone" => :datetime,
+      "Date" => :date,
+    }.freeze
+
     # `skip_unsupported`: when true, the generator does not abort on a construct
     # it cannot represent. It skips an unresolvable `belongs_to` (keeping the
     # foreign-key field) and emits an unrepresentable embedded collection as an
     # `ignore: true` top-level config annotated with a `comment`, warning to
     # stderr in both cases. Off by default, so the historical fail-loud behavior
     # is unchanged unless a caller opts in.
-    def self.from_rails_application(output_dir:, skip_unsupported: false)
+    #
+    # `safe_new_columns` mirrors `SchemaGenerator`; see #initialize.
+    def self.from_rails_application(output_dir:, skip_unsupported: false, safe_new_columns: true)
       Rails.application.eager_load!
-      new(models: ::Mongoid.models, output_dir: output_dir, skip_unsupported: skip_unsupported)
+      new(
+        models: ::Mongoid.models,
+        output_dir: output_dir,
+        skip_unsupported: skip_unsupported,
+        safe_new_columns: safe_new_columns,
+      )
     end
 
-    def initialize(models:, output_dir:, skip_unsupported: false)
+    # `safe_new_columns` (the default) emits every field masked — as far as its
+    # Mongoid type allows, see MASKABLE_FIELD_TYPES and DefaultMask — and flagged
+    # `needs_mask_decision: true`. MongodbCollectionConfig#merge lets an existing
+    # entry win, so in practice only fields a model change has just added keep
+    # that treatment. Pass false to bootstrap a config, where every field is new
+    # and flagging all of them at once is noise.
+    def initialize(models:, output_dir:, skip_unsupported: false, safe_new_columns: true)
       @models = models
       @output_dir = output_dir
       @skip_unsupported = skip_unsupported
+      @safe_new_columns = safe_new_columns
     end
 
     def generate!
@@ -68,10 +115,73 @@ module Exwiw
     # on a construct the user has deliberately ignored. Empty (the default) when
     # called directly without an output dir, in which case nothing is honored.
     def build_collections(existing_by_name = {})
-      models = expand_with_descendants(concrete_models)
-      models
-        .group_by { |model| model.collection_name.to_s }
-        .map { |collection_name, group| build_collection_for(collection_name, group, existing_by_name[collection_name]) }
+      models_by_collection_name.map do |collection_name, group|
+        build_collection_for(collection_name, group, existing_by_name[collection_name])
+      end
+    end
+
+    # Reconcile the config files already on disk against the models, deleting the
+    # config of a collection no model stores into any more. This is the
+    # counterpart of `generate!`, which adds and updates config files but can
+    # never delete one: a collection whose model was removed leaves a config that
+    # would otherwise be dumped forever.
+    #
+    # Fields are deliberately NOT touched: `generate!`'s #merge already drives the
+    # field list from the model, so a field the model lost is dropped there.
+    #
+    # Unlike `SchemaGenerator#tidy!`, the source of truth is the model set, not a
+    # live connection. MongoDB has no schema to read: a collection exists only
+    # once a document is written to it, so "still in the database" is not a
+    # question that can be answered before a dump, and introspection here is
+    # class-level (see this class's preamble) and needs no connection at all. The
+    # name set therefore comes from exactly the grouping `generate!` writes files
+    # from (`models_by_collection_name`, descendants expanded and embedded models
+    # included), so the two can never disagree about which files are live.
+    #
+    # Returns a `SchemaGenerator::TidyResult` — reused rather than duplicated,
+    # since a removal report is the same shape whatever the ORM — describing the
+    # removals so callers (e.g. the rake task) can report them. Its
+    # `removed_columns` stays empty, for the reason above.
+    def tidy!
+      result = SchemaGenerator::TidyResult.new
+      return result unless @output_dir && File.directory?(@output_dir)
+
+      live_names = models_by_collection_name.keys
+
+      Dir[File.join(@output_dir, "*.json")].sort.each do |path|
+        name = collection_name_in(path)
+        next if live_names.include?(name)
+
+        File.delete(path)
+        result.add_removed_table(name)
+      end
+
+      result
+    end
+
+    # The collection -> models grouping both `build_collections` and `tidy!` work
+    # from: every model that stores into a collection, keyed by that collection's
+    # name. Models are grouped by `collection_name` so an STI hierarchy collapses
+    # into one entry (see `build_collections`), and `expand_with_descendants`
+    # supplies the subclasses Mongoid does not register.
+    #
+    # Shared so the two operations can never disagree about which collections
+    # exist: `tidy!` deletes exactly the config files `generate!` would not write.
+    private def models_by_collection_name
+      expand_with_descendants(concrete_models).group_by { |model| model.collection_name.to_s }
+    end
+
+    # The collection a config file on disk declares itself to be. Read as plain
+    # JSON rather than through `MongodbCollectionConfig.from` on purpose: a stale
+    # file is exactly the one that may no longer satisfy the current validations
+    # (an unknown key, a belongs_to whose target is gone), and tidy has to be able
+    # to delete such a file rather than abort on it. A file without a readable
+    # `name` falls back to its basename, which is the name `write_files` gives it.
+    private def collection_name_in(path)
+      config = JSON.parse(File.read(path))
+      (config.is_a?(Hash) && config["name"]) || File.basename(path, ".json")
+    rescue JSON::ParserError
+      File.basename(path, ".json")
     end
 
     # Loads the configs already on disk so the generator can honor an explicit
@@ -123,7 +233,7 @@ module Exwiw
 
       attrs = {
         name: collection_name,
-        primary_key: "_id",
+        primary_key: PRIMARY_KEY,
         fields: aggregate_fields(ordered),
       }
 
@@ -196,10 +306,13 @@ module Exwiw
     # order. A subclass's `fields` already includes everything it inherits, so
     # the base's fields lead and each subclass appends only its own.
     private def aggregate_fields(models)
+      structural = structural_field_names(models)
+      unique = unique_field_names(models)
+
       seen = {}
       models.each_with_object([]) do |model, fields|
         accessor_by_storage = aliased_field_accessors(model)
-        model.fields.keys.each do |name|
+        model.fields.each do |name, definition|
           next if seen[name]
 
           seen[name] = true
@@ -208,9 +321,129 @@ module Exwiw
           # Ruby accessor so the short key is not cryptic in the config.
           accessor = accessor_by_storage[name]
           field[:mongoid_field_name] = accessor if accessor
-          fields << field
+          fields << field.merge(safe_mode_attributes(name, definition, structural, unique))
         end
       end
+    end
+
+    # The safe-mode additions to a field entry: the `needs_mask_decision` flag,
+    # plus a default `replace_with` where a safe one exists. Empty when safe mode
+    # is off, so the emitted config is byte-identical to the historical output.
+    #
+    # A structural field is flagged but never masked: masking it would break the
+    # very lookups the dump is assembled from (see #structural_field_names).
+    private def safe_mode_attributes(name, definition, structural, unique)
+      return {} unless @safe_new_columns
+
+      attrs = { needs_mask_decision: true }
+      return attrs if structural.include?(name)
+
+      mask = default_mask_for(name, definition, unique.include?(name))
+      mask.nil? ? attrs : attrs.merge(replace_with: mask)
+    end
+
+    # The default mask for one field, or nil when no safe constant fits its
+    # Mongoid type (see MASKABLE_FIELD_TYPES).
+    #
+    # `limit: nil` because MongoDB stores no per-field length: the length checks
+    # DefaultMask applies to a `varchar(n)` have nothing to read here, and any
+    # string the mask renders is storable. `unique` comes from the model's index
+    # declarations, so a constant is never emitted for a field a unique index
+    # would then collide on across every restored document.
+    #
+    # NOTE the mask a date/time field gets is DefaultMask's fixed *string*
+    # constant, which replaces a BSON Date with a String and so changes the
+    # field's BSON type. That is deliberate at this stage: the value is only a
+    # proposal, and it rides on `needs_mask_decision` precisely so a human either
+    # keeps it knowingly, replaces it, or drops it before the config is merged.
+    private def default_mask_for(name, definition, unique)
+      type = MASKABLE_FIELD_TYPES[mongoid_type_name(definition)]
+      return nil if type.nil?
+
+      DefaultMask.for(
+        name: name,
+        type: type,
+        limit: nil,
+        primary_key: PRIMARY_KEY,
+        unique: unique,
+        column_default: field_default(definition),
+      )
+    end
+
+    # `Model.fields[name].type` is a Ruby class; an anonymous one (or a field
+    # object that does not expose a type at all) has no name to look up, which
+    # MASKABLE_FIELD_TYPES answers with "no default mask".
+    private def mongoid_type_name(definition)
+      type = definition.type if definition.respond_to?(:type)
+      type.name if type.is_a?(Module)
+    end
+
+    # The field's declared `default:`, handed to DefaultMask so a field with a
+    # default of its own is masked with that value rather than the per-type
+    # constant (see DefaultMask.constant_mask). Mongoid also accepts a *lambda*
+    # default (`default: -> { Time.now }`), which is not a constant at all;
+    # DefaultMask's scalar_default answers such a value with nil, so it falls
+    # through to the per-type constant on its own.
+    private def field_default(definition)
+      definition.default_val if definition.respond_to?(:default_val)
+    end
+
+    # The fields safe mode flags but must never mask, because the dump is
+    # assembled by looking documents up through them:
+    #
+    # - the primary key `_id`, which every belongs_to and every `--ids` filter
+    #   resolves against (and which the text masks interpolate to stay unique),
+    # - the STI discriminator (`Model.discriminator_key`, `_type` by default),
+    #   which is what tells one class's documents from another's inside the
+    #   shared collection, and
+    # - every `belongs_to` foreign key declared by any model of this collection.
+    #
+    # The foreign keys are taken from the MODELS, not from the emitted
+    # `belongs_tos`, so the ones the generator deliberately drops are covered
+    # too: a polymorphic belongs_to (excluded because it has no single target
+    # collection) and a referenced belongs_to on an embedded document (excluded
+    # because an embedded config carries none) still store a reference some other
+    # collection's documents are found by, and masking it would silently rewrite
+    # that reference. A polymorphic relation's type field (`reviewable_type`)
+    # is exempt for the same reason, mirroring how the ActiveRecord generator
+    # treats a belongs_to's `foreign_type`.
+    private def structural_field_names(models)
+      names = [PRIMARY_KEY]
+
+      models.each do |model|
+        names << model.discriminator_key.to_s if model.respond_to?(:discriminator_key)
+        model.relations.each_value do |assoc|
+          next unless assoc.is_a?(::Mongoid::Association::Referenced::BelongsTo)
+
+          names << assoc.foreign_key.to_s
+          names << assoc.inverse_type.to_s if assoc.polymorphic? && assoc.inverse_type
+        end
+      end
+
+      names.uniq
+    end
+
+    # The fields covered by a unique index declared on any model of this
+    # collection (`index({ email: 1 }, unique: true)`), so DefaultMask withholds
+    # any mask that does not vary per document — a constant would collapse every
+    # document onto one value and break the restore with a duplicate key. Every
+    # field of a compound unique index counts, mirroring the ActiveRecord
+    # generator's "any column of a unique index".
+    #
+    # Index declarations are class-level Mongoid metadata (they are what
+    # `db/mongoid.rake`'s create_indexes would build), so this needs no
+    # connection — unlike the ActiveRecord generator, which reads the live
+    # database and has to cope with that failing. An index created out of band
+    # and never declared on the model is therefore invisible here; declaring it
+    # is what makes exwiw (and Mongoid itself) aware of it.
+    private def unique_field_names(models)
+      models.flat_map do |model|
+        next [] unless model.respond_to?(:index_specifications)
+
+        model.index_specifications
+             .select { |spec| spec.options[:unique] }
+             .flat_map { |spec| spec.key.keys.map(&:to_s) }
+      end.uniq
     end
 
     # Maps a stored document key -> its Mongoid Ruby accessor, but ONLY for

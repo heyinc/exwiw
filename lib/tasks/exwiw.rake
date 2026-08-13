@@ -100,7 +100,27 @@ namespace :exwiw do
       Exwiw::MongoidSchemaGenerator.from_rails_application(
         output_dir: resolve_schema_dir.call,
         skip_unsupported: ENV["EXWIW_SKIP_UNSUPPORTED"] == "1",
+        # Same convention as `generate`: safe unless EXWIW_NEW_COLUMNS=plain.
+        safe_new_columns: safe_new_columns.call,
       ).generate!
     end
+
+    desc "Remove collections from the schema config that no longer exist in the Mongoid application"
+    task tidy_mongoid: :environment do
+      require "exwiw"
+
+      result = Exwiw::MongoidSchemaGenerator.from_rails_application(
+        output_dir: resolve_schema_dir.call,
+      ).tidy!
+
+      if result.empty?
+        puts "exwiw: schema config is already tidy; nothing to remove."
+      else
+        result.removed_tables.each do |name|
+          puts "exwiw: removed config for collection '#{name}' (no longer exists in the application)."
+        end
+      end
+    end
+
   end
 end
