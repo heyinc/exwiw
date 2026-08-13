@@ -351,6 +351,12 @@ EXWIW_SCHEMA_DIR_PATH=custom_directory bundle exec rake exwiw:schema:generate
 
 As with the CLI, a relative `schema_dir` in the config file is resolved relative to the config file's own directory.
 
+An application with more than one schema source — ActiveRecord models and Mongoid documents, say —
+should give each source its own directory (`EXWIW_SCHEMA_DIR_PATH`), because every task judges the
+whole directory against the one source it reads. Left sharing a directory, `tidy` / `check` see the
+other source's configs as belonging to tables and collections that no longer exist, and report or
+remove them.
+
 #### Safe mode (masking new columns by default)
 
 A migration that adds a column would otherwise leave `schema:generate` emitting it unmasked, so
