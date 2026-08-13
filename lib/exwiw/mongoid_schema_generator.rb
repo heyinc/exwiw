@@ -427,11 +427,27 @@ module Exwiw
       concrete(@models)
     end
 
+    # The single place a model is judged fit to describe: Mongoid's own internal
+    # helper classes are dropped here, and so is any class with no collection name
+    # to describe — `store_in collection: nil` is how an application says "this
+    # document class is never persisted; I only want Mongoid's casting". Its
+    # `collection_name` is empty, so every such class in an application (their
+    # embedded subclasses included) collapses into one group keyed "". A config
+    # for that group describes nothing: as an embedded config it is inert, and as
+    # a top-level one — which is what a group containing a never-persisted class
+    # with referenced belongs_tos would now produce — it is a dump instruction to
+    # read a collection with no name. Dropping the models here keeps the group out
+    # of `generate!` and out of `tidy!`'s live-name set at once.
+    #
+    # The emptiness test is last in the chain on purpose: it is the only condition
+    # that calls into the model, and the ones before it are what establish that
+    # calling `collection_name` is meaningful at all.
     private def concrete(models)
       models.select do |model|
         model.respond_to?(:collection_name) &&
           model.name &&
-          !model.name.start_with?("Mongoid::")
+          !model.name.start_with?("Mongoid::") &&
+          !model.collection_name.to_s.empty?
       end
     end
 

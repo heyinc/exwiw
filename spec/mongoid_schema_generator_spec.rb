@@ -515,6 +515,40 @@ module Exwiw
       end
     end
 
+    describe "a document class that is never persisted (store_in collection: nil)" do
+      # `store_in collection: nil` leaves `collection_name` empty, so every such
+      # class in an application collapses into one group keyed "". No config
+      # describes that group: an embedded one is inert, and a top-level one — what
+      # a never-persisted class with a referenced belongs_to would otherwise
+      # produce — instructs the dump to read a collection with no name.
+      let(:models) { [MongoidDummy::NeverPersistedForm] }
+
+      it "writes no config for it at all" do
+        expect {
+          described_class.new(models: models, output_dir: output_dir).generate!
+        }.not_to output.to_stderr
+
+        # Not `Dir[*.json]`: a config named "" would be written as ".json", which
+        # that glob does not match.
+        expect(Dir.children(output_dir)).to be_empty
+      end
+
+      it "does not count the nameless group as a live collection when tidying" do
+        path = File.join(output_dir, "legacy_nameless.json")
+        File.write(path, JSON.pretty_generate({
+          "name" => "",
+          "primary_key" => "_id",
+          "belongs_tos" => [],
+          "fields" => [{ "name" => "_id" }],
+        }) + "\n")
+
+        result = described_class.new(models: models, output_dir: output_dir).tidy!
+
+        expect(File).not_to exist(path)
+        expect(result.removed_tables).to contain_exactly("")
+      end
+    end
+
     describe "#generate! honoring an explicit ignore on disk (fail-loud default)" do
       # These run WITHOUT skip_unsupported (the default), proving the generator
       # no longer aborts on a construct the user has already triaged by marking

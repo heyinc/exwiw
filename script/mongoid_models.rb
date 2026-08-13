@@ -531,6 +531,31 @@ module MongoidDummy
     belongs_to :shop, class_name: "MongoidDummy::Shop"
   end
 
+  # A document class that is NEVER PERSISTED. `store_in collection: nil` is how an
+  # application says exactly that: it wants Mongoid's field casting and validation
+  # on a class whose documents never reach the database. `collection_name` is then
+  # empty, so every such class in an application — embedded subclasses included —
+  # collapses into a single group keyed "".
+  #
+  # No config can describe that group: as an embedded config it is inert, and as a
+  # top-level one (which is what a referenced `belongs_to` on a never-persisted
+  # class would otherwise produce) it is a dump instruction to read a collection
+  # with no name. The generator therefore drops these models before grouping. The
+  # `belongs_to` and the embedded subclass below are what make the group look like
+  # a describable one from the outside. Kept OUT of `MODELS`/`SEED`.
+  class NeverPersistedForm
+    include Mongoid::Document
+    store_in collection: nil
+
+    field :note, type: String
+
+    belongs_to :shop, class_name: "MongoidDummy::Shop"
+  end
+
+  class NeverPersistedFormSection < NeverPersistedForm
+    embedded_in :owner, class_name: "MongoidDummy::ContactPointOwner"
+  end
+
   # An embedded family under a PLAIN base class: `ContactPoint` holds the fields
   # every variant shares and declares no `embedded_in`, while its subclasses do
   # (and inherit its collection name). The base is therefore not `embedded?` even
