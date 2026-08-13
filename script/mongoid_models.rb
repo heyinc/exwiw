@@ -487,6 +487,25 @@ module MongoidDummy
     belongs_to :entity, class_name: "MongoidDummy::UuidReferencedParent", primary_key: :uuid
   end
 
+  # Two referenced `belongs_to` sharing ONE foreign key: `owner_id` holds a shop
+  # reference, and a second relation reads the same stored value as the `uuid` of
+  # another collection (`primary_key: :uuid`, so it emits `references`). A foreign
+  # key therefore does not identify a relation, which matters as soon as one of
+  # the two is marked `ignore: true` in the config on disk: the ignored entry must
+  # stand for the relation it names and not for its foreign-key twin, or the twin
+  # is re-emitted as a copy of that entry and collapsed away by `uniq` — silently
+  # dropping its edge. Kept OUT of `MODELS`/`SEED` and exercised in isolation.
+  class SharedForeignKeyReferencer
+    include Mongoid::Document
+    store_in collection: "shared_foreign_key_referencers"
+
+    belongs_to :owner, class_name: "MongoidDummy::Shop", foreign_key: "owner_id"
+    belongs_to :owner_scope,
+               class_name: "MongoidDummy::UuidReferencedParent",
+               foreign_key: "owner_id",
+               primary_key: :uuid
+  end
+
   # One field per Mongoid type safe mode has to decide a default mask for, so the
   # whole type matrix is pinned in one place:
   #

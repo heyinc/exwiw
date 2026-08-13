@@ -464,7 +464,7 @@ module Exwiw
     end
 
     private def aggregate_belongs_tos(models, existing = nil)
-      ignored_by_fk = ignored_belongs_tos_by_foreign_key(existing)
+      ignored = ignored_belongs_tos(existing)
 
       belongs_to_assocs = models.flat_map do |model|
         model.relations.values.select do |assoc|
@@ -481,20 +481,68 @@ module Exwiw
       # same belongs_to twice, so uniq them.
       belongs_to_assocs
         .reject(&:polymorphic?)
-        .filter_map { |assoc| belongs_to_for(assoc, ignored_by_fk) }
+        .filter_map { |assoc| belongs_to_for(assoc, ignored) }
         .uniq
     end
 
-    # Maps foreign_key -> the on-disk `ignore: true` belongs_to entry, so a
-    # relation the user has explicitly ignored is preserved verbatim instead of
-    # re-resolved (which, for a stale relation whose target class is gone, would
-    # otherwise abort the run).
-    private def ignored_belongs_tos_by_foreign_key(existing)
-      return {} unless existing
+    # The on-disk `ignore: true` belongs_to entries, so a relation the user has
+    # explicitly ignored is preserved verbatim instead of re-resolved (which, for
+    # a stale relation whose target class is gone, would otherwise abort the run).
+    #
+    # Kept as a list rather than indexed by foreign key: a foreign key does not
+    # identify a relation on its own (see #ignored_belongs_to_for).
+    private def ignored_belongs_tos(existing)
+      return [] unless existing
 
-      existing.belongs_tos.select(&:ignore).each_with_object({}) do |bt, acc|
-        acc[bt.foreign_key] = bt
-      end
+      existing.belongs_tos.select(&:ignore)
+    end
+
+    # The on-disk ignored entry that stands for `assoc`, or nil when none does.
+    #
+    # `target_collection` is the association's resolved target, or nil when it
+    # could not be resolved, and that distinction is what the match is keyed on:
+    #
+    # - Resolved: the entry has to agree on BOTH the target collection and the
+    #   foreign key. Two belongs_tos of one collection can legitimately share a
+    #   foreign key — a relation to one collection plus a second relation to
+    #   another declared with `primary_key:`, scoping by the same stored value —
+    #   and matching on the foreign key alone let one ignored entry stand for both
+    #   of them. The second relation was then re-emitted as a copy of that entry,
+    #   `uniq` collapsed the two, and its edge silently vanished from the config.
+    #   An entry naming a different target must therefore not swallow this
+    #   relation; with none matching, the relation is generated normally.
+    # - Unresolved: there is no target to compare, which is precisely the case
+    #   this mechanism exists for (a stale relation whose class is gone, whose
+    #   entry usually carries no `table_name` either), so fall back to matching on
+    #   the foreign key alone.
+    #
+    # An entry with no `table_name` still matches a resolved relation on the
+    # foreign key alone, as a fallback after the exact match: omitting the target
+    # is allowed only on an ignored entry, and dropping the user's decision
+    # because they wrote the minimal form would resurrect an edge they had
+    # deliberately cut. Two foreign-key-sharing relations with one such entry
+    # between them remain genuinely indistinguishable — writing the `table_name`
+    # is what tells exwiw which of them is meant.
+    private def ignored_belongs_to_for(assoc, target_collection, ignored)
+      foreign_key = assoc.foreign_key
+      return ignored.find { |bt| bt.foreign_key == foreign_key } if target_collection.nil?
+
+      ignored.find { |bt| bt.foreign_key == foreign_key && bt.table_name == target_collection } ||
+        ignored.find { |bt| bt.foreign_key == foreign_key && bt.table_name.nil? }
+    end
+
+    # The collection a referenced belongs_to targets, as `[collection_name, nil]`
+    # — or `[nil, error]` when the association's target class no longer exists (a
+    # stale/legacy `belongs_to`, e.g. pointing at a model removed years ago), so
+    # `assoc.klass` raised. The error is carried rather than raised because
+    # resolution is attempted BEFORE the on-disk ignored entries are consulted (to
+    # match one against the right relation), and a relation the user has already
+    # triaged must not abort the run; `belongs_to_for` raises it only once no
+    # entry stands for the relation.
+    private def resolve_target_collection(assoc)
+      [assoc.klass.collection_name.to_s, nil]
+    rescue NameError, ::Mongoid::Errors::MongoidError => e
+      [nil, e]
     end
 
     # Resolves a referenced belongs_to to a `{ table_name, foreign_key }` pair
@@ -505,18 +553,29 @@ module Exwiw
     # its foreign-key column is still tracked as an ordinary field by
     # `aggregate_fields`, mirroring how polymorphic / HABTM relations are dropped.
     #
-    # `ignored_by_fk` carries the on-disk `ignore: true` belongs_to entries: when
-    # this relation's foreign key is among them, the user has explicitly ignored
-    # it, so preserve their entry verbatim (its `ignore_type` / `comment`) without
-    # resolving the — possibly gone — target. The relation is dropped from
-    # extraction at load (`#reject_ignored_members!`) while its FK column stays a
-    # field, and the run never aborts on a relation already triaged.
-    private def belongs_to_for(assoc, ignored_by_fk = {})
-      if (ignored = ignored_by_fk[assoc.foreign_key])
-        return preserve_ignored_belongs_to(ignored)
+    # `ignored` carries the on-disk `ignore: true` belongs_to entries: when one of
+    # them stands for this relation (see #ignored_belongs_to_for), the user has
+    # explicitly ignored it, so preserve their entry verbatim (its `ignore_type` /
+    # `comment`) rather than emitting a freshly derived one. The relation is
+    # dropped from extraction at load (`#reject_ignored_members!`) while its FK
+    # column stays a field, and the run never aborts on a relation already
+    # triaged: resolving the — possibly gone — target is attempted first, but its
+    # failure is only raised once no entry stands for the relation.
+    private def belongs_to_for(assoc, ignored = [])
+      target_collection, resolution_error = resolve_target_collection(assoc)
+
+      if (entry = ignored_belongs_to_for(assoc, target_collection, ignored))
+        return preserve_ignored_belongs_to(entry)
       end
 
-      result = { table_name: assoc.klass.collection_name.to_s, foreign_key: assoc.foreign_key }
+      if resolution_error
+        raise resolution_error unless @skip_unsupported
+
+        warn("exwiw: skip_unsupported: skipping belongs_to ':#{assoc.name}' that could not be resolved (#{resolution_error.class}: #{resolution_error.message.lines.first&.strip}); its foreign key '#{assoc.foreign_key}' is still kept as a field.")
+        return nil
+      end
+
+      result = { table_name: target_collection, foreign_key: assoc.foreign_key }
       # Mongoid's `belongs_to ..., primary_key: :uuid` makes the child's foreign
       # key reference that parent field rather than the parent's `_id`. Surface
       # it as `references` so MongodbAdapter constrains children by the right
@@ -526,11 +585,6 @@ module Exwiw
       reference_field = assoc.primary_key.to_s
       result[:references] = reference_field unless reference_field == "_id"
       result
-    rescue NameError, ::Mongoid::Errors::MongoidError => e
-      raise e unless @skip_unsupported
-
-      warn("exwiw: skip_unsupported: skipping belongs_to ':#{assoc.name}' that could not be resolved (#{e.class}: #{e.message.lines.first&.strip}); its foreign key '#{assoc.foreign_key}' is still kept as a field.")
-      nil
     end
 
     # Re-emits a user's on-disk ignored belongs_to as a symbol-keyed hash (the

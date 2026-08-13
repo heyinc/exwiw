@@ -448,6 +448,78 @@ module Exwiw
         # ...and its foreign-key column survives as an ordinary field.
         expect(result["fields"].map { |f| f["name"] }).to include("ghost_id")
       end
+
+      it "applies an ignore:true belongs_to only to the relation it names, keeping its foreign-key twin live" do
+        # SharedForeignKeyReferencer declares two belongs_to on the SAME foreign
+        # key: one to "shops", one reading that value as another collection's
+        # `uuid`. A foreign key therefore does not identify a relation, and while
+        # the ignored entry was matched by foreign key alone it stood for both:
+        # the second relation came back as a copy of the entry, `uniq` collapsed
+        # the two, and its edge disappeared from the config.
+        path = File.join(output_dir, "shared_foreign_key_referencers.json")
+        existing = {
+          "name" => "shared_foreign_key_referencers",
+          "primary_key" => "_id",
+          "belongs_tos" => [
+            {
+              "table_name" => "shops",
+              "foreign_key" => "owner_id",
+              "ignore" => true,
+              "ignore_type" => "need_code_fix",
+              "comment" => "FIXME: the shop edge is not wanted in the export.",
+            },
+          ],
+          "fields" => [{ "name" => "_id" }, { "name" => "owner_id" }],
+        }
+        File.write(path, JSON.pretty_generate(existing))
+
+        described_class.new(
+          models: [MongoidDummy::SharedForeignKeyReferencer], output_dir: output_dir,
+        ).generate!
+
+        belongs_tos = JSON.parse(File.read(path))["belongs_tos"]
+        # The user's entry survives verbatim...
+        expect(belongs_tos).to include(
+          "table_name" => "shops",
+          "foreign_key" => "owner_id",
+          "ignore" => true,
+          "ignore_type" => "need_code_fix",
+          "comment" => "FIXME: the shop edge is not wanted in the export.",
+        )
+        # ...while the other relation on the same foreign key is emitted live,
+        # with the `references` its `primary_key:` implies.
+        expect(belongs_tos).to include(
+          "table_name" => "uuid_referenced_parents",
+          "foreign_key" => "owner_id",
+          "references" => "uuid",
+        )
+      end
+
+      it "still preserves an ignore:true belongs_to that names no target collection" do
+        # The minimal form of the annotation: a stale relation's target is gone,
+        # so there is nothing to name. Matching then falls back to the foreign key
+        # alone — otherwise a user writing the minimal form would have their
+        # decision dropped and the edge resurrected.
+        path = File.join(output_dir, "shared_foreign_key_referencers.json")
+        existing = {
+          "name" => "shared_foreign_key_referencers",
+          "primary_key" => "_id",
+          "belongs_tos" => [
+            { "foreign_key" => "owner_id", "ignore" => true, "comment" => "FIXME: not wanted." },
+          ],
+          "fields" => [{ "name" => "_id" }, { "name" => "owner_id" }],
+        }
+        File.write(path, JSON.pretty_generate(existing))
+
+        described_class.new(
+          models: [MongoidDummy::SharedForeignKeyReferencer], output_dir: output_dir,
+        ).generate!
+
+        belongs_tos = JSON.parse(File.read(path))["belongs_tos"]
+        expect(belongs_tos).to eq([
+          { "foreign_key" => "owner_id", "ignore" => true, "comment" => "FIXME: not wanted." },
+        ])
+      end
     end
 
     describe "#generate!" do
