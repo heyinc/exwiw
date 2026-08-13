@@ -149,6 +149,19 @@ Models in an inheritance hierarchy whose subclasses share the base's collection 
 
 Regeneration preserves hand-edited `replace_with`, `filter`, `ignore`, `bulk_insert_chunk_size`, and `query_timeout_ms` values, like the ActiveRecord generator. Indexes are not written to the config — they are introspected from the live database at dump time (see [Output](#output)). Polymorphic `belongs_to` is not yet expanded by this task.
 
+### Safe mode, `tidy_mongoid` and `check_mongoid`
+
+Like the ActiveRecord task, `generate_mongoid` runs in [safe mode](../README.md#safe-mode-masking-new-columns-by-default) by default (`EXWIW_NEW_COLUMNS=plain` opts out for a first bootstrap): a field the config does not have yet is emitted masked — as far as its Mongoid type allows — and flagged `needs_mask_decision: true`, so a field added to a model does not start being exported before somebody has judged whether it holds personal data. The `_id` primary key, the `_type` STI discriminator and every `belongs_to` foreign key are flagged but never masked (masking them would rewrite the very references the dump is assembled from), and neither is a field whose type no constant fits (`Hash`, `Array`, a typeless field, a BSON type) or one covered by a unique index unless its mask varies per document. A field's own `default:` is preferred over the per-type constant. A decision recorded on disk — a mask kept, replaced, dropped, or the flag removed — wins over every later regeneration.
+
+```bash
+bundle exec rake exwiw:schema:tidy_mongoid   # delete the config of a collection no model stores into
+bundle exec rake exwiw:schema:check_mongoid  # report the difference, writing nothing
+```
+
+`tidy_mongoid` is the counterpart `generate_mongoid` cannot be: it deletes the config file of a collection no model stores into any more. It reconciles against the **models**, not a live connection — MongoDB has no schema to read, and a collection exists only once a document is written to it — using exactly the grouping `generate_mongoid` writes files from, embedded collections included. Fields are left alone, since `generate_mongoid` already tracks them through the model.
+
+`check_mongoid` mirrors [`schema:check`](../README.md#checking-the-config-against-the-schema): it regenerates (safe mode + tidy) into a throwaway copy of the config directory, prints the same sorted JSON report — collections and fields under the same keys as tables and columns — honors `EXWIW_SCHEMA_CHECK_OUTPUT`, and exits non-zero while anything is out of date or undecided, so it can gate a pull request. It regenerates in strict mode: a newly introduced construct exwiw cannot represent fails the task rather than reporting clean.
+
 By default the task **aborts** when a model uses a construct exwiw cannot represent: a `belongs_to` whose target class can no longer be resolved (a stale relation left behind after its model was removed), or a polymorphic / self-referential-cyclic / ambiguous / unresolvable-parent `embedded_in` (see the cases above).
 
 ### Honoring an explicit `ignore` (the recommended way to keep these out)

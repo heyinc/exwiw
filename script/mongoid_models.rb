@@ -487,6 +487,68 @@ module MongoidDummy
     belongs_to :entity, class_name: "MongoidDummy::UuidReferencedParent", primary_key: :uuid
   end
 
+  # Two referenced `belongs_to` sharing ONE foreign key: `owner_id` holds a shop
+  # reference, and a second relation reads the same stored value as the `uuid` of
+  # another collection (`primary_key: :uuid`, so it emits `references`). A foreign
+  # key therefore does not identify a relation, which matters as soon as one of
+  # the two is marked `ignore: true` in the config on disk: the ignored entry must
+  # stand for the relation it names and not for its foreign-key twin, or the twin
+  # is re-emitted as a copy of that entry and collapsed away by `uniq` — silently
+  # dropping its edge. Kept OUT of `MODELS`/`SEED` and exercised in isolation.
+  class SharedForeignKeyReferencer
+    include Mongoid::Document
+    store_in collection: "shared_foreign_key_referencers"
+
+    belongs_to :owner, class_name: "MongoidDummy::Shop", foreign_key: "owner_id"
+    belongs_to :owner_scope,
+               class_name: "MongoidDummy::UuidReferencedParent",
+               foreign_key: "owner_id",
+               primary_key: :uuid
+  end
+
+  # One field per Mongoid type safe mode has to decide a default mask for, so the
+  # whole type matrix is pinned in one place:
+  #
+  # - the types a constant safely fits (String / Integer / Float / BigDecimal /
+  #   Mongoid::Boolean / Date / Time), which map onto the same DefaultMask
+  #   defaults the ActiveRecord generator emits
+  # - the types no constant fits (Hash, Array, and the `Object` a typeless field
+  #   reports), which must be flagged for a decision but left unmasked
+  # - a field with a `default:` of its own (`active`), which must be masked with
+  #   that value rather than the per-type constant
+  # - a field covered by a *unique* index (`serial`), whose per-type constant
+  #   would collide on every restored document and must therefore be withheld —
+  #   unlike a unique STRING field (Shop#name), whose text mask interpolates the
+  #   primary key and so varies per document
+  # - a `belongs_to` foreign key (`shop_id`), a structural field that is flagged
+  #   but never masked
+  #
+  # Kept OUT of `MODELS`/`SEED` so the collection-count and snapshot contracts
+  # above are unaffected; exercised in isolation by the safe-mode specs.
+  class TypedDocument
+    include Mongoid::Document
+    store_in collection: "typed_documents"
+
+    field :title, type: String
+    field :contact_email, type: String
+    field :count, type: Integer
+    field :ratio, type: Float
+    field :amount, type: BigDecimal
+    field :active, type: Mongoid::Boolean, default: true
+    field :published_on, type: Date
+    field :published_at, type: Time
+    field :payload, type: Hash
+    field :labels, type: Array
+    # No `type:` at all, which Mongoid records as `Object` — the same thing a
+    # dynamic attribute would report.
+    field :anything
+    field :serial, type: Integer
+
+    belongs_to :shop, class_name: "MongoidDummy::Shop"
+
+    index({ serial: 1 }, unique: true, name: "idx_typed_documents_serial")
+  end
+
   # All concrete document models in this dummy app, in a deterministic order.
   #
   # Mongoid only registers the *base* class of an inheritance hierarchy in

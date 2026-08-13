@@ -26,6 +26,32 @@ module Exwiw
       new(models: ActiveRecord::Base.descendants, schema_dir: schema_dir)
     end
 
+    # The Mongoid counterpart. `Mongoid.models` registers only the base class of
+    # an inheritance hierarchy, which is exactly what MongoidSchemaGenerator
+    # expects (it expands descendants itself), so the same source the generate
+    # task introspects is used here.
+    def self.from_mongoid_application(schema_dir:)
+      Rails.application.eager_load!
+      new(schema_dir: schema_dir, regenerator: mongoid_regenerator(::Mongoid.models))
+    end
+
+    # The regeneration step `from_mongoid_application` injects, exposed so a
+    # caller (and the specs) can run the check against an explicit model list
+    # without a Rails application — and so what they exercise is the very lambda
+    # production uses.
+    #
+    # `skip_unsupported` is deliberately left off: this runs as a CI gate, and a
+    # newly added construct exwiw cannot represent has to fail the task with the
+    # generator's actionable message rather than quietly become an `ignore: true`
+    # config that reports clean while the collection stops being dumped.
+    def self.mongoid_regenerator(models)
+      lambda do |tmp_dir|
+        # Explicit: safe mode is not optional here, whatever the library default is.
+        MongoidSchemaGenerator.new(models: models, output_dir: tmp_dir, safe_new_columns: true).generate!
+        MongoidSchemaGenerator.new(models: models, output_dir: tmp_dir).tidy!
+      end
+    end
+
     def initialize(schema_dir:, models: nil, regenerator: nil)
       if models.nil? && regenerator.nil?
         raise ArgumentError, "SchemaCheck requires either models: or regenerator:"
