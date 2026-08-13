@@ -895,6 +895,23 @@ module Exwiw
         expect(File).to exist(path)
       end
 
+      it "leaves a file it cannot parse in place" do
+        # Broken JSON says nothing about what the file describes, and the name it
+        # would fall back to — the basename — matches no collection precisely
+        # when the file is a hand-written embedded config, so deleting it would
+        # bypass the guard above for the files that need it most.
+        described_class.new(models: models, output_dir: output_dir).generate!
+        path = File.join(output_dir, "users_billing_addresses.json")
+        File.write(path, "{ not json")
+
+        result = nil
+        expect { result = described_class.new(models: models, output_dir: output_dir).tidy! }
+          .to output(/not valid JSON/).to_stderr
+
+        expect(result).to be_empty
+        expect(File).to exist(path)
+      end
+
       it "reports nothing to remove for a config that matches the models" do
         described_class.new(models: models, output_dir: output_dir).generate!
 

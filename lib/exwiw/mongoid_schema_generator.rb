@@ -153,6 +153,19 @@ module Exwiw
 
       Dir[File.join(@output_dir, "*.json")].sort.each do |path|
         config = read_raw_config(path)
+
+        # A file that does not parse says nothing about what it describes: its
+        # basename would stand in for the collection name, and for a hand-written
+        # embedded config that basename matches no collection by construction —
+        # so the guard below would be bypassed for exactly the files it exists to
+        # protect, and a stray merge-conflict marker would be enough to delete a
+        # collection's masking rules. Broken JSON already fails loudly wherever
+        # the config is loaded, so leave it in place and say so.
+        if config.nil?
+          warn("exwiw: skipping '#{path}' while tidying: it is not valid JSON, so what it describes cannot be determined.")
+          next
+        end
+
         name = declared_name(config, path)
         next if live_names.include?(name)
         next if hand_written_embedded_config?(config)
@@ -202,7 +215,8 @@ module Exwiw
     # `MongodbCollectionConfig.from` on purpose: a stale file is exactly the one
     # that may no longer satisfy the current validations (an unknown key, a
     # belongs_to whose target is gone), and tidy has to be able to delete such a
-    # file rather than abort on it. Unparseable JSON reads as no config at all.
+    # file rather than abort on it. Unparseable JSON reads as nil, which the
+    # caller treats as "cannot judge this file" rather than as an empty config.
     private def read_raw_config(path)
       JSON.parse(File.read(path))
     rescue JSON::ParserError

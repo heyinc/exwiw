@@ -394,14 +394,15 @@ column are flagged but deliberately **not** masked:
   the primary key). A constant would collapse every row onto one value and break the restore with
   a duplicate key.
 
-`schema:generate_mongoid` runs in safe mode too, on the same `EXWIW_NEW_COLUMNS=plain` opt-out.
-The masks come from the Mongoid field type (`String`, `Integer`, `Float`, `BigDecimal`,
-`Mongoid::Boolean`, `Date`, `Time` / `DateTime`); a field of any other type — `Hash`, `Array`, a
-typeless field, a BSON type — is flagged but not masked, as is a field covered by a unique index
-unless its mask varies per document. The structural fields are the `_id` primary key, the STI
-discriminator (`_type`) and every `belongs_to` foreign key of the collection: flagged, never
-masked. The foreign keys are read from the models, so the ones the config itself drops (a
-polymorphic `belongs_to`, a `belongs_to` on an embedded document) are covered too.
+`schema:generate_mongoid` runs in safe mode too, on the same `EXWIW_NEW_COLUMNS=plain` opt-out. The
+masks come from the Mongoid field type (`String`, `Integer`, `Float`, `BigDecimal`,
+`Mongoid::Boolean`, `Date`, `Time` / `DateTime` / `ActiveSupport::TimeWithZone`); a field of any
+other type — `Hash`, `Array`, a typeless field, a BSON type — is flagged but not masked, as is a
+field covered by a unique index unless its mask varies per document. The structural fields are the
+`_id` primary key, the STI discriminator (`_type`) and every `belongs_to` foreign key of the
+collection: flagged, never masked. The foreign keys are read from the models, so the ones the
+config itself drops (a polymorphic `belongs_to`, a `belongs_to` on an embedded document) are
+covered too.
 
 #### Tidying stale config (`schema:tidy`)
 
