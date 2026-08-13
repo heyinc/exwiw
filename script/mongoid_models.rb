@@ -487,6 +487,85 @@ module MongoidDummy
     belongs_to :entity, class_name: "MongoidDummy::UuidReferencedParent", primary_key: :uuid
   end
 
+  # A genuine collection-name collision: an unrelated embedded and top-level
+  # model share one name (the dummy models are namespaced, so both declare it
+  # explicitly). Each side carries a field the other lacks, so the output shows
+  # which models a mixed group was built from. Kept OUT of `MODELS`/`SEED`.
+  class SharedNameEntry
+    include Mongoid::Document
+    store_in collection: "shared_name_entries"
+
+    field :memo, type: String
+
+    embedded_in :holder, class_name: "MongoidDummy::SharedNameEntryHolder"
+  end
+
+  class SharedNameEntryHolder
+    include Mongoid::Document
+    store_in collection: "shared_name_entry_holders"
+
+    embeds_many :shared_name_entries, class_name: "MongoidDummy::SharedNameEntry"
+  end
+
+  class SharedNameEntryLog
+    include Mongoid::Document
+    store_in collection: "shared_name_entries"
+
+    field :title, type: String
+
+    belongs_to :shop, class_name: "MongoidDummy::Shop"
+  end
+
+  # Never persisted (`store_in collection: nil`): `collection_name` is empty, so
+  # such classes collapse into a nameless group the generator must drop. The
+  # `belongs_to` and the embedded subclass are what would otherwise make the
+  # group look describable. Kept OUT of `MODELS`/`SEED`.
+  class NeverPersistedForm
+    include Mongoid::Document
+    store_in collection: nil
+
+    field :note, type: String
+
+    belongs_to :shop, class_name: "MongoidDummy::Shop"
+  end
+
+  class NeverPersistedFormSection < NeverPersistedForm
+    embedded_in :owner, class_name: "MongoidDummy::ContactPointOwner"
+  end
+
+  # An embedded family under a plain base class: the base declares no
+  # `embedded_in` (so it is not `embedded?`) yet stores nothing at the root — the
+  # group must stay embedded. `ContactPointLog` additionally stores root documents
+  # under the same name for the three-way case. Kept OUT of `MODELS`/`SEED`.
+  class ContactPoint
+    include Mongoid::Document
+    store_in collection: "contact_points"
+
+    field :label, type: String
+  end
+
+  class HomeContactPoint < ContactPoint
+    field :note, type: String
+
+    embedded_in :owner, class_name: "MongoidDummy::ContactPointOwner"
+  end
+
+  class ContactPointOwner
+    include Mongoid::Document
+    store_in collection: "contact_point_owners"
+
+    embeds_one :home_contact_point, class_name: "MongoidDummy::HomeContactPoint"
+  end
+
+  class ContactPointLog
+    include Mongoid::Document
+    store_in collection: "contact_points"
+
+    field :title, type: String
+
+    belongs_to :shop, class_name: "MongoidDummy::Shop"
+  end
+
   # Two referenced `belongs_to` sharing ONE foreign key: `owner_id` holds a shop
   # reference, and a second relation reads the same stored value as the `uuid` of
   # another collection (`primary_key: :uuid`, so it emits `references`). A foreign
