@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- **The safe-mode / check workflow now covers Mongoid applications: `schema:generate_mongoid` flags new fields, and `rake exwiw:schema:check_mongoid` / `exwiw:schema:tidy_mongoid` complete the loop.** `generate_mongoid` runs in safe mode by default (opt out with `EXWIW_NEW_COLUMNS=plain`, same as `generate`): every field the config does not have yet is emitted flagged `needs_mask_decision: true`, with a default `replace_with` where the field's Mongoid type allows one — the same per-type defaults the ActiveRecord generator emits, with `masked-{_id}` for text (the MongoDB adapter renders the placeholder per document). Structural fields are flagged but never masked: `_id`, the STI discriminator (`Model.discriminator_key`), and every `belongs_to` foreign key declared by the collection's models — including the ones the generator deliberately does not emit as `belongs_tos` (polymorphic relations, and referenced relations on embedded documents), whose foreign keys and polymorphic type fields are still live cross-collection references. Uniqueness comes from the model's `index_specifications` (any field of a unique index only gets a mask that varies per document); an index never declared on the model is invisible here, since class-level introspection is what keeps the whole workflow connection-free. `tidy_mongoid` deletes the config file of a collection no model stores into any more — the removal `generate_mongoid` can never do — using exactly the collection grouping `generate!` writes files from, so the two cannot disagree. `check_mongoid` mirrors `check` (same JSON report, `EXWIW_SCHEMA_CHECK_OUTPUT`, non-zero exit on drift or an unresolved flag), regenerating into a throwaway copy via `SchemaCheck.from_mongoid_application`; `SchemaCheck` itself now takes an injectable `regenerator:`, which is what makes a non-ActiveRecord schema source pluggable.
+
+### Fixed
+
+- **Regenerating a Mongoid config no longer re-masks a field somebody deliberately unmasked.** `MongodbCollectionConfig#merge` kept the generated side's `replace_with` when the on-disk field had none — harmless while the generator emitted no masks, but wrong under safe mode, which proposes default masks: a field whose flag was resolved as "export raw" would silently get its mask back on the next regeneration. For a field the config already has, every decision-owned attribute (`replace_with`, `replace_with_fake_data`, `comment`, `ignore`, `needs_mask_decision`) now comes from the on-disk side even when unset; only structural facts (`name`, `mongoid_field_name`) track the model.
+
 ## [0.9.21] - 2026-08-06
 
 ### Changed
