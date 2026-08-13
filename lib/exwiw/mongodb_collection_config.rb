@@ -96,7 +96,8 @@ module Exwiw
     #   bulk_insert_chunk_size, query_timeout_ms, and each field's
     #   `replace_with` / `replace_with_fake_data` masking rule.
     # - generated fields drive the field list (so added/removed fields track the
-    #   model), but a matching receiver field wins to retain its masking.
+    #   model), but for a field the receiver already has, its masking decision
+    #   wins outright — including the parts of it left unset.
     def merge(passed)
       return passed if passed.to_hash == to_hash
 
@@ -133,20 +134,28 @@ module Exwiw
         end
 
         # Take each field from the freshly generated config (so structural facts
-        # like `mongoid_field_name` track the model) but carry over the user's
-        # hand-edited `replace_with`/`comment`/`ignore` when the field still exists.
+        # like `mongoid_field_name` track the model), but once the field already
+        # exists in the receiver, EVERY masking-decision attribute comes from the
+        # receiver — even when it is unset.
+        #
+        # "Even when unset" is the whole point: what these attributes record is a
+        # human's decision about the field, and an absent value is a decision too
+        # ("export this raw", "the flag is resolved"). Keeping the generated value
+        # where the receiver has none was equivalent to "receiver wins" only while
+        # the generator emitted no masks at all; under safe mode
+        # (MongoidSchemaGenerator's `safe_new_columns`) it would put a default mask
+        # back on a field somebody had deliberately unmasked, and silently mask it
+        # again on every regeneration.
         receiver_field_by_name = fields.each_with_object({}) { |f, h| h[f.name] = f }
         merged.fields = passed.fields.map do |pf|
           receiver = receiver_field_by_name[pf.name]
-          if receiver
-            pf.replace_with = receiver.replace_with unless receiver.replace_with.nil?
-            pf.replace_with_fake_data = receiver.replace_with_fake_data if receiver.replace_with_fake_data
-            pf.comment = receiver.comment if receiver.comment
-            pf.ignore = receiver.ignore unless receiver.ignore.nil?
-            # Receiver wins even when unset: clearing the flag is how a human
-            # records the decision, and regeneration must not bring it back.
-            pf.needs_mask_decision = receiver.needs_mask_decision
-          end
+          next pf unless receiver
+
+          pf.replace_with = receiver.replace_with
+          pf.replace_with_fake_data = receiver.replace_with_fake_data
+          pf.comment = receiver.comment
+          pf.ignore = receiver.ignore
+          pf.needs_mask_decision = receiver.needs_mask_decision
           pf
         end
       end

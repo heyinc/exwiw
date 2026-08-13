@@ -406,6 +406,38 @@ module Exwiw
         expect(merged.fields.find { |f| f.name == 'decided' }.needs_mask_decision).to be_nil
       end
 
+      it 'keeps a field the user unmasked unmasked, even when regeneration proposes a default mask' do
+        # Safe mode (MongoidSchemaGenerator#safe_new_columns) makes the generated
+        # side carry a default mask for every field, so "the receiver has none"
+        # can no longer mean "take the generated one": an absent replace_with is
+        # itself the decision (export this field raw), and re-masking it on every
+        # regeneration would silently undo it. Same for a resolved
+        # needs_mask_decision, which must stay resolved.
+        decided = described_class.from_symbol_keys(
+          name: 'orders',
+          primary_key: '_id',
+          belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id' }],
+          fields: [
+            { name: '_id' },
+            { name: 'memo', comment: 'reviewed: no personal data' },
+          ],
+        )
+        regenerated_safe = described_class.from_symbol_keys(
+          name: 'orders',
+          primary_key: '_id',
+          belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id' }],
+          fields: [
+            { name: '_id', needs_mask_decision: true },
+            { name: 'memo', replace_with: 'masked-{_id}', needs_mask_decision: true },
+          ],
+        )
+        merged = decided.merge(regenerated_safe)
+
+        memo = merged.fields.find { |f| f.name == 'memo' }
+        expect(memo.to_hash).to eq({ 'name' => 'memo', 'comment' => 'reviewed: no personal data' })
+        expect(merged.fields.find { |f| f.name == '_id' }.needs_mask_decision).to be_nil
+      end
+
       it 'preserves a user-owned replace_with_fake_data on a field across regeneration' do
         current_with_fake = described_class.from_symbol_keys(
           name: 'orders',
