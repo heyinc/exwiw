@@ -385,13 +385,8 @@ module Exwiw
     end
 
     describe "a collection name shared by embedded and top-level models" do
-      # SharedNameEntryLog stores into "shared_name_entries" while the embedded
-      # SharedNameEntry resolves to the same collection name — the routine
-      # collision between a `store_in` and a name an embedded class derives from
-      # its own class name. Deciding the whole group is embedded (which one
-      # embedded member used to be enough for) emits an `embedded_in`, so
-      # MongodbAdapter#dumpable? silently stops dumping the collection's root
-      # documents and the top-level model's extraction paths disappear.
+      # SharedNameEntryLog (top-level, store_in) and the embedded SharedNameEntry
+      # resolve to one collection name; the group must stay dumpable.
       let(:mixed_models) { [MongoidDummy::SharedNameEntry, MongoidDummy::SharedNameEntryLog] }
       let(:path) { File.join(output_dir, "shared_name_entries.json") }
 
@@ -443,12 +438,8 @@ module Exwiw
       end
 
       it "keeps generating an embedded config for an embedded family under a plain base class" do
-        # ContactPoint holds the fields its variants share and declares no
-        # `embedded_in`; HomeContactPoint < ContactPoint declares one. The base is
-        # therefore not `embedded?` while storing no root documents either, so the
-        # group only LOOKS mixed. Reading the base as a root model would flip the
-        # family to a top-level config and delete the `embedded_in` that masks
-        # those subdocuments — the same failure as above, in the other direction.
+        # The plain base is not `embedded?` yet stores no root documents; the
+        # group only LOOKS mixed and must stay embedded.
         config = nil
         expect {
           config = described_class.new(

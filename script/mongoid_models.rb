@@ -487,25 +487,10 @@ module MongoidDummy
     belongs_to :entity, class_name: "MongoidDummy::UuidReferencedParent", primary_key: :uuid
   end
 
-  # One collection name claimed by BOTH an embedded and a top-level model. In a
-  # real application this needs no declaring at all: an embedded class derives its
-  # collection name from its class name alone (`Note` -> "notes"), so it collides
-  # with any top-level model that stores into a collection of that name. Nothing
-  # relates the two, and neither side is wrong. (The dummy models here are
-  # namespaced, which makes every derived name unique, so both sides name the
-  # collection explicitly to reproduce the same group.)
-  #
-  # The collection is genuinely top-level — `SharedNameEntryLog` has root
-  # documents that must be dumped — so the generator must emit a top-level config
-  # built from the non-embedded model alone (its `belongs_to :shop` and its own
-  # `title` field, without the embedded model's `memo`), never an `embedded_in`
-  # that would silently stop the root documents from being dumped. The embedded
-  # namesake is masked through a hand-written `embedded_in` config under a name of
-  # its own instead.
-  #
-  # Each side carries a field the other does not, so which models a mixed group's
-  # fields were built from is visible in the output. Kept OUT of `MODELS`/`SEED`
-  # and exercised in isolation.
+  # A genuine collection-name collision: an unrelated embedded and top-level
+  # model share one name (the dummy models are namespaced, so both declare it
+  # explicitly). Each side carries a field the other lacks, so the output shows
+  # which models a mixed group was built from. Kept OUT of `MODELS`/`SEED`.
   class SharedNameEntry
     include Mongoid::Document
     store_in collection: "shared_name_entries"
@@ -531,18 +516,10 @@ module MongoidDummy
     belongs_to :shop, class_name: "MongoidDummy::Shop"
   end
 
-  # A document class that is NEVER PERSISTED. `store_in collection: nil` is how an
-  # application says exactly that: it wants Mongoid's field casting and validation
-  # on a class whose documents never reach the database. `collection_name` is then
-  # empty, so every such class in an application — embedded subclasses included —
-  # collapses into a single group keyed "".
-  #
-  # No config can describe that group: as an embedded config it is inert, and as a
-  # top-level one (which is what a referenced `belongs_to` on a never-persisted
-  # class would otherwise produce) it is a dump instruction to read a collection
-  # with no name. The generator therefore drops these models before grouping. The
-  # `belongs_to` and the embedded subclass below are what make the group look like
-  # a describable one from the outside. Kept OUT of `MODELS`/`SEED`.
+  # Never persisted (`store_in collection: nil`): `collection_name` is empty, so
+  # such classes collapse into a nameless group the generator must drop. The
+  # `belongs_to` and the embedded subclass are what would otherwise make the
+  # group look describable. Kept OUT of `MODELS`/`SEED`.
   class NeverPersistedForm
     include Mongoid::Document
     store_in collection: nil
@@ -556,20 +533,10 @@ module MongoidDummy
     embedded_in :owner, class_name: "MongoidDummy::ContactPointOwner"
   end
 
-  # An embedded family under a PLAIN base class: `ContactPoint` holds the fields
-  # every variant shares and declares no `embedded_in`, while its subclasses do
-  # (and inherit its collection name). The base is therefore not `embedded?` even
-  # though nothing is ever stored at the root under it — `embedded?` answers "does
-  # this class declare an `embedded_in`", which is not the same question as "does
-  # this collection have root documents".
-  #
-  # So the group looks mixed while being entirely embedded, and the generator must
-  # still emit an `embedded_in` config unioning the base's fields with the
-  # subclass's: flipping it to a top-level config would delete the config that
-  # masks those subdocuments. `ContactPointLog` additionally stores root documents
-  # under the same name, making the group three-way — the base's fields must not
-  # leak into the top-level config that case produces, since they describe
-  # subdocuments. Kept OUT of `MODELS`/`SEED` and exercised in isolation.
+  # An embedded family under a plain base class: the base declares no
+  # `embedded_in` (so it is not `embedded?`) yet stores nothing at the root — the
+  # group must stay embedded. `ContactPointLog` additionally stores root documents
+  # under the same name for the three-way case. Kept OUT of `MODELS`/`SEED`.
   class ContactPoint
     include Mongoid::Document
     store_in collection: "contact_points"

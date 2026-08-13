@@ -279,58 +279,34 @@ module Exwiw
 
       return top_level_collection(collection_name, ordered, existing) if embedded_models.empty?
 
-      # `embedded?` answers "does this class declare an `embedded_in`", which is
-      # not the same question as "does this collection have root documents". A
-      # base class shared by embedded documents (`class Address` with the common
-      # fields, `class BillingAddress < Address` declaring the `embedded_in`)
-      # declares none, yet nothing is ever stored at the root under it either: it
-      # is part of the embedded family, and its fields describe subdocuments.
-      # Treating it as evidence of a root collection would flip the whole family
-      # to a top-level config and DELETE the `embedded_in` that masks those
-      # subdocuments — the same worst-case failure as below, in the opposite
-      # direction. So a non-embedded model with embedded descendants in this very
-      # group is read as their base class, not as a root model.
-      #
-      # Deliberately conservative: a model whose descendants are embedded is
-      # treated as their base even if the application also stored root documents
-      # under it. That shape keeps exactly the behavior (and the limitation) this
-      # generator always had, rather than trading a silent masking regression for
-      # a silent dumping one.
+      # `embedded?` means "declares an `embedded_in`", not "has root documents":
+      # a plain base class of embedded documents declares none but stores nothing
+      # at the root either. Reading it as a root model would flip the family to a
+      # top-level config and delete the `embedded_in` that masks its subdocuments,
+      # so a non-embedded model with embedded descendants in the group counts as
+      # their base — even if root documents were also stored under it (keeps the
+      # generator's historical behavior rather than risking a masking regression).
       root_models = non_embedded_models.reject do |model|
         embedded_models.any? { |embedded| embedded < model }
       end
 
-      # What remains is the genuine collision: a collection name claimed by an
-      # unrelated top-level model and an embedded class at once. An embedded class
-      # derives its collection name from its class name alone, so it collides with
-      # any top-level model that stores into a collection of that name — nothing
-      # declares the two to be related, and neither side is wrong.
-      #
-      # Such a collection is genuinely TOP-LEVEL: it has root documents that must
-      # be dumped. Treating the group as embedded because one member is (which is
-      # what "any model is embedded" did) emits an `embedded_in` and an empty
-      # belongs_tos, so `MongodbAdapter#dumpable?` (`!embedded?`) silently never
-      # dumps those root documents, the top-level models' extraction paths are
-      # gone, and — since #merge always takes the generated `embedded_in` — a
-      # hand-maintained top-level config cannot survive regeneration either,
-      # leaving the schema check permanently red with no way to resolve it.
-      # Silently un-dumping a real collection is the worst failure this generator
-      # has, so generate the top-level collection from its root models and say out
-      # loud what is not covered. Only the root models contribute: an embedded
-      # base's fields describe subdocuments, not root documents.
-      #
-      # The embedded namesakes stay uncovered on purpose: masking them needs an
-      # `embedded_in` config, which is written by hand under a synthetic name of
-      # its own (generation and tidy both leave embedded configs alone), the same
-      # pattern any collection exwiw cannot derive an embedding for already uses.
+      # A root model left after that is a genuine name collision (an embedded
+      # class derives its collection name from the class name alone). The
+      # collection has root documents that must keep being dumped, so generate it
+      # as top-level from the root models only — emitting `embedded_in` here would
+      # make `MongodbAdapter#dumpable?` skip it silently, and #merge would force
+      # that shape back onto a hand-maintained config on every run. The embedded
+      # namesakes are masked by a hand-written `embedded_in` config under a
+      # synthetic name (which generation and tidy leave alone); the warning says
+      # so instead of a generated `comment`, which would overwrite the user's own
+      # note via #merge.
       if root_models.any?
         warn_mixed_embedding(collection_name, embedded_models)
         return top_level_collection(collection_name, root_models, existing)
       end
 
-      # A purely embedded collection — one class, an embedded hierarchy, or an
-      # embedded family under a plain base. The whole group is passed on so the
-      # base's fields keep being unioned in, exactly as before.
+      # Purely embedded (possibly under a plain base, whose fields keep being
+      # unioned in as before).
       embedded_collection(collection_name, ordered)
     end
 
@@ -390,12 +366,6 @@ module Exwiw
     end
 
     # Names the collision on stderr, once per affected collection.
-    #
-    # Deliberately NOT recorded as a generated `comment` on the config: #merge
-    # gives a freshly generated comment precedence over the receiver's, so a
-    # marker here would overwrite — on every single run — the note a user wrote
-    # about this very situation. The warning is the surfacing mechanism; the
-    # config file stays the user's.
     private def warn_mixed_embedding(collection_name, embedded_models)
       warn(
         "exwiw: collection '#{collection_name}' is stored into by both top-level and embedded models " \
@@ -427,21 +397,14 @@ module Exwiw
       concrete(@models)
     end
 
-    # The single place a model is judged fit to describe: Mongoid's own internal
-    # helper classes are dropped here, and so is any class with no collection name
-    # to describe — `store_in collection: nil` is how an application says "this
-    # document class is never persisted; I only want Mongoid's casting". Its
-    # `collection_name` is empty, so every such class in an application (their
-    # embedded subclasses included) collapses into one group keyed "". A config
-    # for that group describes nothing: as an embedded config it is inert, and as
-    # a top-level one — which is what a group containing a never-persisted class
-    # with referenced belongs_tos would now produce — it is a dump instruction to
-    # read a collection with no name. Dropping the models here keeps the group out
-    # of `generate!` and out of `tidy!`'s live-name set at once.
-    #
-    # The emptiness test is last in the chain on purpose: it is the only condition
-    # that calls into the model, and the ones before it are what establish that
-    # calling `collection_name` is meaningful at all.
+    # The single place a model is judged fit to describe (used by generate! and
+    # tidy! alike): Mongoid's internal helper classes are dropped, and so is any
+    # class with an empty `collection_name` — `store_in collection: nil` is the
+    # never-persisted-model idiom, and a config for the nameless group such
+    # classes collapse into describes nothing (as top-level it would even
+    # instruct the dump to read a collection with no name). The emptiness test
+    # stays last: the preceding conditions establish that calling
+    # `collection_name` is meaningful.
     private def concrete(models)
       models.select do |model|
         model.respond_to?(:collection_name) &&
