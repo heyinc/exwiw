@@ -91,9 +91,8 @@ module Exwiw
     # the runtime config right after it is loaded (see Runner#load_table_config).
     def reject_ignored_members!
       self.belongs_tos = belongs_tos.reject(&:ignore)
-      ignored, kept = fields.partition(&:ignore)
-      @ignored_field_names = ignored.map(&:name)
-      self.fields = kept
+      ignored_field_names # memoize before the entries are dropped
+      self.fields = fields.reject(&:ignore)
       self
     end
 
