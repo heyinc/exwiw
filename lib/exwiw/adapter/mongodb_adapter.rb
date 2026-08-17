@@ -751,8 +751,9 @@ module Exwiw
           acc << [field.name, mask]
         end
         faked_fields = build_faked_fields(config)
-        # Only an embedded config needs this; a top-level one never fetched the
-        # field, so listing it is harmless and keeps one plan shape.
+        # Mostly for an embedded config, but a top-level one fetches an ignored
+        # field too when it is a propagation key (a child's `references`), and
+        # this is what keeps it out of the dump.
         dropped_fields = config.ignored_field_names
         embedded = embedded_children_of(config).map do |child|
           *prefix, last = child.embedded_in.path.split(".")
