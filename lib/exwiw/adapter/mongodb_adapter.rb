@@ -383,9 +383,18 @@ module Exwiw
               "collection-level `filter` is not supported by MongodbAdapter (collection: #{config.name})"
       end
 
+      # Index the embedded configs by the collection they are embedded in, so
+      # the parent's projection can pull their paths in and its mask plan can
+      # descend into them.
+      #
+      # An `ignore: true` child is left out, which keeps its path out of the
+      # parent's inclusion projection and so out of the dump — the only way to
+      # exclude an embedded path (see docs/mongodb.md). Its own embedded
+      # children need no handling: they are never reached.
       private def index_embedded_children(config_by_name)
         config_by_name.each_value.with_object({}) do |child, acc|
           next unless child.embedded?
+          next if child.ignore
 
           (acc[child.embedded_in.collection_name] ||= []) << child
         end
@@ -706,9 +715,10 @@ module Exwiw
       # document of that collection. `masked_fields` is `[field_name,
       # template_segments]` for each field carrying a `replace_with`;
       # `faked_fields` is `[field_name, deriver, seed_field]` for each field
-      # carrying a `replace_with_fake_data`; `embedded` is one EmbeddedMask per
-      # embedded child.
-      MaskPlan = Struct.new(:masked_fields, :faked_fields, :embedded)
+      # carrying a `replace_with_fake_data`; `dropped_fields` is the name of each
+      # field marked `ignore:true`; `embedded` is one EmbeddedMask per embedded
+      # child.
+      MaskPlan = Struct.new(:masked_fields, :faked_fields, :dropped_fields, :embedded)
 
       # A pre-resolved embedded-child mask: the parent path split once into
       # `prefix` (the containers to descend into) and `last` (the field holding
@@ -741,11 +751,15 @@ module Exwiw
           acc << [field.name, mask]
         end
         faked_fields = build_faked_fields(config)
+        # Mostly for an embedded config, but a top-level one fetches an ignored
+        # field too when it is a propagation key (a child's `references`), and
+        # this is what keeps it out of the dump.
+        dropped_fields = config.ignored_field_names
         embedded = embedded_children_of(config).map do |child|
           *prefix, last = child.embedded_in.path.split(".")
           EmbeddedMask.new(prefix, last, build_mask_plan(child))
         end
-        MaskPlan.new(masked_fields, faked_fields, embedded)
+        MaskPlan.new(masked_fields, faked_fields, dropped_fields, embedded)
       end
 
       # Compile each `replace_with_fake_data` field into `[field_name, deriver,
@@ -775,13 +789,19 @@ module Exwiw
         end
       end
 
-      # Apply a precompiled MaskPlan to a document in place: render each
-      # `replace_with` field, then each `replace_with_fake_data` field, then
-      # descend into each embedded child (recursing into its own plan). Fake
-      # fields are applied after replace_with so a fake seed reads the already-
-      # masked value — matching the SQL adapters, where replace_with runs in the
-      # database before the Ruby-side fake transform sees the row.
+      # Apply a precompiled MaskPlan to a document in place: drop each
+      # `ignore:true` field, then render each `replace_with` field, then each
+      # `replace_with_fake_data` field, then descend into each embedded child
+      # (recursing into its own plan). Fake fields are applied after replace_with
+      # so a fake seed reads the already-masked value — matching the SQL
+      # adapters, where replace_with runs in the database before the Ruby-side
+      # fake transform sees the row.
+      #
+      # Dropping comes first so an ignored field is invisible to the masking that
+      # follows, as on a top-level collection — normally not fetched, and dropped
+      # here when the projection pulled it in as a propagation key.
       private def apply_mask_plan!(doc, plan)
+        plan.dropped_fields.each { |name| doc.delete(name) }
         plan.masked_fields.each do |name, mask|
           # Preserve a NULL / absent source value instead of clobbering it into a
           # masked literal. `doc[name].nil?` is true for both an explicit nil and

@@ -38,6 +38,7 @@ exwiw can export a MongoDB database with `--adapter=mongodb`. This document coll
 
 - `replace_with_fake_data` is supported on a field ([full reference](../README.md#replace_with_fake_data)) — its `seed` names a field of the same collection (bare or `collection.`-qualified) or the primary key (`_id`), and it derives the same fake value as the SQL adapters for the same seed. It is applied document-side after `replace_with` (so a fake seed reads the already-masked value, matching the SQL adapters where `replace_with` runs in the database first), works inside embedded subdocuments, and is exclusive with `replace_with` on the same field. Add `gem "faker"` to use it (except a config using only `ja` person types). `raw_sql` and `map` are **not** supported (the `MongodbField` schema does not declare them; such keys are rejected on load — see [Unknown keys are rejected](../README.md#unknown-keys-are-rejected)); use `replace_with` for template masking.
 - The MongoDB adapter does not support the collection-level `filter` field (it raises `NotImplementedError` if set, since the SQL-string filter cannot be applied to MongoDB).
+- A field marked [`ignore: true`](../README.md#ignore--annotate-a-column-or-belongs_to) is absent from the dump on an embedded config too, though it gets there differently: a top-level collection's ignored field is left out of the projection (unless a child references it — then it is fetched as a propagation key and dropped during masking too), while an embedded one arrives inside the parent's document and is deleted from the subdocument during masking. It is deleted before the collection's own `replace_with` / `replace_with_fake_data` run, so — as on a top-level collection — nothing masking the same subdocument can read it. The primary key cannot be marked `ignore: true` (that raises `ArgumentError` on load): dropping it would leave the dumped documents with no identifier, so a restore would assign fresh ids and break every reference pointing at them.
 
 ## `reverse_scope` on collections
 
@@ -106,6 +107,30 @@ At runtime:
 - Both arrays of subdocuments and a single Hash subdocument at `path` are supported. Multiple levels of nesting work via embedded chains.
 - Cross-collection references from inside an embedded subdocument (`belongs_tos` on an embedded config) are not supported and raise `ArgumentError` on load.
 - Specifying an embedded config as `--target-table` raises `NotImplementedError`; pass the top-level collection name instead.
+
+### Excluding an embedded path (`ignore: true`)
+
+A parent collection fetches an embedded path only because some config claims it, so marking the embedded config [`ignore: true`](../README.md#ignore-a-table) leaves the path out of the parent's projection: the **whole subdocument is absent from the dump**, and any embedded chain hanging off it goes with it.
+
+```jsonc
+// posts is embedded in users.posts, but its content is not wanted in the dump
+{
+  "name": "posts",
+  "primary_key": "_id",
+  "ignore": true,
+  "comment": "subdocument is environment-specific; drop it rather than mask it",
+  "embedded_in": { "collection_name": "users", "path": "posts" },
+  "belongs_tos": [],
+  "fields": [{ "name": "_id" }, { "name": "title" }]
+}
+```
+
+This is the only way to keep an embedded path out of the dump — MongoDB does not allow mixing exclusions into the inclusion projection exwiw builds — and it is how to drop a subdocument that must not survive into the restored database at all, rather than be masked into a fake value. Two consequences worth knowing:
+
+- Dropping is not masking: a field that must keep a plausible value belongs in `replace_with` / `replace_with_fake_data`, not here. An absent path also means an application reading it sees "not set", which is a different state from "set to a masked value".
+- The path is only excluded when *no* config asks for it. If the parent collection also declares the path in its own `fields`, that declaration still pulls the raw subdocument into the dump — now with no masking applied to it, since the ignored config's rules no longer run. Remove the parent's field entry (or mark it `ignore: true`) as well.
+
+Like every other `ignore`, it is preserved across `exwiw:mongoid:schema:generate` regenerations, so the exclusion survives a config refresh.
 
 ## `exwiw explain` verbosity
 

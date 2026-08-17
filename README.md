@@ -683,6 +683,7 @@ Constraints:
 - If another non-ignored table has a `belongs_to` entry pointing at an ignored table, exwiw raises `ArgumentError` on load. Remove the `belongs_to` entry on the referencing table, or unset `ignore` on the referenced table.
 - Specifying an ignored table as `--target-table` raises `ArgumentError`.
 - `ignore: true` is preserved by `exwiw:schema:generate` regenerations (the receiver value wins over the auto-generated config).
+- On a MongoDB [embedded config](docs/mongodb.md#excluding-an-embedded-path-ignore-true), which is masked through its parent rather than dumped on its own, `ignore: true` excludes the embedded path from the parent's projection — the subdocument is left out of the dump entirely.
 
 ### Ignore / annotate a column or `belongs_to`
 
@@ -705,6 +706,8 @@ Individual `columns` (SQL) / `fields` (MongoDB) and `belongs_tos` entries accept
   ]
 }
 ```
+
+On a MongoDB [embedded config](docs/mongodb.md#embedded-documents) an ignored field cannot be left out of the query — the subdocuments arrive as part of whatever the parent collection fetched — so it is removed from each subdocument during masking instead. The result is the same: the field is absent from the dump. A MongoDB config marking its primary key `ignore: true` is rejected on load — the dump has to keep the identifier, or a restore would assign fresh ids and break every reference pointing at the documents.
 
 The ignored entries are removed only at runtime, right after the config is loaded from file; the JSON on disk keeps them. Both `comment` and `ignore` are **preserved across `exwiw:schema:generate` / `exwiw:mongoid:schema:generate` regenerations** (the hand-edited value wins over the auto-generated config), just like `replace_with`. This applies to the MongoDB `MongodbCollectionConfig` (`fields` / `belongs_tos`) as well.
 

@@ -96,6 +96,23 @@ module Exwiw
         end
       end
 
+      context 'with ignore:true on the primary key field' do
+        let(:json) do
+          {
+            "name" => "orders",
+            "primary_key" => "_id",
+            "belongs_tos" => [],
+            "fields" => [{ "name" => "_id", "ignore" => true }, { "name" => "token" }],
+          }
+        end
+
+        it 'raises on load (dropping the primary key would break references on restore)' do
+          expect { described_class.from(json) }.to raise_error(
+            ArgumentError, /primary key '_id' must not be marked ignore: true/
+          )
+        end
+      end
+
       context 'with an ignored belongs_to carrying ignore_type and no table_name' do
         let(:json) do
           {
@@ -507,6 +524,13 @@ module Exwiw
 
       it 'returns self so it can be chained after load' do
         expect(config.reject_ignored_members!).to be(config)
+      end
+
+      it 'still reports the ignored field names once the entries are dropped' do
+        # An embedded config's ignored fields are removed from the subdocuments
+        # during masking, which runs long after the entries themselves are gone.
+        config.reject_ignored_members!
+        expect(config.ignored_field_names).to eq(['token'])
       end
     end
 
