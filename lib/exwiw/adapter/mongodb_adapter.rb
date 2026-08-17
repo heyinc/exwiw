@@ -387,17 +387,10 @@ module Exwiw
       # the parent's projection can pull their paths in and its mask plan can
       # descend into them.
       #
-      # An `ignore: true` embedded config is left out: on a top-level collection
-      # `ignore` skips extraction, so on an embedded one it has to mean the
-      # subdocument is not extracted either. Since a parent only fetches the
-      # path *because* some config claims it (see #build_projection), dropping
-      # the child here keeps the whole subdocument out of the projection, and
-      # therefore out of the dump. That is the only way to exclude an embedded
-      # path: the projection is an inclusion projection, which MongoDB does not
-      # let us mix with exclusions.
-      #
-      # A child of the ignored config (an embedded chain) needs no handling of
-      # its own — its parent's mask plan is never built, so it is never reached.
+      # An `ignore: true` child is left out, which keeps its path out of the
+      # parent's inclusion projection and so out of the dump — the only way to
+      # exclude an embedded path (see docs/mongodb.md). Its own embedded
+      # children need no handling: they are never reached.
       private def index_embedded_children(config_by_name)
         config_by_name.each_value.with_object({}) do |child, acc|
           next unless child.embedded?
@@ -758,10 +751,8 @@ module Exwiw
           acc << [field.name, mask]
         end
         faked_fields = build_faked_fields(config)
-        # Only an embedded config needs its ignored fields dropped here; on a
-        # top-level one the projection already kept them out of the document.
-        # Listing them for both is harmless (the key is simply absent) and keeps
-        # one plan shape for the recursion.
+        # Only an embedded config needs this; a top-level one never fetched the
+        # field, so listing it is harmless and keeps one plan shape.
         dropped_fields = config.ignored_field_names
         embedded = embedded_children_of(config).map do |child|
           *prefix, last = child.embedded_in.path.split(".")
@@ -805,12 +796,8 @@ module Exwiw
       # adapters, where replace_with runs in the database before the Ruby-side
       # fake transform sees the row.
       #
-      # Dropping comes first so that an ignored field is invisible to the masking
-      # that follows, the same way a top-level collection's ignored field never
-      # arrives to be read (it is left out of the projection). Nothing can
-      # reference it on its way out: a `replace_with_fake_data` seed pointing at
-      # an ignored field is already rejected at plan-build time, and a
-      # `replace_with` template referencing one renders it as empty.
+      # Dropping comes first so an ignored field is invisible to the masking that
+      # follows, as it is on a top-level collection (never fetched at all).
       private def apply_mask_plan!(doc, plan)
         plan.dropped_fields.each { |name| doc.delete(name) }
         plan.masked_fields.each do |name, mask|
