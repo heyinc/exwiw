@@ -96,6 +96,23 @@ module Exwiw
         end
       end
 
+      context 'with ignore:true on the primary key field' do
+        let(:json) do
+          {
+            "name" => "orders",
+            "primary_key" => "_id",
+            "belongs_tos" => [],
+            "fields" => [{ "name" => "_id", "ignore" => true }, { "name" => "token" }],
+          }
+        end
+
+        it 'raises on load (dropping the primary key would break references on restore)' do
+          expect { described_class.from(json) }.to raise_error(
+            ArgumentError, /primary key '_id' must not be marked ignore: true/
+          )
+        end
+      end
+
       context 'with an ignored belongs_to carrying ignore_type and no table_name' do
         let(:json) do
           {

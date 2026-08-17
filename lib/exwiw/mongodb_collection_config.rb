@@ -67,6 +67,7 @@ module Exwiw
       instance.__send__(:validate_embedded!)
       instance.__send__(:validate_belongs_tos!)
       instance.__send__(:validate_fake_data!)
+      instance.__send__(:validate_ignored_fields!)
       instance
     end
 
@@ -204,6 +205,21 @@ module Exwiw
                 "(use 'field' or '#{name}.field')."
         end
       end
+    end
+
+    # A primary key marked `ignore: true` is rejected on load. Honoring it
+    # would delete the identifier from every dumped document — restore assigns
+    # fresh ids, breaking every reference pointing at them, and a `{_id}` mask
+    # template renders empty on every row — and silently not honoring it (the
+    # historical behavior, since the projection always fetches the key) would
+    # leave the config lying about what the dump contains.
+    private def validate_ignored_fields!
+      return unless fields.any? { |f| f.ignore && f.name == primary_key }
+
+      raise ArgumentError,
+            "MongodbCollectionConfig '#{name}': the primary key '#{primary_key}' must not be " \
+            "marked ignore: true (the dump has to keep the identifier; remove the ignore, " \
+            "or use ignore: true on the collection to exclude it entirely)."
     end
 
     private def validate_embedded!
