@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.24] - 2026-08-17
+
 ### Fixed
 
 - **MongoDB: `ignore: true` is now honored on embedded configs instead of silently exporting the subdocuments raw.** An ignored embedded config keeps its path out of the parent's projection, so the whole subdocument is absent from the dump ([docs/mongodb.md](docs/mongodb.md#excluding-an-embedded-path-ignore-true)); an ignored *field* of an embedded config is deleted from each subdocument before masking runs, as on a top-level collection. That deletion also fixes a leak there: an ignored field a child `references` is fetched as a propagation key and used to be exported. A primary key marked `ignore: true` — previously a silent no-op — now raises `ArgumentError` on load: dropping `_id` would make a restore assign fresh ids and break every reference pointing at the documents.
