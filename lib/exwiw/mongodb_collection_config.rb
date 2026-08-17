@@ -78,10 +78,23 @@ module Exwiw
       !embedded_in.nil?
     end
 
+    # The names of the fields flagged `ignore:true`, remembered so they stay
+    # answerable after #reject_ignored_members! has dropped the entries.
+    #
+    # A top-level collection needs no such record — an ignored field is simply
+    # left out of the projection, so it never arrives. An embedded one does: its
+    # subdocuments come in as part of whatever the parent fetched, so the only
+    # place the field can be dropped is the masking pass, which runs on the
+    # already-rejected field list (see MongodbAdapter#build_mask_plan).
+    def ignored_field_names
+      @ignored_field_names ||= fields.select(&:ignore).map(&:name)
+    end
+
     # Drop the belongs_tos/fields flagged `ignore:true` so they are excluded from
     # extraction. The config files on disk keep these entries; this is applied to
     # the runtime config right after it is loaded (see Runner#load_table_config).
     def reject_ignored_members!
+      ignored_field_names # resolve while the ignored entries are still here
       self.belongs_tos = belongs_tos.reject(&:ignore)
       self.fields = fields.reject(&:ignore)
       self

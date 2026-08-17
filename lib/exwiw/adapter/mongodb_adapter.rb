@@ -722,9 +722,10 @@ module Exwiw
       # document of that collection. `masked_fields` is `[field_name,
       # template_segments]` for each field carrying a `replace_with`;
       # `faked_fields` is `[field_name, deriver, seed_field]` for each field
-      # carrying a `replace_with_fake_data`; `embedded` is one EmbeddedMask per
-      # embedded child.
-      MaskPlan = Struct.new(:masked_fields, :faked_fields, :embedded)
+      # carrying a `replace_with_fake_data`; `dropped_fields` is the name of each
+      # field marked `ignore:true`; `embedded` is one EmbeddedMask per embedded
+      # child.
+      MaskPlan = Struct.new(:masked_fields, :faked_fields, :dropped_fields, :embedded)
 
       # A pre-resolved embedded-child mask: the parent path split once into
       # `prefix` (the containers to descend into) and `last` (the field holding
@@ -757,11 +758,16 @@ module Exwiw
           acc << [field.name, mask]
         end
         faked_fields = build_faked_fields(config)
+        # Only an embedded config needs its ignored fields dropped here; on a
+        # top-level one the projection already kept them out of the document.
+        # Listing them for both is harmless (the key is simply absent) and keeps
+        # one plan shape for the recursion.
+        dropped_fields = config.ignored_field_names
         embedded = embedded_children_of(config).map do |child|
           *prefix, last = child.embedded_in.path.split(".")
           EmbeddedMask.new(prefix, last, build_mask_plan(child))
         end
-        MaskPlan.new(masked_fields, faked_fields, embedded)
+        MaskPlan.new(masked_fields, faked_fields, dropped_fields, embedded)
       end
 
       # Compile each `replace_with_fake_data` field into `[field_name, deriver,
@@ -791,13 +797,22 @@ module Exwiw
         end
       end
 
-      # Apply a precompiled MaskPlan to a document in place: render each
-      # `replace_with` field, then each `replace_with_fake_data` field, then
-      # descend into each embedded child (recursing into its own plan). Fake
-      # fields are applied after replace_with so a fake seed reads the already-
-      # masked value — matching the SQL adapters, where replace_with runs in the
-      # database before the Ruby-side fake transform sees the row.
+      # Apply a precompiled MaskPlan to a document in place: drop each
+      # `ignore:true` field, then render each `replace_with` field, then each
+      # `replace_with_fake_data` field, then descend into each embedded child
+      # (recursing into its own plan). Fake fields are applied after replace_with
+      # so a fake seed reads the already-masked value — matching the SQL
+      # adapters, where replace_with runs in the database before the Ruby-side
+      # fake transform sees the row.
+      #
+      # Dropping comes first so that an ignored field is invisible to the masking
+      # that follows, the same way a top-level collection's ignored field never
+      # arrives to be read (it is left out of the projection). Nothing can
+      # reference it on its way out: a `replace_with_fake_data` seed pointing at
+      # an ignored field is already rejected at plan-build time, and a
+      # `replace_with` template referencing one renders it as empty.
       private def apply_mask_plan!(doc, plan)
+        plan.dropped_fields.each { |name| doc.delete(name) }
         plan.masked_fields.each do |name, mask|
           # Preserve a NULL / absent source value instead of clobbering it into a
           # masked literal. `doc[name].nil?` is true for both an explicit nil and

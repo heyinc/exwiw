@@ -834,6 +834,40 @@ module Exwiw
           expect(parsed["posts"][1]["title"]).to eq("masked-title-102")
         end
 
+        it "drops an ignore:true field from embedded subdocuments" do
+          # The subdocuments arrive as part of the parent's document, so the
+          # projection cannot leave the field out the way it does for a top-level
+          # collection; masking has to delete it instead.
+          posts_with_ignored_field = MongodbCollectionConfig.from(
+            "name" => "posts",
+            "primary_key" => "_id",
+            "embedded_in" => { "collection_name" => "users", "path" => "posts" },
+            "belongs_tos" => [],
+            "fields" => [
+              { "name" => "_id" },
+              { "name" => "title", "replace_with" => "masked-title-{_id}" },
+              { "name" => "draft_body", "ignore" => true },
+            ],
+          ).reject_ignored_members!
+          users_t = config_by_name.fetch("users")
+          local_config_by_name = config_by_name.merge("posts" => posts_with_ignored_field)
+
+          adapter.build_query(users_t, dump_target, local_config_by_name)
+          rows = [
+            {
+              "_id" => 1,
+              "name" => "User 1",
+              "email" => "user1@example.com",
+              "shop_id" => 1,
+              "posts" => [{ "_id" => 101, "title" => "First", "draft_body" => "unpublished" }],
+            },
+          ]
+          parsed = JSON.parse(adapter.to_bulk_insert(rows, users_t))
+
+          expect(parsed["posts"][0]).not_to have_key("draft_body")
+          expect(parsed["posts"][0]["title"]).to eq("masked-title-101")
+        end
+
         context "replace_with_fake_data" do
           # A `users` variant whose `name`/`email` carry replace_with_fake_data
           # seeded by `_id`, so the same _id always maps to the same fake value.

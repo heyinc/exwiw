@@ -707,6 +707,8 @@ Individual `columns` (SQL) / `fields` (MongoDB) and `belongs_tos` entries accept
 }
 ```
 
+On a MongoDB [embedded config](docs/mongodb.md#embedded-documents) an ignored field cannot be left out of the query — the subdocuments arrive as part of whatever the parent collection fetched — so it is removed from each subdocument during masking instead. The result is the same: the field is absent from the dump.
+
 The ignored entries are removed only at runtime, right after the config is loaded from file; the JSON on disk keeps them. Both `comment` and `ignore` are **preserved across `exwiw:schema:generate` / `exwiw:mongoid:schema:generate` regenerations** (the hand-edited value wins over the auto-generated config), just like `replace_with`. This applies to the MongoDB `MongodbCollectionConfig` (`fields` / `belongs_tos`) as well.
 
 ### `needs_mask_decision`

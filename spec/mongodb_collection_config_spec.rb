@@ -508,6 +508,13 @@ module Exwiw
       it 'returns self so it can be chained after load' do
         expect(config.reject_ignored_members!).to be(config)
       end
+
+      it 'still reports the ignored field names once the entries are dropped' do
+        # An embedded config's ignored fields are removed from the subdocuments
+        # during masking, which runs long after the entries themselves are gone.
+        config.reject_ignored_members!
+        expect(config.ignored_field_names).to eq(['token'])
+      end
     end
 
     describe '.from_symbol_keys' do
