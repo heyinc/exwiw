@@ -798,7 +798,8 @@ module Exwiw
       # fake transform sees the row.
       #
       # Dropping comes first so an ignored field is invisible to the masking that
-      # follows, as it is on a top-level collection (never fetched at all).
+      # follows, as on a top-level collection — normally not fetched, and dropped
+      # here when the projection pulled it in as a propagation key.
       private def apply_mask_plan!(doc, plan)
         plan.dropped_fields.each { |name| doc.delete(name) }
         plan.masked_fields.each do |name, mask|
