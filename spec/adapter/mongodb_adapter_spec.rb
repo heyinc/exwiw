@@ -157,6 +157,20 @@ module Exwiw
             expect(query.projection).to include("posts" => 1)
             expect(query.projection).to include("_id" => 1, "name" => 1, "email" => 1, "shop_id" => 1)
           end
+
+          it "leaves out the path of an embedded child marked ignore:true" do
+            # The parent fetches the path only to let the child's masking rules
+            # reach the subdocuments; an ignored child asks for no extraction, so
+            # the subdocument must not be fetched (and thus never dumped) at all.
+            ignored_posts = MongodbCollectionConfig.from(
+              JSON.parse(JSON.generate(posts_table(adapter_name).to_hash)).merge("ignore" => true),
+            )
+            users = config_by_name.fetch("users")
+            query = adapter.build_query(users, dump_target, config_by_name.merge("posts" => ignored_posts))
+
+            expect(query.projection).not_to have_key("posts")
+            expect(query.projection).to include("_id" => 1, "name" => 1, "email" => 1, "shop_id" => 1)
+          end
         end
 
         context "for a reference collection with no belongs_to" do

@@ -383,9 +383,25 @@ module Exwiw
               "collection-level `filter` is not supported by MongodbAdapter (collection: #{config.name})"
       end
 
+      # Index the embedded configs by the collection they are embedded in, so
+      # the parent's projection can pull their paths in and its mask plan can
+      # descend into them.
+      #
+      # An `ignore: true` embedded config is left out: on a top-level collection
+      # `ignore` skips extraction, so on an embedded one it has to mean the
+      # subdocument is not extracted either. Since a parent only fetches the
+      # path *because* some config claims it (see #build_projection), dropping
+      # the child here keeps the whole subdocument out of the projection, and
+      # therefore out of the dump. That is the only way to exclude an embedded
+      # path: the projection is an inclusion projection, which MongoDB does not
+      # let us mix with exclusions.
+      #
+      # A child of the ignored config (an embedded chain) needs no handling of
+      # its own — its parent's mask plan is never built, so it is never reached.
       private def index_embedded_children(config_by_name)
         config_by_name.each_value.with_object({}) do |child, acc|
           next unless child.embedded?
+          next if child.ignore
 
           (acc[child.embedded_in.collection_name] ||= []) << child
         end

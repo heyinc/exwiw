@@ -683,6 +683,7 @@ Constraints:
 - If another non-ignored table has a `belongs_to` entry pointing at an ignored table, exwiw raises `ArgumentError` on load. Remove the `belongs_to` entry on the referencing table, or unset `ignore` on the referenced table.
 - Specifying an ignored table as `--target-table` raises `ArgumentError`.
 - `ignore: true` is preserved by `exwiw:schema:generate` regenerations (the receiver value wins over the auto-generated config).
+- On a MongoDB [embedded config](docs/mongodb.md#excluding-an-embedded-path-ignore-true), which is masked through its parent rather than dumped on its own, `ignore: true` excludes the embedded path from the parent's projection — the subdocument is left out of the dump entirely.
 
 ### Ignore / annotate a column or `belongs_to`
 

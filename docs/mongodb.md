@@ -107,6 +107,30 @@ At runtime:
 - Cross-collection references from inside an embedded subdocument (`belongs_tos` on an embedded config) are not supported and raise `ArgumentError` on load.
 - Specifying an embedded config as `--target-table` raises `NotImplementedError`; pass the top-level collection name instead.
 
+### Excluding an embedded path (`ignore: true`)
+
+A parent collection fetches an embedded path only because some config claims it, so marking the embedded config [`ignore: true`](../README.md#ignore-a-table) leaves the path out of the parent's projection: the **whole subdocument is absent from the dump**, and any embedded chain hanging off it goes with it.
+
+```jsonc
+// posts is embedded in users.posts, but its content is not wanted in the dump
+{
+  "name": "posts",
+  "primary_key": "_id",
+  "ignore": true,
+  "comment": "subdocument is environment-specific; drop it rather than mask it",
+  "embedded_in": { "collection_name": "users", "path": "posts" },
+  "belongs_tos": [],
+  "fields": [{ "name": "_id" }, { "name": "title" }]
+}
+```
+
+This is the only way to keep an embedded path out of the dump — MongoDB does not allow mixing exclusions into the inclusion projection exwiw builds — and it is how to drop a subdocument that must not survive into the restored database at all, rather than be masked into a fake value. Two consequences worth knowing:
+
+- Dropping is not masking: a field that must keep a plausible value belongs in `replace_with` / `replace_with_fake_data`, not here. An absent path also means an application reading it sees "not set", which is a different state from "set to a masked value".
+- The path is only excluded when *no* config asks for it. If the parent collection also declares the path in its own `fields`, that declaration still pulls the raw subdocument into the dump — now with no masking applied to it, since the ignored config's rules no longer run. Remove the parent's field entry (or mark it `ignore: true`) as well.
+
+Like every other `ignore`, it is preserved across `exwiw:mongoid:schema:generate` regenerations, so the exclusion survives a config refresh.
+
 ## `exwiw explain` verbosity
 
 The mongodb explain runs the server's [explain command](https://www.mongodb.com/docs/manual/reference/command/explain/) at a configurable verbosity. The default, **`queryPlanner`, only plans the query and does not execute it**, so it is safe to point at a production source. Set it with the `EXWIW_MONGODB_EXPLAIN_VERBOSITY` environment variable or the `explain_verbosity:` config key (the env var wins):
