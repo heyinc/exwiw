@@ -68,6 +68,24 @@ for file in tmp/postgresql/insert-*.sql; do
   fi
 done
 
+# The seed's trigger must be in the generated schema and on the target. The TO
+# database is seeded with the same dump, so the trigger already existed when
+# insert-000-schema.sql was applied — which also asserts the generated
+# CREATE TRIGGER is re-appliable (a bare one would have aborted with
+# duplicate_object).
+echo "Verifying triggers were carried into the schema and created on the target..."
+if ! grep -q 'CREATE TRIGGER suppress_redundant_user_updates' tmp/postgresql/insert-000-schema.sql; then
+  echo "✗ insert-000-schema.sql does not carry the source's trigger"
+  exit 1
+fi
+TRIGGER_COUNT=$($PSQL_CMD -d "${TO_DATABASE_NAME}" -t -c "SELECT COUNT(*) FROM pg_trigger WHERE NOT tgisinternal;" | tr -d ' ')
+if [ "$TRIGGER_COUNT" -eq "1" ]; then
+  echo "✓ Trigger restored (and the generated schema re-applied without error)"
+else
+  echo "✗ Expected 1 user trigger on the target, got ${TRIGGER_COUNT}"
+  exit 1
+fi
+
 # Verify insert works after import.
 # A failed INSERT (e.g. PK collision when the sequence wasn't advanced) makes
 # psql exit non-zero, so we evaluate it directly with `if` instead of doing a

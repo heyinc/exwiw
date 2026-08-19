@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — PostgreSQL: `insert-000-schema.sql` now contains the source's triggers, wrapped in `DO $exwiw$ ... EXCEPTION WHEN duplicate_object`.** They used to be deleted from the dump, so a restored database silently ran none of them: an audit trigger recorded nothing, a timestamp trigger never fired, and the dump gave whoever restored it no way to add them back. The deletion existed because a `--table` dump emitted `CREATE TRIGGER` without the `CREATE FUNCTION` it references, failing the restore with `PG::UndefinedFunction`; the dump has since become a whole-database one that carries the functions too, so it was a leftover workaround rather than intended behavior — `mysqldump` and sqlite's `sqlite_master` have always emitted triggers. It is nonetheless a breaking change: dumps grow the trigger statements, and the triggers fire while the `insert-*.sql` files are applied, so a load that must not fire them needs `session_replication_role = 'replica'` or `ALTER TABLE ... DISABLE TRIGGER USER` (as a mysql restore already did). The DO block keeps the schema re-appliable, which a bare `CREATE TRIGGER` is not (`CREATE OR REPLACE TRIGGER` is PostgreSQL 14+ only and `pg_dump` never emits it).
+
+### Fixed
+
+- **PostgreSQL: a `CREATE TRIGGER` inside a function body is no longer rewritten.** The removed `DdlPostprocessor.strip_triggers` matched `^CREATE TRIGGER` anywhere, so it also deleted such a line from a dollar-quoted body, leaving a function that still compiled but no longer installed its trigger. Its replacement, `wrap_create_trigger_in_do_block`, anchors on the `-- Name: <table> <trigger>; Type: TRIGGER` header `pg_dump` writes before each trigger, which never appears inside a body. `CREATE CONSTRAINT TRIGGER` is handled, and a `;` inside a quoted trigger argument no longer truncates the statement.
+
 ## [0.9.24] - 2026-08-17
 
 ### Fixed

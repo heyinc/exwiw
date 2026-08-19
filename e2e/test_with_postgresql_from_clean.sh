@@ -85,6 +85,18 @@ else
   exit 1
 fi
 
+# Only insert-000-schema.sql could have created the trigger here, so this is the
+# end-to-end check that triggers survive extraction (test_with_postgresql.sh
+# covers re-applying the schema to a target that already has them).
+echo "Verifying the trigger was created on the clean target..."
+TRIGGER_COUNT=$($PSQL_CMD -d "${TO_DATABASE_NAME}" -t -c "SELECT COUNT(*) FROM pg_trigger WHERE NOT tgisinternal;" | tr -d ' ')
+if [ "$TRIGGER_COUNT" -eq "1" ]; then
+  echo "✓ Trigger created from insert-000-schema.sql alone"
+else
+  echo "✗ Expected 1 user trigger on the clean target, got ${TRIGGER_COUNT}"
+  exit 1
+fi
+
 # Verify rails_managed (type=rails_managed_schema_migrations) extraction:
 # the source seed has 3 migration versions, and the rails_managed dump path
 # uses SELECT * with no WHERE clause, so all 3 should land regardless of the

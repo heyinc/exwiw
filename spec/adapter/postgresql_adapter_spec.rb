@@ -70,6 +70,82 @@ module Exwiw
           enum_match = sql.match(/AS ENUM \(([^)]+)\)/m)
           labels = enum_match[1].scan(/'([^']*(?:''[^']*)*)'/).flatten
           expect(labels).to eq(labels.uniq), "enum labels should not be duplicated: #{labels}"
+          # The source's triggers are kept, wrapped so re-applying the schema does
+          # not fail on duplicate_object; pg_dump's header is left as written.
+          expect(sql).to match(
+            /DO \$exwiw\$ BEGIN\s+CREATE TRIGGER suppress_redundant_user_updates\b.*?EXCEPTION WHEN duplicate_object/m,
+          )
+          expect(sql).to include('Type: TRIGGER')
+        end
+
+        # pg_dump is stubbed so the shape under test does not depend on the test
+        # DB owning a function of its own.
+        context "when the source instance carries triggers and trigger functions" do
+          let(:success_status) { instance_double(Process::Status, success?: true, exitstatus: 0) }
+          let(:dump_output) do
+            <<~SQL
+              --
+              -- Name: install_trigger(text); Type: FUNCTION; Schema: public; Owner: -
+              --
+
+              CREATE FUNCTION public.install_trigger(t text) RETURNS void
+                  LANGUAGE plpgsql
+                  AS $$
+              BEGIN
+              CREATE TRIGGER never_wrap BEFORE UPDATE ON shops FOR EACH ROW EXECUTE FUNCTION set_timestamp();
+              END $$;
+
+
+              --
+              -- Name: set_timestamp(); Type: FUNCTION; Schema: public; Owner: -
+              --
+
+              CREATE FUNCTION public.set_timestamp() RETURNS trigger
+                  LANGUAGE plpgsql
+                  AS $$
+              BEGIN NEW.updated_at = now(); RETURN NEW; END $$;
+
+
+              CREATE TABLE public.shops (
+                  id bigint NOT NULL
+              );
+
+
+              --
+              -- Name: shops set_timestamp; Type: TRIGGER; Schema: public; Owner: -
+              --
+
+              CREATE TRIGGER set_timestamp BEFORE UPDATE ON public.shops FOR EACH ROW EXECUTE FUNCTION public.set_timestamp();
+            SQL
+          end
+
+          before do
+            allow(Open3).to receive(:capture3)
+              .with(hash_including('PGPASSWORD'), 'pg_dump', any_args) { [dump_output, '', success_status] }
+          end
+
+          # A whole-database dump carries the functions its triggers reference, so
+          # both halves restore. (A `--table` dump emitted the trigger alone, which
+          # is why triggers used to be dropped.)
+          it "keeps the trigger next to the function it references" do
+            adapter.dump_schema([shops_table(adapter_name)], schema_path)
+
+            sql = File.read(schema_path)
+            expect(sql).to include('CREATE FUNCTION public.set_timestamp() RETURNS trigger')
+            expect(sql).to match(
+              /DO \$exwiw\$ BEGIN\s+CREATE TRIGGER set_timestamp BEFORE UPDATE ON public\.shops\b.*?EXCEPTION WHEN duplicate_object/m,
+            )
+          end
+
+          # Wrapping a statement inside a dollar-quoted body would change what the
+          # function does.
+          it "leaves a CREATE TRIGGER inside a function body alone" do
+            adapter.dump_schema([shops_table(adapter_name)], schema_path)
+
+            expect(File.read(schema_path)).to include(
+              "BEGIN\nCREATE TRIGGER never_wrap BEFORE UPDATE ON shops FOR EACH ROW EXECUTE FUNCTION set_timestamp();\nEND $$;",
+            )
+          end
         end
 
         # A managed platform (Cloud SQL / AlloyDB) installs extensions of its own

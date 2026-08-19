@@ -70,44 +70,100 @@ module Exwiw
       end
     end
 
-    describe '.strip_triggers' do
-      it 'removes a single-line CREATE TRIGGER statement' do
-        sql = <<~SQL
-          CREATE TABLE IF NOT EXISTS public.users (id int);
-          CREATE TRIGGER set_timestamp BEFORE UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION public.set_timestamp();
-          CREATE INDEX IF NOT EXISTS idx_users ON public.users (id);
+    describe '.wrap_create_trigger_in_do_block' do
+      # pg_dump's header block, reproduced exactly as it writes it.
+      def with_header(name, stmt)
+        <<~SQL
+          --
+          -- Name: #{name}; Type: TRIGGER; Schema: public; Owner: -
+          --
+
+          #{stmt}
         SQL
-        out = described_class.strip_triggers(sql)
-        expect(out).not_to include('CREATE TRIGGER')
-        expect(out).to include('CREATE TABLE')
-        expect(out).to include('CREATE INDEX')
       end
 
-      it 'removes CREATE CONSTRAINT TRIGGER' do
-        sql = "CREATE CONSTRAINT TRIGGER check_balance AFTER INSERT ON public.orders FOR EACH ROW EXECUTE FUNCTION public.check_balance();\n"
-        out = described_class.strip_triggers(sql)
-        expect(out).not_to include('TRIGGER')
+      it 'wraps a CREATE TRIGGER statement in a duplicate_object-swallowing DO block' do
+        sql = with_header(
+          'users set_timestamp',
+          'CREATE TRIGGER set_timestamp BEFORE UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION public.set_timestamp();',
+        )
+        out = described_class.wrap_create_trigger_in_do_block(sql)
+        expect(out).to include('DO $exwiw$ BEGIN')
+        expect(out).to include('CREATE TRIGGER set_timestamp BEFORE UPDATE ON public.users')
+        expect(out).to include('EXCEPTION WHEN duplicate_object THEN NULL;')
+        expect(out).to include('END $exwiw$;')
       end
 
-      it 'removes CREATE OR REPLACE TRIGGER' do
-        sql = "CREATE OR REPLACE TRIGGER set_timestamp BEFORE UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION public.set_timestamp();\n"
-        out = described_class.strip_triggers(sql)
-        expect(out).not_to include('TRIGGER')
+      it 'keeps the pg_dump header comment ahead of the DO block' do
+        sql = with_header('users set_timestamp', 'CREATE TRIGGER t BEFORE UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION public.f();')
+        out = described_class.wrap_create_trigger_in_do_block(sql)
+        expect(out).to include("-- Name: users set_timestamp; Type: TRIGGER; Schema: public; Owner: -\n--\n\nDO $exwiw$ BEGIN")
       end
 
-      it 'removes all triggers when multiple are present' do
+      it 'wraps CREATE CONSTRAINT TRIGGER' do
+        sql = with_header(
+          'orders check_balance',
+          'CREATE CONSTRAINT TRIGGER check_balance AFTER INSERT ON public.orders DEFERRABLE INITIALLY IMMEDIATE FOR EACH ROW EXECUTE FUNCTION public.check_balance();',
+        )
+        out = described_class.wrap_create_trigger_in_do_block(sql)
+        expect(out).to include('DO $exwiw$ BEGIN')
+        expect(out).to include('CREATE CONSTRAINT TRIGGER check_balance')
+      end
+
+      it 'wraps CREATE OR REPLACE TRIGGER' do
+        sql = with_header(
+          'users set_timestamp',
+          'CREATE OR REPLACE TRIGGER set_timestamp BEFORE UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION public.set_timestamp();',
+        )
+        out = described_class.wrap_create_trigger_in_do_block(sql)
+        expect(out).to include('DO $exwiw$ BEGIN')
+        expect(out).to include('CREATE OR REPLACE TRIGGER set_timestamp')
+      end
+
+      it 'wraps each trigger independently' do
+        sql = with_header('a trg_a', 'CREATE TRIGGER trg_a BEFORE INSERT ON public.a FOR EACH ROW EXECUTE FUNCTION public.fn_a();') +
+              "\n" +
+              with_header('b trg_b', 'CREATE TRIGGER trg_b AFTER UPDATE ON public.b FOR EACH ROW EXECUTE FUNCTION public.fn_b();')
+        out = described_class.wrap_create_trigger_in_do_block(sql)
+        expect(out.scan(/DO \$exwiw\$ BEGIN/).size).to eq(2)
+        expect(out.scan(/END \$exwiw\$;/).size).to eq(2)
+      end
+
+      it 'does not end the statement at a semicolon inside a quoted argument' do
+        sql = with_header(
+          'users trg',
+          "CREATE TRIGGER trg AFTER INSERT ON public.users FOR EACH ROW EXECUTE FUNCTION public.f('a;b');",
+        )
+        out = described_class.wrap_create_trigger_in_do_block(sql)
+        expect(out).to include("EXECUTE FUNCTION public.f('a;b');\nEXCEPTION WHEN duplicate_object THEN NULL;")
+      end
+
+      it 'leaves a CREATE TRIGGER inside a function body untouched' do
+        # No header block inside a dollar-quoted body, so no rewrite — which is
+        # what the header anchor is for.
         sql = <<~SQL
-          CREATE TRIGGER trg_a BEFORE INSERT ON public.a FOR EACH ROW EXECUTE FUNCTION public.fn_a();
-          CREATE TRIGGER trg_b AFTER UPDATE ON public.b FOR EACH ROW EXECUTE FUNCTION public.fn_b();
+          --
+          -- Name: install_trigger(text); Type: FUNCTION; Schema: public; Owner: -
+          --
+
+          CREATE FUNCTION public.install_trigger(t text) RETURNS void
+              LANGUAGE plpgsql
+              AS $$
+          BEGIN
+          CREATE TRIGGER never_wrap BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION set_timestamp();
+          END $$;
         SQL
-        out = described_class.strip_triggers(sql)
-        expect(out.scan(/CREATE TRIGGER/i).size).to eq(0)
+        expect(described_class.wrap_create_trigger_in_do_block(sql)).to eq(sql)
       end
 
-      it 'removes a trigger with leading whitespace' do
-        sql = "  \tCREATE TRIGGER set_timestamp BEFORE UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION public.set_timestamp();\n"
-        out = described_class.strip_triggers(sql)
-        expect(out).not_to include('CREATE TRIGGER')
+      it 'handles a CRLF dump' do
+        sql = with_header(
+          'users set_timestamp',
+          'CREATE TRIGGER set_timestamp BEFORE UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION public.set_timestamp();',
+        ).gsub("\n", "\r\n")
+        out = described_class.wrap_create_trigger_in_do_block(sql)
+        expect(out).to include('DO $exwiw$ BEGIN')
+        expect(out).to include('CREATE TRIGGER set_timestamp')
       end
 
       it 'preserves non-trigger SQL unchanged' do
@@ -116,7 +172,7 @@ module Exwiw
           ALTER TABLE ONLY public.users ADD CONSTRAINT users_pkey PRIMARY KEY (id);
           CREATE INDEX IF NOT EXISTS idx_users ON public.users (id);
         SQL
-        expect(described_class.strip_triggers(sql)).to eq(sql)
+        expect(described_class.wrap_create_trigger_in_do_block(sql)).to eq(sql)
       end
     end
 
