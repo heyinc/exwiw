@@ -629,6 +629,47 @@ module Exwiw
         end
       end
 
+      describe "#pre_delete_sql" do
+        let(:pre_delete) { adapter.pre_delete_sql(shops_table(adapter_name)) }
+
+        it "switches the session into replica mode" do
+          expect(pre_delete).to include("set_config('session_replication_role', 'replica', false)")
+        end
+
+        it "downgrades a missing privilege to a WARNING instead of aborting the file" do
+          expect(pre_delete).to include("EXCEPTION WHEN insufficient_privilege")
+          expect(pre_delete).to include("RAISE WARNING")
+        end
+
+        describe "against a live database" do
+          let(:connection) { adapter.send(:connection) }
+
+          before do
+            connection.exec(<<~SQL)
+              CREATE TEMP TABLE delete_probe (id int PRIMARY KEY);
+              CREATE TEMP TABLE delete_probe_audit (note text);
+              CREATE FUNCTION pg_temp.record_delete() RETURNS trigger LANGUAGE plpgsql AS $probe$
+                BEGIN INSERT INTO delete_probe_audit VALUES ('deleted ' || OLD.id); RETURN OLD; END;
+              $probe$;
+              CREATE TRIGGER record_delete AFTER DELETE ON delete_probe
+                FOR EACH ROW EXECUTE FUNCTION pg_temp.record_delete();
+              INSERT INTO delete_probe (id) VALUES (1);
+            SQL
+          end
+
+          after do
+            connection.exec("SELECT set_config('session_replication_role', 'origin', false)")
+          end
+
+          it "keeps an ON DELETE trigger from firing during the delete pass" do
+            connection.exec(pre_delete)
+            connection.exec("DELETE FROM delete_probe WHERE id = 1")
+
+            expect(connection.exec("SELECT count(*) FROM delete_probe_audit").values).to eq([["0"]])
+          end
+        end
+      end
+
       describe "uuid/varchar type cast" do
         before do
           # Default: all columns are int8 (no cast needed)
