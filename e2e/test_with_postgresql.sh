@@ -59,14 +59,37 @@ for file in tmp/postgresql/delete-*.sql; do
   fi
 done
 
+# stderr is kept so the trigger-suppression assertion below can see whether the
+# `session_replication_role = 'replica'` block each insert-NNN file opens with
+# fell back to its WARNING. psql runs as the superuser here, so it must not.
+INSERT_LOG=$(mktemp)
 for file in tmp/postgresql/insert-*.sql; do
   echo "Run ${file}"
   if [ -n "$CI" ]; then
-    $PSQL_FILE_CMD -d "${TO_DATABASE_NAME}" -f "${file}" > /dev/null
+    $PSQL_FILE_CMD -d "${TO_DATABASE_NAME}" -f "${file}" 2>> "${INSERT_LOG}" > /dev/null
   else
-    docker compose exec postgres psql -U postgres -d "${TO_DATABASE_NAME}" -f "/e2e/${file}" > /dev/null
+    docker compose exec postgres psql -U postgres -d "${TO_DATABASE_NAME}" -f "/e2e/${file}" 2>> "${INSERT_LOG}" > /dev/null
   fi
 done
+
+# Every data file must disable triggers/FKs for its own load, and under a
+# privileged role it must succeed at it — the WARNING is the unprivileged
+# fallback, not an acceptable outcome here.
+echo "Verifying the data files suppress triggers during the load..."
+for file in tmp/postgresql/insert-*.sql; do
+  case "${file}" in */insert-000-schema.sql) continue ;; esac
+  if ! grep -q "set_config('session_replication_role', 'replica', false)" "${file}"; then
+    echo "✗ ${file} does not disable triggers for the load"
+    exit 1
+  fi
+done
+if grep -q 'could not disable triggers for the load' "${INSERT_LOG}"; then
+  echo "✗ The load fell back to firing triggers:"
+  grep 'could not disable triggers for the load' "${INSERT_LOG}"
+  exit 1
+fi
+rm -f "${INSERT_LOG}"
+echo "✓ Triggers and foreign keys were suppressed for the load"
 
 # The seed's trigger must be in the generated schema and on the target. The TO
 # database is seeded with the same dump, so the trigger already existed when

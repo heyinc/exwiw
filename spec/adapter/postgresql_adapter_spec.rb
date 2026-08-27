@@ -587,6 +587,48 @@ module Exwiw
         end
       end
 
+      describe "#pre_insert_sql" do
+        let(:pre_insert) { adapter.pre_insert_sql(shops_table(adapter_name)) }
+
+        it "switches the session into replica mode" do
+          expect(pre_insert).to include("set_config('session_replication_role', 'replica', false)")
+        end
+
+        it "downgrades a missing privilege to a WARNING instead of aborting the file" do
+          expect(pre_insert).to include("EXCEPTION WHEN insufficient_privilege")
+          expect(pre_insert).to include("RAISE WARNING")
+        end
+
+        # The temp table/trigger and the replica-mode setting both live on this
+        # adapter's connection only, so the seed database is untouched.
+        describe "against a live database" do
+          let(:connection) { adapter.send(:connection) }
+
+          before do
+            connection.exec(<<~SQL)
+              CREATE TEMP TABLE trigger_probe (id int PRIMARY KEY, touched boolean NOT NULL DEFAULT false);
+              CREATE FUNCTION pg_temp.mark_touched() RETURNS trigger LANGUAGE plpgsql AS $probe$
+                BEGIN NEW.touched := true; RETURN NEW; END;
+              $probe$;
+              CREATE TRIGGER mark_touched BEFORE INSERT ON trigger_probe
+                FOR EACH ROW EXECUTE FUNCTION pg_temp.mark_touched();
+            SQL
+          end
+
+          after do
+            connection.exec("SELECT set_config('session_replication_role', 'origin', false)")
+          end
+
+          it "runs, and keeps the table's triggers from firing during the load" do
+            connection.exec(pre_insert)
+            connection.exec("INSERT INTO trigger_probe (id) VALUES (1)")
+
+            expect(connection.exec("SELECT touched FROM trigger_probe").values).to eq([["f"]])
+            expect(connection.exec("SHOW session_replication_role").values).to eq([["replica"]])
+          end
+        end
+      end
+
       describe "uuid/varchar type cast" do
         before do
           # Default: all columns are int8 (no cast needed)

@@ -273,6 +273,40 @@ module Exwiw
         lines.join("\n")
       end
 
+      # Suppress trigger and foreign-key enforcement while the table's rows are
+      # loaded. insert-000-schema.sql carries the source's triggers now, so an
+      # unguarded load would fire every one of them per inserted row — with the
+      # rows already carrying the values those triggers produced on the source,
+      # and in an order that is only guaranteed to satisfy FKs once every
+      # insert-*.sql has been applied. `replica` mode turns off both user and
+      # system (RI) triggers, matching what MysqlAdapter does with
+      # FOREIGN_KEY_CHECKS.
+      #
+      # Setting the parameter needs superuser (or a grant on it), which a
+      # restore role may not have; the load itself is still valid without it,
+      # so a failure is downgraded to a WARNING rather than aborting the file.
+      #
+      # Unlike MysqlAdapter — and unlike `pg_dump --disable-triggers`, which
+      # pairs each table's DISABLE TRIGGER ALL with an ENABLE — no counterpart
+      # reset is emitted, so the file is NOT self-contained in session state:
+      # sourcing insert-*.sql into a session that goes on to do other work
+      # leaves that session in replica mode. `is_local = false` still bounds it
+      # to the connection, and every file re-arms the setting itself, so
+      # concatenating the files works either way — the reset would only buy
+      # tidiness, at the cost of emitting it unconditionally (post_insert_sql
+      # returns nil for a table with no serial PK) inside a second exception
+      # handler (a bare reset re-raises insufficient_privilege on the
+      # unprivileged path and would abort the file).
+      def pre_insert_sql(_table)
+        <<~SQL.chomp
+          DO $exwiw$ BEGIN
+            PERFORM set_config('session_replication_role', 'replica', false);
+          EXCEPTION WHEN insufficient_privilege THEN
+            RAISE WARNING 'exwiw: could not disable triggers for the load (%): %', SQLSTATE, SQLERRM;
+          END $exwiw$;
+        SQL
+      end
+
       # Transcribe the FROM-side sequence cursor backing `table.primary_key`
       # onto the import target. Without this, importing into a clean DB leaves
       # the sequence at 1 while the inserted rows occupy higher IDs, so the
