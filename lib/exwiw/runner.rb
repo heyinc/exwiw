@@ -196,6 +196,8 @@ module Exwiw
             end
             delete_idx = (total_size - idx).to_s.rjust(3, '0')
             File.open(File.join(@output_dir, "delete-#{delete_idx}-#{table_name}.#{adapter.output_extension}"), 'w') do |file|
+              pre = adapter.pre_delete_sql(table)
+              file.puts(pre) if pre
               file.puts(delete_sql)
             end
           end
