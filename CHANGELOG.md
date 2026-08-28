@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — PostgreSQL: `insert-000-schema.sql` now contains the source's triggers, wrapped in `DO $exwiw$ ... EXCEPTION WHEN duplicate_object`.** They used to be deleted from the dump, so a restored database silently ran none of them: an audit trigger recorded nothing, a timestamp trigger never fired, and the dump gave whoever restored it no way to add them back. The deletion existed because a `--table` dump emitted `CREATE TRIGGER` without the `CREATE FUNCTION` it references, failing the restore with `PG::UndefinedFunction`; the dump has since become a whole-database one that carries the functions too, so it was a leftover workaround rather than intended behavior — `mysqldump` and sqlite's `sqlite_master` have always emitted triggers. It is nonetheless a breaking change: dumps grow the trigger statements. They do not fire during the load, because each `insert-*.sql` now opens with the `session_replication_role = 'replica'` block described below. The DO block keeps the schema re-appliable, which a bare `CREATE TRIGGER` is not (`CREATE OR REPLACE TRIGGER` is PostgreSQL 14+ only and `pg_dump` never emits it).
+
+- **PostgreSQL: each `insert-NNN-<table>.sql` and `delete-NNN-<table>.sql` now opens with a `session_replication_role = 'replica'` block, so triggers and foreign keys do not fire while the target is loaded.** With the source's triggers now in the schema, an unguarded load would run every one of them once per inserted row — over rows that already carry the values those triggers produced on the source — and would enforce FKs against a target that is only complete once every `insert-*.sql` has been applied. The bulk `DELETE` that clears the target first is guarded for the same reason: it fires the `ON DELETE` triggers, and an audit trigger's rows would then collide with, or inflate, the ones the following `insert-*.sql` loads for real. This is the counterpart of the `FOREIGN_KEY_CHECKS=0` that `MysqlAdapter#pre_insert_sql` has always emitted. Setting the parameter requires superuser (`rds_superuser` on RDS); when the restoring role lacks it the block catches `insufficient_privilege` and downgrades to a `WARNING`, so the load still runs — with triggers firing, as it did before this release. The setting is connection-scoped (`set_config(..., false)`) and is not reset at the end of the file — every file re-arms it itself, so concatenating them works regardless, but sourcing them into a session that goes on to do other work leaves that session in replica mode.
+
+### Fixed
+
+- **PostgreSQL: a `CREATE TRIGGER` inside a function body is no longer rewritten.** The removed `DdlPostprocessor.strip_triggers` matched `^CREATE TRIGGER` anywhere, so it also deleted such a line from a dollar-quoted body, leaving a function that still compiled but no longer installed its trigger. Its replacement, `wrap_create_trigger_in_do_block`, anchors on the `-- Name: <table> <trigger>; Type: TRIGGER` header `pg_dump` writes before each trigger, which never appears inside a body. `CREATE CONSTRAINT TRIGGER` is handled, and a `;` inside a quoted trigger argument no longer truncates the statement.
+
 ## [0.9.24] - 2026-08-17
 
 ### Fixed

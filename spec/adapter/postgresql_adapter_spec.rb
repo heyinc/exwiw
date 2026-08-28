@@ -70,6 +70,82 @@ module Exwiw
           enum_match = sql.match(/AS ENUM \(([^)]+)\)/m)
           labels = enum_match[1].scan(/'([^']*(?:''[^']*)*)'/).flatten
           expect(labels).to eq(labels.uniq), "enum labels should not be duplicated: #{labels}"
+          # The source's triggers are kept, wrapped so re-applying the schema does
+          # not fail on duplicate_object; pg_dump's header is left as written.
+          expect(sql).to match(
+            /DO \$exwiw\$ BEGIN\s+CREATE TRIGGER suppress_redundant_user_updates\b.*?EXCEPTION WHEN duplicate_object/m,
+          )
+          expect(sql).to include('Type: TRIGGER')
+        end
+
+        # pg_dump is stubbed so the shape under test does not depend on the test
+        # DB owning a function of its own.
+        context "when the source instance carries triggers and trigger functions" do
+          let(:success_status) { instance_double(Process::Status, success?: true, exitstatus: 0) }
+          let(:dump_output) do
+            <<~SQL
+              --
+              -- Name: install_trigger(text); Type: FUNCTION; Schema: public; Owner: -
+              --
+
+              CREATE FUNCTION public.install_trigger(t text) RETURNS void
+                  LANGUAGE plpgsql
+                  AS $$
+              BEGIN
+              CREATE TRIGGER never_wrap BEFORE UPDATE ON shops FOR EACH ROW EXECUTE FUNCTION set_timestamp();
+              END $$;
+
+
+              --
+              -- Name: set_timestamp(); Type: FUNCTION; Schema: public; Owner: -
+              --
+
+              CREATE FUNCTION public.set_timestamp() RETURNS trigger
+                  LANGUAGE plpgsql
+                  AS $$
+              BEGIN NEW.updated_at = now(); RETURN NEW; END $$;
+
+
+              CREATE TABLE public.shops (
+                  id bigint NOT NULL
+              );
+
+
+              --
+              -- Name: shops set_timestamp; Type: TRIGGER; Schema: public; Owner: -
+              --
+
+              CREATE TRIGGER set_timestamp BEFORE UPDATE ON public.shops FOR EACH ROW EXECUTE FUNCTION public.set_timestamp();
+            SQL
+          end
+
+          before do
+            allow(Open3).to receive(:capture3)
+              .with(hash_including('PGPASSWORD'), 'pg_dump', any_args) { [dump_output, '', success_status] }
+          end
+
+          # A whole-database dump carries the functions its triggers reference, so
+          # both halves restore. (A `--table` dump emitted the trigger alone, which
+          # is why triggers used to be dropped.)
+          it "keeps the trigger next to the function it references" do
+            adapter.dump_schema([shops_table(adapter_name)], schema_path)
+
+            sql = File.read(schema_path)
+            expect(sql).to include('CREATE FUNCTION public.set_timestamp() RETURNS trigger')
+            expect(sql).to match(
+              /DO \$exwiw\$ BEGIN\s+CREATE TRIGGER set_timestamp BEFORE UPDATE ON public\.shops\b.*?EXCEPTION WHEN duplicate_object/m,
+            )
+          end
+
+          # Wrapping a statement inside a dollar-quoted body would change what the
+          # function does.
+          it "leaves a CREATE TRIGGER inside a function body alone" do
+            adapter.dump_schema([shops_table(adapter_name)], schema_path)
+
+            expect(File.read(schema_path)).to include(
+              "BEGIN\nCREATE TRIGGER never_wrap BEFORE UPDATE ON shops FOR EACH ROW EXECUTE FUNCTION set_timestamp();\nEND $$;",
+            )
+          end
         end
 
         # A managed platform (Cloud SQL / AlloyDB) installs extensions of its own
@@ -507,6 +583,89 @@ module Exwiw
             expect(lines[1]).to include("Shop\\twith\\ttabs")
             expect(lines[2]).to include("Shop\\\\with\\\\backslash")
             expect(lines[3]).to include("Shop\\nwith\\nnewlines")
+          end
+        end
+      end
+
+      describe "#pre_insert_sql" do
+        let(:pre_insert) { adapter.pre_insert_sql(shops_table(adapter_name)) }
+
+        it "switches the session into replica mode" do
+          expect(pre_insert).to include("set_config('session_replication_role', 'replica', false)")
+        end
+
+        it "downgrades a missing privilege to a WARNING instead of aborting the file" do
+          expect(pre_insert).to include("EXCEPTION WHEN insufficient_privilege")
+          expect(pre_insert).to include("RAISE WARNING")
+        end
+
+        # The temp table/trigger and the replica-mode setting both live on this
+        # adapter's connection only, so the seed database is untouched.
+        describe "against a live database" do
+          let(:connection) { adapter.send(:connection) }
+
+          before do
+            connection.exec(<<~SQL)
+              CREATE TEMP TABLE trigger_probe (id int PRIMARY KEY, touched boolean NOT NULL DEFAULT false);
+              CREATE FUNCTION pg_temp.mark_touched() RETURNS trigger LANGUAGE plpgsql AS $probe$
+                BEGIN NEW.touched := true; RETURN NEW; END;
+              $probe$;
+              CREATE TRIGGER mark_touched BEFORE INSERT ON trigger_probe
+                FOR EACH ROW EXECUTE FUNCTION pg_temp.mark_touched();
+            SQL
+          end
+
+          after do
+            connection.exec("SELECT set_config('session_replication_role', 'origin', false)")
+          end
+
+          it "runs, and keeps the table's triggers from firing during the load" do
+            connection.exec(pre_insert)
+            connection.exec("INSERT INTO trigger_probe (id) VALUES (1)")
+
+            expect(connection.exec("SELECT touched FROM trigger_probe").values).to eq([["f"]])
+            expect(connection.exec("SHOW session_replication_role").values).to eq([["replica"]])
+          end
+        end
+      end
+
+      describe "#pre_delete_sql" do
+        let(:pre_delete) { adapter.pre_delete_sql(shops_table(adapter_name)) }
+
+        it "switches the session into replica mode" do
+          expect(pre_delete).to include("set_config('session_replication_role', 'replica', false)")
+        end
+
+        it "downgrades a missing privilege to a WARNING instead of aborting the file" do
+          expect(pre_delete).to include("EXCEPTION WHEN insufficient_privilege")
+          expect(pre_delete).to include("RAISE WARNING")
+        end
+
+        describe "against a live database" do
+          let(:connection) { adapter.send(:connection) }
+
+          before do
+            connection.exec(<<~SQL)
+              CREATE TEMP TABLE delete_probe (id int PRIMARY KEY);
+              CREATE TEMP TABLE delete_probe_audit (note text);
+              CREATE FUNCTION pg_temp.record_delete() RETURNS trigger LANGUAGE plpgsql AS $probe$
+                BEGIN INSERT INTO delete_probe_audit VALUES ('deleted ' || OLD.id); RETURN OLD; END;
+              $probe$;
+              CREATE TRIGGER record_delete AFTER DELETE ON delete_probe
+                FOR EACH ROW EXECUTE FUNCTION pg_temp.record_delete();
+              INSERT INTO delete_probe (id) VALUES (1);
+            SQL
+          end
+
+          after do
+            connection.exec("SELECT set_config('session_replication_role', 'origin', false)")
+          end
+
+          it "keeps an ON DELETE trigger from firing during the delete pass" do
+            connection.exec(pre_delete)
+            connection.exec("DELETE FROM delete_probe WHERE id = 1")
+
+            expect(connection.exec("SELECT count(*) FROM delete_probe_audit").values).to eq([["0"]])
           end
         end
       end

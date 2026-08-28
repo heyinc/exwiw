@@ -818,6 +818,13 @@ CREATE INDEX index_users_on_shop_id ON public.users USING btree (shop_id);
 
 
 --
+-- Name: users suppress_redundant_user_updates; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER suppress_redundant_user_updates BEFORE UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION suppress_redundant_updates_trigger();
+
+
+--
 -- Name: transactions fk_rails_59d791a33f; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 

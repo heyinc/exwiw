@@ -78,4 +78,18 @@ if adapter == "postgresql"
   SQL
   conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role public.user_role;")
   conn.execute("ALTER TABLE shops ADD COLUMN IF NOT EXISTS owner_role public.user_role;")
+
+  # A trigger in the seed keeps the schema dump's trigger handling covered by the
+  # scenario tests. It executes the built-in suppress_redundant_updates_trigger()
+  # so the dump needs no CREATE FUNCTION of its own: pg_dump's bare
+  # `CREATE FUNCTION` is not re-appliable, which would fail
+  # e2e/test_with_postgresql.sh (it applies the schema to an already-seeded
+  # target) for a reason unrelated to triggers. BEFORE UPDATE also keeps it from
+  # firing during the insert-only restore.
+  conn.execute("DROP TRIGGER IF EXISTS suppress_redundant_user_updates ON users;")
+  conn.execute(<<~SQL)
+    CREATE TRIGGER suppress_redundant_user_updates
+      BEFORE UPDATE ON users FOR EACH ROW
+      EXECUTE FUNCTION suppress_redundant_updates_trigger();
+  SQL
 end

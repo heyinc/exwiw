@@ -115,6 +115,13 @@ module Exwiw
         nil
       end
 
+      # Optional SQL prepended to the per-table delete-NNN-<table>.* file before
+      # the bulk DELETE statement, for the session-level setup that statement
+      # needs. Default: nil (nothing prepended).
+      def pre_delete_sql(_table)
+        nil
+      end
+
       def to_copy_from_stdin(_results, _table)
         raise NotImplementedError, "COPY format is not supported by #{self.class.name}"
       end

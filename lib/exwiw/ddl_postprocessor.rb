@@ -58,10 +58,50 @@ module Exwiw
       end
     end
 
-    # pg_dump --table includes triggers but not the referenced function
-    # definitions, causing UndefinedFunction errors on the target DB.
-    def strip_triggers(sql)
-      sql.gsub(/^[ \t]*CREATE\s+(?:OR\s+REPLACE\s+)?(?:CONSTRAINT\s+)?TRIGGER\b[^;]*;\r?\n?/i, "")
+    # One trigger as pg_dump writes it: its header comment block ($1) followed by
+    # the `CREATE TRIGGER` statement ($2).
+    #
+    #   --
+    #   -- Name: users set_timestamp; Type: TRIGGER; Schema: public; Owner: -
+    #   --
+    #
+    #   CREATE TRIGGER set_timestamp BEFORE UPDATE ON public.users ...;
+    #
+    # The header is what keeps the pass off a `CREATE TRIGGER` line inside a
+    # dollar-quoted function body — a function that installs a trigger itself,
+    # whose meaning a rewrite would change. pg_dump never writes a header block
+    # inside a body, so requiring one limits the match to top-level statements.
+    # (The stripping pass this replaced matched the bare form and deleted such a
+    # line, leaving a function that compiled but installed nothing.)
+    #
+    # The statement ends at the first semicolon outside a single-quoted string, so
+    # a `;` in a WHEN clause or an argument (`EXECUTE FUNCTION f('a;b')`) does not
+    # truncate it. A trigger definition has no body, so no dollar quoting either.
+    CREATE_TRIGGER_RE = /
+      (^--\r?\n
+       --[ \t]+Name:[^\n]*;[ \t]*Type:[ \t]*TRIGGER;[^\n]*\r?\n
+       --\r?\n
+       (?:[ \t]*\r?\n)*)
+      ([ \t]*CREATE\s+(?:OR\s+REPLACE\s+)?(?:CONSTRAINT\s+)?TRIGGER\b
+       (?:[^;']|'(?:[^']|'')*')*;)
+    /xi.freeze
+
+    # A bare `CREATE TRIGGER ...;` is not idempotent (a second restore raises
+    # `duplicate_object`, 42710), so each statement goes into a DO block that
+    # swallows that error, in the form #wrap_add_constraint_in_do_block uses; the
+    # header is left as written. `CREATE OR REPLACE TRIGGER` would be shorter but
+    # is PostgreSQL 14+ only and pg_dump never emits it.
+    def wrap_create_trigger_in_do_block(sql)
+      sql.gsub(CREATE_TRIGGER_RE) do
+        header = Regexp.last_match(1)
+        stmt = Regexp.last_match(2).strip
+        <<~SQL.chomp
+          #{header}DO $exwiw$ BEGIN
+            #{stmt}
+          EXCEPTION WHEN duplicate_object THEN NULL;
+          END $exwiw$;
+        SQL
+      end
     end
 
     # A user@host pair as mysqldump writes it. Each side is independently a
