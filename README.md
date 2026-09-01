@@ -323,7 +323,7 @@ Notes:
 
 - **Database connection settings stay on the CLI/environment.** `host`, `port`, `user`, `database`, `uri`, and `password` are **rejected** in the config file (exwiw exits with an error). `adapter` is the one connection-related key that *is* allowed in the file.
 - **Relative paths in the config (`schema_dir`, `output_dir`, `after_insert_hook`) are resolved relative to the config file's own directory**, not the current working directory. So with the config at the project root, `schema_dir: exwiw/schema` reads naturally, and an absolute `--config=/path/to/exwiw.yml` works no matter where you run from. (CLI path flags remain relative to the current directory — each source resolves relative to where it is written.) Absolute paths are used as-is.
-- Unknown keys are rejected so a typo surfaces immediately.
+- Unknown keys are rejected so a typo surfaces immediately. (`insert_only`, whose behavior was removed, is the one grandfathered key: accepted and ignored with a warning.)
 - Export-only keys (`output_dir`, `output_format`, `after_insert_hook`) are ignored when running `explain` or `schema`, so a single config file can be shared by every subcommand.
 - `explain_verbosity` sets the mongodb `explain` verbosity (`queryPlanner` | `executionStats` | `allPlansExecution`, default `queryPlanner`); the `EXWIW_MONGODB_EXPLAIN_VERBOSITY` env var overrides it. Ignored by the SQL adapters and by `export`. See [MongoDB support](docs/mongodb.md#exwiw-explain-verbosity).
 - `mongodb_query_timeout_ms` sets the global, server-enforced query timeout (mongodb only); the `--mongodb-query-timeout-ms` CLI flag overrides it. Ignored by the SQL adapters. See [MongoDB support](docs/mongodb.md).

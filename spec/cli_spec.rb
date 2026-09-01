@@ -148,6 +148,13 @@ module Exwiw
       end
     end
 
+    describe '--insert-only (obsolete)' do
+      it 'is accepted and ignored with a warning' do
+        expect { CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3', '--insert-only']) }
+          .to output(/--insert-only is obsolete and ignored/).to_stderr
+      end
+    end
+
     describe '--ids-field validation' do
       def run_cli(argv)
         CLI.new(argv).run
@@ -715,6 +722,14 @@ module Exwiw
         cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3', "--config=#{path}"])
         cli.send(:apply_config_file!)
         expect(cli.instance_variable_get(:@ids)).to eq(['1', '2'])
+      end
+
+      it 'accepts the obsolete insert_only key with a warning instead of rejecting it' do
+        path = write_config("schema_dir: e2e/sqlite-schema\ninsert_only: true\n")
+        cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3', "--config=#{path}"])
+        expect { cli.send(:apply_config_file!) }
+          .to output(/config key 'insert_only' .* is obsolete and ignored/).to_stderr
+        expect(cli.instance_variable_get(:@schema_dir)).to eq(File.expand_path('e2e/sqlite-schema', @tmpdir))
       end
 
       it 'rejects database connection keys in the config file' do

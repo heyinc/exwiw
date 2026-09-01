@@ -57,6 +57,11 @@ module Exwiw
     EXPLAIN_VERBOSITIES = %w[queryPlanner executionStats allPlansExecution].freeze
     DEFAULT_EXPLAIN_VERBOSITY = "queryPlanner"
 
+    # Keys that configured behavior that no longer exists (insert_only toggled
+    # the removed delete-*.sql generation). Accepted so a committed config file
+    # keeps working across the upgrade, warned about so it gets cleaned up.
+    OBSOLETE_CONFIG_KEYS = %w[insert_only].freeze
+
     # Database connection settings are environment-specific (and sometimes
     # secret-adjacent), so they must be passed via CLI/env, never the committed
     # config file. `adapter` is the one connection-ish key allowed in config.
@@ -421,6 +426,10 @@ module Exwiw
         if REJECTED_CONNECTION_KEYS.include?(key)
           $stderr.puts "'#{key}' is a database connection setting and must be passed via the CLI/environment, not the config file (#{path})"
           exit 1
+        end
+        if OBSOLETE_CONFIG_KEYS.include?(key)
+          $stderr.puts "warning: config key '#{key}' in #{path} is obsolete and ignored (exwiw no longer generates delete-*.sql files); remove it from the config file"
+          next
         end
         unless ALLOWED_CONFIG_KEYS.include?(key)
           $stderr.puts "Unknown config key '#{key}' in #{path}. Allowed keys: #{ALLOWED_CONFIG_KEYS.join(', ')}"
@@ -809,6 +818,9 @@ module Exwiw
         opts.on("--ids-field=[FIELD]", "Field on the target collection that --ids is matched against. Defaults to the primary key. (mongodb adapter only)") { |v| @ids_field = v }
         opts.on("--scope-column=[COLUMN]", "DEPRECATED. Filter every table by this shared global column (--ids are its values) instead of a single --target-table. SQL adapters only; mutually exclusive with --target-table. Prefer declaring a per-table `scope_column:` in the schema config and running with --target-table.") { |v| @scope_column = v }
         opts.on("--output-format=[FORMAT]", "Output format: insert (default) or copy (PostgreSQL only, export subcommand only)") { |v| @output_format = v }
+        opts.on("--insert-only", "DEPRECATED: ignored. exwiw no longer generates delete-*.sql files, so every export is insert-only.") do
+          $stderr.puts "warning: --insert-only is obsolete and ignored (exwiw no longer generates delete-*.sql files); remove the flag"
+        end
         opts.on("--after-insert-hook=PATH", "Path to a .rb or .sh post-processing hook executed after all insert files are written (export subcommand only)") do |v|
           @after_insert_hook_path = File.expand_path(v)
         end
