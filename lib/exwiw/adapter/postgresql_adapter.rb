@@ -24,8 +24,8 @@ module Exwiw
       #     unchanged, so MongoDB and the other SQL adapters are untouched.
       #   - the streaming pass ties up the connection until fully drained. The
       #     Runner always drains it (write_inserts) before issuing any further
-      #     query (post_insert_sql / DELETE) on the same connection, so the
-      #     ordering invariant holds.
+      #     query (post_insert_sql) on the same connection, so the ordering
+      #     invariant holds.
       class StreamingResult
         include Enumerable
 

@@ -103,8 +103,8 @@ module Exwiw
 
           # `batch_scope` splits the extraction into one query per slice of the
           # scope's id set, streaming rows like any adapter result. `query_ast`
-          # stays the unbatched query — the DELETE file and the error message
-          # below describe that one.
+          # stays the unbatched query — the error message below describes that
+          # one.
           phase = "resolving the batch_scope id set"
           batched = BatchedExtraction.build(
             adapter: adapter,

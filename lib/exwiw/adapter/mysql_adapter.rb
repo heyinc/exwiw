@@ -26,7 +26,7 @@ module Exwiw
       #     so the row count is independent of the projected columns.
       #   - the stream ties up the connection until fully drained. The Runner
       #     always drains it (write_inserts) before any further query
-      #     (post_insert_sql / DELETE), and MysqlClient#stream_rows drains the
+      #     (post_insert_sql), and MysqlClient#stream_rows drains the
       #     remainder if iteration is abandoned, so the connection stays usable.
       class StreamingResult
         include Enumerable

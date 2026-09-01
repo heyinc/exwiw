@@ -170,8 +170,8 @@ module Exwiw
 
       # The subset of SQLite keywords (https://sqlite.org/lang_keywords.html)
       # that actually fail to parse as bare identifiers in the positions exwiw
-      # emits (qualified column, INSERT column list, FROM/DELETE/JOIN table
-      # name, CASE masking, derived-table scope JOIN). SQLite's parser accepts
+      # emits (qualified column, INSERT column list, FROM/JOIN table name,
+      # CASE masking, derived-table scope JOIN). SQLite's parser accepts
       # the other ~half of its keywords as identifiers via fallback (e.g.
       # `key`, `temp`, `row`), and those are deliberately NOT quoted so output
       # for such names stays byte-identical with previous releases — a name in

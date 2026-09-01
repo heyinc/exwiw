@@ -213,8 +213,8 @@ module Exwiw
 
         # Every SQL shape exwiw emits, with the keyword in each identifier
         # position (qualified column, masking CASE, WHERE key, INSERT column
-        # list, FROM/qualified-star/DELETE/JOIN table name, scope-join
-        # derived table, flat IN subquery).
+        # list, FROM/qualified-star/JOIN table name, scope-join derived
+        # table, flat IN subquery).
         def keyword_parses_bare?(keyword)
           db = ::SQLite3::Database.new(":memory:")
           db.execute(%(CREATE TABLE t (id INTEGER PRIMARY KEY, "#{keyword}" TEXT)))
@@ -226,7 +226,6 @@ module Exwiw
             "INSERT INTO t (id, #{keyword}) VALUES (1, 'x')",
             "SELECT id FROM #{keyword}",
             "SELECT #{keyword}.* FROM #{keyword}",
-            "DELETE FROM #{keyword}",
             "SELECT t.id FROM t JOIN #{keyword} ON t.id = #{keyword}.id",
             "SELECT t.id FROM t JOIN (SELECT DISTINCT s.#{keyword} AS x FROM (SELECT t.#{keyword} FROM t) AS s) AS ids ON t.id = ids.x",
             "SELECT t.id FROM t WHERE t.id IN (SELECT #{keyword}.id FROM #{keyword} WHERE #{keyword}.id IN (1))",
