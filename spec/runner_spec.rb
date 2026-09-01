@@ -219,34 +219,6 @@ module Exwiw
       end
     end
 
-    describe 'with insert_only' do
-      let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1']) }
-      let(:runner) do
-        Runner.new(
-          connection_config: connection_config,
-          output_dir: output_dir,
-          schema_dir: schema_dir,
-          dump_target: dump_target,
-          insert_only: true,
-          logger: ::Logger.new(nil),
-        )
-      end
-
-      before do
-        FileUtils.cp('e2e/sqlite-schema/shops.json', File.join(schema_dir, 'shops.json'))
-      end
-
-      it 'does not generate delete files' do
-        runner.run
-
-        insert_files = Dir[File.join(output_dir, 'insert-*-shops.sql')]
-        expect(insert_files).not_to be_empty
-
-        delete_files = Dir[File.join(output_dir, 'delete-*.sql')]
-        expect(delete_files).to be_empty
-      end
-    end
-
     describe 'when the extraction query matches zero rows' do
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['999999']) }
       let(:log_io) { StringIO.new }
@@ -267,11 +239,10 @@ module Exwiw
       # Regression guard for runner.rb's `record_num.zero?` short-circuit: a
       # zero-row table must be skipped entirely rather than fed to
       # to_bulk_insert, which would otherwise emit broken `INSERT ... VALUES ;`.
-      it 'skips the table without emitting insert or delete files' do
+      it 'skips the table without emitting an insert file' do
         expect { runner.run }.not_to raise_error
 
         expect(Dir[File.join(output_dir, 'insert-*-shops.sql')]).to be_empty
-        expect(Dir[File.join(output_dir, 'delete-*-shops.sql')]).to be_empty
         expect(log_io.string).to include('No records matched. skip this table.')
       end
     end
@@ -312,14 +283,6 @@ module Exwiw
         expect(File.read(insert_file).scan(/INSERT INTO/).size).to eq(1)
         expect(log_io.string).to include('Extracting in 2 batch(es) of up to 4 orders.id value(s) (6 in scope)')
         expect(log_io.string).to include('Generated INSERT statement for 6 records')
-      end
-
-      # The DELETE clears the import target, so it must cover the whole scope.
-      it 'generates the delete file from the unbatched query' do
-        runner.run
-
-        delete_file = Dir[File.join(output_dir, 'delete-*-order_items.sql')].first
-        expect(File.read(delete_file)).to include("SELECT orders.id FROM orders WHERE orders.shop_id = '1'")
       end
 
       it 'aborts pre-flight, before any output, when the scope shape cannot be sliced' do
@@ -436,11 +399,10 @@ module Exwiw
         File.write(File.join(schema_dir, 'system_announcements.json'), JSON.dump(announcements))
       end
 
-      it 'emits schema for the ignored table but no insert/delete files' do
+      it 'emits schema for the ignored table but no insert files' do
         runner.run
 
         expect(Dir[File.join(output_dir, 'insert-*-system_announcements.sql')]).to be_empty
-        expect(Dir[File.join(output_dir, 'delete-*-system_announcements.sql')]).to be_empty
 
         schema_file = File.join(output_dir, 'insert-000-schema.sql')
         expect(File.exist?(schema_file)).to be(true)
@@ -537,13 +499,6 @@ module Exwiw
         sql_file = Dir[File.join(output_dir, 'insert-*-shops.sql')].first
         sql = File.read(sql_file)
         expect(sql).to include('pg_catalog.setval')
-      end
-
-      it 'still generates delete files' do
-        runner.run
-
-        delete_files = Dir[File.join(output_dir, 'delete-*.sql')]
-        expect(delete_files).not_to be_empty
       end
 
       context 'when the extraction query matches zero rows' do

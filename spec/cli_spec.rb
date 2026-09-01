@@ -66,12 +66,6 @@ module Exwiw
         expect { run_cli(argv) }.to raise_error(SystemExit).and output(/not applicable in 'explain'/).to_stderr
       end
 
-      it 'rejects --insert-only with explain' do
-        argv = ['explain', '--adapter=sqlite', '--database=tmp/test.sqlite3',
-                '--schema-dir=e2e/sqlite-schema', '--insert-only']
-        expect { run_cli(argv) }.to raise_error(SystemExit).and output(/not applicable in 'explain'/).to_stderr
-      end
-
       it 'rejects --output-dir with explain' do
         argv = ['explain', '--adapter=sqlite', '--database=tmp/test.sqlite3',
                 '--schema-dir=e2e/sqlite-schema', '--output-dir=tmp/x']
