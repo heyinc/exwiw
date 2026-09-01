@@ -14,7 +14,7 @@ mkdir -p tmp/sqlite
 # (sqlite_sequence is internal; sqlite3 refuses to CREATE it explicitly.)
 cp e2e/initdb/init.sqlite3 $TARGET_DB_PATH
 rm -f $NEW_DB_PATH
-sed '/sqlite_sequence/d' seed/sqlite-schema.sql | sqlite3 $NEW_DB_PATH
+grep -vxF 'CREATE TABLE sqlite_sequence(name,seq);' seed/sqlite-schema.sql | sqlite3 $NEW_DB_PATH
 
 # run exwiw
 bundle exec exe/exwiw \
