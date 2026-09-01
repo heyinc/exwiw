@@ -22,9 +22,9 @@ raise "database name required" if database_name.nil? || database_name.empty?
 
 client = MongodbScenario.client(database_name)
 
-# MongoDB adapter does not emit delete-*.jsonl, so the default scenario drops
-# each target collection before inserting. The from-clean scenario opts out
-# via --no-drop because the empty target was just set up by insert-000-schema.js.
+# exwiw emits no delete files, so the default scenario drops each target
+# collection before inserting. The from-clean scenario opts out via --no-drop
+# because the empty target was just set up by insert-000-schema.js.
 files = Dir.glob(File.join(input_dir, "insert-*.jsonl")).sort
 
 unless no_drop

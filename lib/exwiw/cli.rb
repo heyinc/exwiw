@@ -39,7 +39,6 @@ module Exwiw
       schema_dir
       output_dir
       output_format
-      insert_only
       after_insert_hook
       log_level
       target_table
@@ -58,6 +57,11 @@ module Exwiw
     EXPLAIN_VERBOSITIES = %w[queryPlanner executionStats allPlansExecution].freeze
     DEFAULT_EXPLAIN_VERBOSITY = "queryPlanner"
 
+    # Keys that configured behavior that no longer exists (insert_only toggled
+    # the removed delete-*.sql generation). Accepted so a committed config file
+    # keeps working across the upgrade, warned about so it gets cleaned up.
+    OBSOLETE_CONFIG_KEYS = %w[insert_only].freeze
+
     # Database connection settings are environment-specific (and sometimes
     # secret-adjacent), so they must be passed via CLI/env, never the committed
     # config file. `adapter` is the one connection-ish key allowed in config.
@@ -66,7 +70,7 @@ module Exwiw
     # Keys that only make sense for `export`. They are skipped when merging config
     # for `explain` so a shared config file does not trip validate_explain_only!,
     # and for `schema`, which performs no export at all.
-    EXPORT_ONLY_CONFIG_KEYS = %w[output_dir output_format insert_only after_insert_hook parallel_workers].freeze
+    EXPORT_ONLY_CONFIG_KEYS = %w[output_dir output_format after_insert_hook parallel_workers].freeze
 
     def self.start(argv)
       new(argv).run
@@ -111,7 +115,6 @@ module Exwiw
       @ids_field = nil
       @scope_column = nil
       @output_format = nil
-      @insert_only = nil
       @after_insert_hook_path = nil
       @parallel_workers = nil
       @mongodb_query_timeout_ms = nil
@@ -160,7 +163,6 @@ module Exwiw
           schema_dir: @schema_dir,
           dump_target: dump_target,
           output_format: @output_format,
-          insert_only: @insert_only,
           after_insert_hook_path: @after_insert_hook_path,
           parallel_workers: @parallel_workers,
           cli_options: build_cli_options_hash,
@@ -333,7 +335,6 @@ module Exwiw
       if @subcommand == "export"
         @output_dir ||= "dump"
         @output_format ||= "insert"
-        @insert_only = @insert_only ? true : false
 
         valid_output_formats = ["insert", "copy"]
         unless valid_output_formats.include?(@output_format)
@@ -426,6 +427,10 @@ module Exwiw
           $stderr.puts "'#{key}' is a database connection setting and must be passed via the CLI/environment, not the config file (#{path})"
           exit 1
         end
+        if OBSOLETE_CONFIG_KEYS.include?(key)
+          $stderr.puts "warning: config key '#{key}' in #{path} is obsolete and ignored (exwiw no longer generates delete-*.sql files); remove it from the config file"
+          next
+        end
         unless ALLOWED_CONFIG_KEYS.include?(key)
           $stderr.puts "Unknown config key '#{key}' in #{path}. Allowed keys: #{ALLOWED_CONFIG_KEYS.join(', ')}"
           exit 1
@@ -443,7 +448,6 @@ module Exwiw
       @output_dir ||= expand_dir(config["output_dir"], base)
       @after_insert_hook_path ||= (File.expand_path(config["after_insert_hook"], base) if config["after_insert_hook"])
       @output_format ||= config["output_format"]
-      @insert_only = config["insert_only"] if @insert_only.nil? && config.key?("insert_only")
       @log_level ||= config["log_level"]&.to_sym
       @target_table_name ||= config["target_table"]
       @target_collection_name ||= config["target_collection"]
@@ -679,7 +683,6 @@ module Exwiw
       rejected = []
       rejected << "--output-dir" unless @output_dir.nil?
       rejected << "--output-format" unless @output_format.nil?
-      rejected << "--insert-only" unless @insert_only.nil?
       rejected << "--after-insert-hook" unless @after_insert_hook_path.nil?
       rejected << "--parallel-workers" unless @parallel_workers.nil?
 
@@ -744,7 +747,6 @@ module Exwiw
         ids_field: @ids_field,
         scope_column: @scope_column,
         output_format: @output_format,
-        insert_only: @insert_only,
         log_level: @log_level,
         after_insert_hook: @after_insert_hook_path,
       }.freeze
@@ -816,8 +818,10 @@ module Exwiw
         opts.on("--ids-field=[FIELD]", "Field on the target collection that --ids is matched against. Defaults to the primary key. (mongodb adapter only)") { |v| @ids_field = v }
         opts.on("--scope-column=[COLUMN]", "DEPRECATED. Filter every table by this shared global column (--ids are its values) instead of a single --target-table. SQL adapters only; mutually exclusive with --target-table. Prefer declaring a per-table `scope_column:` in the schema config and running with --target-table.") { |v| @scope_column = v }
         opts.on("--output-format=[FORMAT]", "Output format: insert (default) or copy (PostgreSQL only, export subcommand only)") { |v| @output_format = v }
-        opts.on("--insert-only", "Do not generate DELETE SQL files (export subcommand only)") { @insert_only = true }
-        opts.on("--after-insert-hook=PATH", "Path to a .rb or .sh post-processing hook executed after all insert/delete files are written (export subcommand only)") do |v|
+        opts.on("--insert-only", "DEPRECATED: ignored. exwiw no longer generates delete-*.sql files, so every export is insert-only.") do
+          $stderr.puts "warning: --insert-only is obsolete and ignored (exwiw no longer generates delete-*.sql files); remove the flag"
+        end
+        opts.on("--after-insert-hook=PATH", "Path to a .rb or .sh post-processing hook executed after all insert files are written (export subcommand only)") do |v|
           @after_insert_hook_path = File.expand_path(v)
         end
         opts.on("--parallel-workers=N", Integer, "Fork N workers for the MongoDB dump's parallel schedule (mongodb + export only; N>=2 enables it, default is serial). Output is byte-identical to serial; falls back to serial where fork is unavailable.") { |v| @parallel_workers = v }

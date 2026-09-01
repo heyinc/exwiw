@@ -617,104 +617,6 @@ module Exwiw
         end
       end
 
-      describe "#to_bulk_delete" do
-        context "simple select query" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_select_shops_ast, shops_table(adapter_name)) }
-
-          it "builds sql" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM shops
-              WHERE shops.id = 1;
-            SQL
-          end
-        end
-
-        context "select query with masking" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_select_users_ast, users_table(adapter_name)) }
-
-          it "builds sql" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM users
-              WHERE users.shop_id = 1;
-            SQL
-          end
-        end
-
-        context "select query with filter" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_select_users_ast("users.id > 1"), users_table(adapter_name)) }
-
-          it "ignores filter option" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM users
-              WHERE users.shop_id = 1;
-            SQL
-          end
-        end
-
-        context "select query with one join" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_order_items_ast, order_items_table(adapter_name)) }
-
-          it "ignores filter option" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM order_items
-              WHERE order_items.order_id IN (SELECT orders.id FROM orders WHERE orders.shop_id = 1);
-            SQL
-          end
-        end
-
-        context "select query with one join, one filter" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_order_items_ast("order_items.id > 1", nil), order_items_table(adapter_name)) }
-
-          it "ignores filter option" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM order_items
-              WHERE order_items.order_id IN (SELECT orders.id FROM orders WHERE orders.shop_id = 1);
-            SQL
-          end
-        end
-
-        context "select query with filter on join" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_order_items_ast(nil, "orders.id > 1"), order_items_table(adapter_name)) }
-
-          it "ignores filter option" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM order_items
-              WHERE order_items.order_id IN (SELECT orders.id FROM orders WHERE orders.shop_id = 1);
-            SQL
-          end
-        end
-
-        context "select query with filter on join and filter on where" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_order_items_ast("order_items.id > 1", "orders.id > 1"), order_items_table(adapter_name)) }
-
-          it "ignores filter option" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM order_items
-              WHERE order_items.order_id IN (SELECT orders.id FROM orders WHERE orders.shop_id = 1);
-            SQL
-          end
-        end
-
-        context "select query with a polymorphic join (base_where_clauses)" do
-          let(:comments_table) do
-            Exwiw::TableConfig.from_symbol_keys(
-              name: 'comments',
-              primary_key: 'id',
-              belongs_tos: [],
-              columns: [{ name: 'id' }, { name: 'commentable_type' }, { name: 'commentable_id' }],
-            )
-          end
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_comments_polymorphic_join_ast, comments_table) }
-
-          it "keeps the polymorphic type filter on the outer delete to avoid deleting other types" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM comments
-              WHERE comments.commentable_id IN (SELECT posts.id FROM posts WHERE posts.user_id = 1) AND comments.commentable_type = 'Post';
-            SQL
-          end
-        end
-      end
-
       describe "reserved-word identifier quoting" do
         context "select query on a reserved-word table with reserved-word columns" do
           let(:sql) { adapter.compile_ast(build_reserved_word_select_ast) }
@@ -753,17 +655,6 @@ module Exwiw
             expect(bulk_insert_sql.strip).to eq(<<~SQL.strip)
               INSERT INTO "order" (id, "from", "to") VALUES
               (1, 1, 'x');
-            SQL
-          end
-        end
-
-        context "bulk delete scoped by a reserved-word column" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_reserved_word_select_ast, reserved_word_table) }
-
-          it "double-quotes the reserved identifiers in DELETE" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM "order"
-              WHERE "order"."from" = 1;
             SQL
           end
         end
@@ -828,20 +719,6 @@ module Exwiw
 
             it "round-trips the extracted rows" do
               expect(restore_db.execute(%(SELECT id, "from", "to" FROM "order"))).to eq([[1, 1, "masked-1"]])
-            end
-          end
-
-          context "applying the generated DELETE to the source database" do
-            before do
-              db = ::SQLite3::Database.new(source_db_file.path)
-              db.execute_batch(reserved_adapter.to_bulk_delete(build_reserved_word_select_ast, reserved_word_table))
-              db.close
-            end
-
-            it "removes only the scoped row" do
-              db = ::SQLite3::Database.new(source_db_file.path)
-              expect(db.execute(%(SELECT id FROM "order"))).to eq([[2]])
-              db.close
             end
           end
         end
@@ -951,20 +828,6 @@ module Exwiw
 
         it "does not confuse arms that share a foreign-key value" do
           expect(poly_adapter.execute(comments_ast).to_a.map(&:first)).not_to include(5)
-        end
-
-        context "the generated DELETE" do
-          before do
-            db = ::SQLite3::Database.new(poly_db_file.path)
-            db.execute_batch(poly_adapter.to_bulk_delete(comments_ast, comments))
-            db.close
-          end
-
-          it "removes exactly the rows the extraction keeps" do
-            db = ::SQLite3::Database.new(poly_db_file.path)
-            expect(db.execute("SELECT id FROM comments ORDER BY id")).to eq([[3], [4], [5]])
-            db.close
-          end
         end
       end
     end

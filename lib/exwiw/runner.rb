@@ -11,7 +11,6 @@ module Exwiw
       dump_target:,
       logger:,
       output_format: 'insert',
-      insert_only: false,
       after_insert_hook_path: nil,
       parallel_workers: nil,
       cli_options: {}
@@ -21,7 +20,6 @@ module Exwiw
       @schema_dir = schema_dir
       @dump_target = dump_target
       @output_format = output_format
-      @insert_only = insert_only
       @after_insert_hook_path = after_insert_hook_path
       @parallel_workers = parallel_workers
       @cli_options = cli_options
@@ -105,8 +103,8 @@ module Exwiw
 
           # `batch_scope` splits the extraction into one query per slice of the
           # scope's id set, streaming rows like any adapter result. `query_ast`
-          # stays the unbatched query — the DELETE file and the error message
-          # below describe that one.
+          # stays the unbatched query — the error message below describes that
+          # one.
           phase = "resolving the batch_scope id set"
           batched = BatchedExtraction.build(
             adapter: adapter,
@@ -183,23 +181,6 @@ module Exwiw
             end
 
             @logger.info("  Generated INSERT statement for #{record_num} records (#{statement_count} statement(s)).")
-          end
-
-          if adapter.supports_bulk_delete? && !@insert_only && !(table.respond_to?(:rails_managed?) && table.rails_managed?)
-            phase = "generating DELETE statement"
-            @logger.debug("  Generate DELETE statement...")
-            delete_sql = adapter.to_bulk_delete(query_ast, table)
-            if @logger.debug?
-              @logger.debug("  Generated DELETE statement:\n#{delete_sql}")
-            else
-              @logger.info("  Generated DELETE statement.")
-            end
-            delete_idx = (total_size - idx).to_s.rjust(3, '0')
-            File.open(File.join(@output_dir, "delete-#{delete_idx}-#{table_name}.#{adapter.output_extension}"), 'w') do |file|
-              pre = adapter.pre_delete_sql(table)
-              file.puts(pre) if pre
-              file.puts(delete_sql)
-            end
           end
         rescue => e
           @logger.error("Error while #{phase} for table '#{table_name}' (#{idx + 1}/#{total_size}): #{e.class}: #{e.message}")

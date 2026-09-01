@@ -4,8 +4,6 @@
 # The TO database file starts non-existent / empty (no tables), so the run
 # must succeed purely on the strength of insert-000-schema.sql creating the
 # schema before the subsequent insert-*.sql statements run.
-#
-# The delete-*.sql pass is skipped because the TO database has no tables.
 
 set -e
 

@@ -629,47 +629,6 @@ module Exwiw
         end
       end
 
-      describe "#pre_delete_sql" do
-        let(:pre_delete) { adapter.pre_delete_sql(shops_table(adapter_name)) }
-
-        it "switches the session into replica mode" do
-          expect(pre_delete).to include("set_config('session_replication_role', 'replica', false)")
-        end
-
-        it "downgrades a missing privilege to a WARNING instead of aborting the file" do
-          expect(pre_delete).to include("EXCEPTION WHEN insufficient_privilege")
-          expect(pre_delete).to include("RAISE WARNING")
-        end
-
-        describe "against a live database" do
-          let(:connection) { adapter.send(:connection) }
-
-          before do
-            connection.exec(<<~SQL)
-              CREATE TEMP TABLE delete_probe (id int PRIMARY KEY);
-              CREATE TEMP TABLE delete_probe_audit (note text);
-              CREATE FUNCTION pg_temp.record_delete() RETURNS trigger LANGUAGE plpgsql AS $probe$
-                BEGIN INSERT INTO delete_probe_audit VALUES ('deleted ' || OLD.id); RETURN OLD; END;
-              $probe$;
-              CREATE TRIGGER record_delete AFTER DELETE ON delete_probe
-                FOR EACH ROW EXECUTE FUNCTION pg_temp.record_delete();
-              INSERT INTO delete_probe (id) VALUES (1);
-            SQL
-          end
-
-          after do
-            connection.exec("SELECT set_config('session_replication_role', 'origin', false)")
-          end
-
-          it "keeps an ON DELETE trigger from firing during the delete pass" do
-            connection.exec(pre_delete)
-            connection.exec("DELETE FROM delete_probe WHERE id = 1")
-
-            expect(connection.exec("SELECT count(*) FROM delete_probe_audit").values).to eq([["0"]])
-          end
-        end
-      end
-
       describe "uuid/varchar type cast" do
         before do
           # Default: all columns are int8 (no cast needed)
@@ -757,16 +716,6 @@ module Exwiw
           end
         end
 
-        context "to_bulk_delete with uuid/varchar mismatch" do
-          it "casts both sides in the IN clause" do
-            allow(adapter).to receive(:column_pg_type).with("order_items", "order_id").and_return('varchar')
-            allow(adapter).to receive(:column_pg_type).with("orders", "id").and_return('uuid')
-
-            sql = adapter.to_bulk_delete(build_order_items_ast, order_items_table(adapter_name))
-            expect(sql).to include("order_items.order_id::text IN (SELECT orders.id::text FROM orders")
-          end
-        end
-
         context "compile_ast with a UnionSubquery and matching arm types" do
           it "materializes the UNION as a derived-table JOIN, casting nothing" do
             sql = adapter.compile_ast(build_reverse_scope_union_ast)
@@ -844,85 +793,6 @@ module Exwiw
         end
       end
 
-      describe "#to_bulk_delete" do
-        context "simple select query" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_select_shops_ast, shops_table(adapter_name)) }
-
-          it "builds sql" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM shops
-              WHERE shops.id = 1;
-            SQL
-          end
-        end
-
-        context "select query with masking" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_select_users_ast, users_table(adapter_name)) }
-
-          it "builds sql" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM users
-              WHERE users.shop_id = 1;
-            SQL
-          end
-        end
-
-        context "select query with filter" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_select_users_ast("users.id > 1"), users_table(adapter_name)) }
-
-          it "ignores filter option" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM users
-              WHERE users.shop_id = 1;
-            SQL
-          end
-        end
-
-        context "select query with one join" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_order_items_ast, order_items_table(adapter_name)) }
-
-          it "ignores filter option" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM order_items
-              WHERE order_items.order_id IN (SELECT orders.id FROM orders WHERE orders.shop_id = 1);
-            SQL
-          end
-        end
-
-        context "select query with one join, one filter" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_order_items_ast("order_items.id > 1", nil), order_items_table(adapter_name)) }
-
-          it "ignores filter option" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM order_items
-              WHERE order_items.order_id IN (SELECT orders.id FROM orders WHERE orders.shop_id = 1);
-            SQL
-          end
-        end
-
-        context "select query with filter on join" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_order_items_ast(nil, "orders.id > 1"), order_items_table(adapter_name)) }
-
-          it "ignores filter option" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM order_items
-              WHERE order_items.order_id IN (SELECT orders.id FROM orders WHERE orders.shop_id = 1);
-            SQL
-          end
-        end
-
-        context "select query with filter on join and filter on where" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_order_items_ast("order_items.id > 1", "orders.id > 1"), order_items_table(adapter_name)) }
-
-          it "ignores filter option" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM order_items
-              WHERE order_items.order_id IN (SELECT orders.id FROM orders WHERE orders.shop_id = 1);
-            SQL
-          end
-        end
-      end
-
       describe "reserved-word identifier quoting" do
         context "select query on a reserved-word table with reserved-word columns" do
           let(:sql) { adapter.compile_ast(build_reserved_word_select_ast) }
@@ -977,17 +847,6 @@ module Exwiw
           end
         end
 
-        context "bulk delete scoped by a reserved-word column" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_reserved_word_select_ast, reserved_word_table) }
-
-          it "double-quotes the reserved identifiers in DELETE" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM "order"
-              WHERE "order"."from" = 1;
-            SQL
-          end
-        end
-
         context "select query with only safe identifiers" do
           let(:sql) { adapter.compile_ast(build_select_shops_ast) }
 
@@ -1018,20 +877,10 @@ module Exwiw
             end
           end
 
-          context "applying the generated DELETE" do
-            before do
-              connection.exec(adapter.to_bulk_delete(build_reserved_word_select_ast, reserved_word_table))
-            end
-
-            it "removes only the scoped row" do
-              expect(connection.exec(%(SELECT id FROM "order")).values).to eq([["2"]])
-            end
-          end
-
           context "restoring the generated INSERT after the scoped row was deleted" do
             before do
               rows = extracted_rows
-              connection.exec(adapter.to_bulk_delete(build_reserved_word_select_ast, reserved_word_table))
+              connection.exec(%(DELETE FROM "order" WHERE "order"."from" = 1))
               connection.exec(adapter.to_bulk_insert(rows, reserved_word_table))
             end
 
@@ -1140,12 +989,6 @@ module Exwiw
           expect(rows.map(&:first)).to eq(["1", "2"])
           expect(rows.map { |row| row[1] }).to eq(%w[Post Page])
           expect(rows.map(&:last)).to eq(['on t1 post', 'on t1 page'])
-        end
-
-        it "deletes exactly the rows the extraction keeps" do
-          connection.exec(adapter.to_bulk_delete(comments_ast, arm_comments))
-
-          expect(connection.exec("SELECT id FROM arm_comments ORDER BY id").values).to eq([["3"], ["4"], ["5"]])
         end
       end
     end

@@ -32,7 +32,7 @@ exwiw can export a MongoDB database with `--adapter=mongodb`. This document coll
   ```bash
   mongosh "mongodb://localhost/app_dev" dump/insert-000-schema.js
   ```
-- Unlike SQL adapters, the MongoDB adapter does not emit `delete-*.jsonl` files (drop the database / collection yourself before importing if needed).
+- exwiw emits no delete files; drop the database / collection yourself before importing if needed.
 
 ## Masking
 

@@ -968,16 +968,6 @@ module Exwiw
         end
       end
 
-      describe "#to_bulk_delete" do
-        let(:dump_target) { Exwiw::DumpTarget.new(table_name: "shops", ids: [1]) }
-
-        it "raises NotImplementedError" do
-          shops = config_by_name.fetch("shops")
-          query = adapter.build_query(shops, dump_target, config_by_name)
-          expect { adapter.to_bulk_delete(query, shops) }.to raise_error(NotImplementedError)
-        end
-      end
-
       describe "#output_extension" do
         it { expect(adapter.output_extension).to eq("jsonl") }
       end
@@ -1051,10 +1041,6 @@ module Exwiw
           # The missing collection is never queried for its indexes.
           expect(db_stub).not_to have_received(:[]).with('users')
         end
-      end
-
-      describe "#supports_bulk_delete?" do
-        it { expect(adapter.supports_bulk_delete?).to eq(false) }
       end
 
       describe "#db connection construction" do

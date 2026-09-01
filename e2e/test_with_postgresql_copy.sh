@@ -30,17 +30,18 @@ $PSQL_CMD -c "CREATE DATABASE ${FROM_DATABASE_NAME}" > /dev/null
 $PSQL_CMD -c "DROP DATABASE IF EXISTS ${TO_DATABASE_NAME}" > /dev/null
 $PSQL_CMD -c "CREATE DATABASE ${TO_DATABASE_NAME}" > /dev/null
 
-# Setup db
+# Setup db. The TO (import target) database gets the schema only: exwiw emits
+# no delete-*.sql, so the target must not already hold the rows being imported.
 if [ -n "$CI" ]; then
   $PSQL_FILE_CMD -d "${FROM_DATABASE_NAME}" -f seed/postgresql-dump.sql > /dev/null
-  $PSQL_FILE_CMD -d "${TO_DATABASE_NAME}" -f seed/postgresql-dump.sql > /dev/null
+  $PSQL_FILE_CMD -d "${TO_DATABASE_NAME}" -f seed/postgresql-schema.sql > /dev/null
 else
   docker compose exec postgres psql -U postgres -d "${FROM_DATABASE_NAME}" -f /seed/postgresql-dump.sql > /dev/null
-  docker compose exec postgres psql -U postgres -d "${TO_DATABASE_NAME}" -f /seed/postgresql-dump.sql > /dev/null
+  docker compose exec postgres psql -U postgres -d "${TO_DATABASE_NAME}" -f /seed/postgresql-schema.sql > /dev/null
 fi
 
-# Clean output dir so stale insert-*.sql / delete-*.sql from previous runs do
-# not leak in via the glob loops below.
+# Clean output dir so stale insert-*.sql from previous runs do not leak in
+# via the glob loops below.
 rm -rf tmp/postgresql-copy
 
 # run exwiw
@@ -58,15 +59,6 @@ bundle exec exe/exwiw \
   --output-dir=tmp/postgresql-copy
 
 # import to db
-for file in tmp/postgresql-copy/delete-*.sql; do
-  echo "Run ${file}"
-  if [ -n "$CI" ]; then
-    $PSQL_FILE_CMD -d "${TO_DATABASE_NAME}" -f "${file}" > /dev/null
-  else
-    docker compose exec postgres psql -U postgres -d "${TO_DATABASE_NAME}" -f "/e2e/${file}" > /dev/null
-  fi
-done
-
 for file in tmp/postgresql-copy/insert-*.sql; do
   echo "Run ${file}"
   if [ -n "$CI" ]; then

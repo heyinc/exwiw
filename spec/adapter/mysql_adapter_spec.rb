@@ -697,121 +697,6 @@ module Exwiw
         end
       end
 
-      describe "#to_bulk_delete" do
-        # MySQL rejects a subquery that reads the table being deleted from
-        # ("You can't specify target table 'x' for update in FROM clause"), which
-        # is exactly what a polymorphic multi-arm scope produces: each arm selects
-        # the join table's own primary key. Wrapping it in a derived table lifts
-        # the restriction; every other subquery shape is left untouched.
-        context "select query whose scope subquery reads the delete target" do
-          let(:bulk_delete_sql) do
-            adapter.to_bulk_delete(build_polymorphic_arm_union_ast, comments_arm_table)
-          end
-          let(:comments_arm_table) do
-            TableConfig.from_symbol_keys(
-              name: 'comments', primary_key: 'id', belongs_tos: [],
-              columns: [{ name: 'id' }]
-            )
-          end
-
-          it "wraps the subquery in a derived table" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM comments
-              WHERE comments.id IN (SELECT * FROM (SELECT comments.id FROM comments JOIN posts ON comments.commentable_id = posts.id AND comments.commentable_type = 'Post' JOIN shops ON posts.shop_id = shops.id AND shops.tenant_id = 't1' UNION SELECT comments.id FROM comments JOIN pages ON comments.commentable_id = pages.id AND comments.commentable_type = 'Page' JOIN shops ON pages.shop_id = shops.id AND shops.tenant_id = 't1') AS exwiw_delete_src);
-            SQL
-          end
-        end
-
-        context "select query whose scope subquery reads another table" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_reverse_scope_union_ast, users_table(adapter_name)) }
-
-          it "leaves the subquery unwrapped" do
-            expect(bulk_delete_sql).not_to include("exwiw_delete_src")
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM users
-              WHERE users.id IN (SELECT customers.user_id FROM customers WHERE customers.business_entity_id = 1 AND customers.user_id IS NOT NULL UNION SELECT staff.user_id FROM staff WHERE staff.business_entity_id = 1 AND staff.user_id IS NOT NULL);
-            SQL
-          end
-        end
-
-        context "simple select query" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_select_shops_ast, shops_table(adapter_name)) }
-
-          it "builds sql" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM shops
-              WHERE shops.id = 1;
-            SQL
-          end
-        end
-
-        context "select query with masking" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_select_users_ast, users_table(adapter_name)) }
-
-          it "builds sql" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM users
-              WHERE users.shop_id = 1;
-            SQL
-          end
-        end
-
-        context "select query with filter" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_select_users_ast("users.id > 1"), users_table(adapter_name)) }
-
-          it "ignores filter option" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM users
-              WHERE users.shop_id = 1;
-            SQL
-          end
-        end
-
-        context "select query with one join" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_order_items_ast, order_items_table(adapter_name)) }
-
-          it "ignores filter option" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM order_items
-              WHERE order_items.order_id IN (SELECT orders.id FROM orders WHERE orders.shop_id = 1);
-            SQL
-          end
-        end
-
-        context "select query with one join, one filter" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_order_items_ast("order_items.id > 1", nil), order_items_table(adapter_name)) }
-
-          it "ignores filter option" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM order_items
-              WHERE order_items.order_id IN (SELECT orders.id FROM orders WHERE orders.shop_id = 1);
-            SQL
-          end
-        end
-
-        context "select query with filter on join" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_order_items_ast(nil, "orders.id > 1"), order_items_table(adapter_name)) }
-
-          it "ignores filter option" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM order_items
-              WHERE order_items.order_id IN (SELECT orders.id FROM orders WHERE orders.shop_id = 1);
-            SQL
-          end
-        end
-
-        context "select query with filter on join and filter on where" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_order_items_ast("order_items.id > 1", "orders.id > 1"), order_items_table(adapter_name)) }
-
-          it "ignores filter option" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM order_items
-              WHERE order_items.order_id IN (SELECT orders.id FROM orders WHERE orders.shop_id = 1);
-            SQL
-          end
-        end
-      end
-
       describe "reserved-word identifier quoting" do
         context "select query on a reserved-word table with reserved-word columns" do
           let(:sql) { adapter.compile_ast(build_reserved_word_select_ast) }
@@ -854,17 +739,6 @@ module Exwiw
           end
         end
 
-        context "bulk delete scoped by a reserved-word column" do
-          let(:bulk_delete_sql) { adapter.to_bulk_delete(build_reserved_word_select_ast, reserved_word_table) }
-
-          it "backtick-quotes the reserved identifiers in DELETE" do
-            expect(bulk_delete_sql.strip).to eq(<<~SQL.strip)
-              DELETE FROM `order`
-              WHERE `order`.`from` = 1;
-            SQL
-          end
-        end
-
         context "select query with only safe identifiers" do
           let(:sql) { adapter.compile_ast(build_select_shops_ast) }
 
@@ -898,20 +772,10 @@ module Exwiw
             end
           end
 
-          context "applying the generated DELETE" do
-            before do
-              raw_connection.query(adapter.to_bulk_delete(build_reserved_word_select_ast, reserved_word_table).delete_suffix(";"))
-            end
-
-            it "removes only the scoped row" do
-              expect(client.query(%(SELECT id FROM `order`)).rows).to eq([["2"]])
-            end
-          end
-
           context "restoring the generated INSERT after the scoped row was deleted" do
             before do
               rows = extracted_rows
-              raw_connection.query(adapter.to_bulk_delete(build_reserved_word_select_ast, reserved_word_table).delete_suffix(";"))
+              raw_connection.query(%(DELETE FROM `order` WHERE `order`.`from` = 1))
               raw_connection.query(adapter.to_bulk_insert(rows, reserved_word_table).delete_suffix(";"))
             end
 
@@ -1010,12 +874,6 @@ module Exwiw
           expect(rows.map(&:first)).to eq(["1", "2"])
           expect(rows.map { |row| row[1] }).to eq(%w[Post Page])
           expect(rows.map(&:last)).to eq(['on t1 post', 'on t1 page'])
-        end
-
-        it "deletes exactly the rows the extraction keeps" do
-          raw_connection.query(adapter.to_bulk_delete(comments_ast, arm_comments).delete_suffix(";"))
-
-          expect(client.query("SELECT id FROM arm_comments ORDER BY id").rows).to eq([["3"], ["4"], ["5"]])
         end
       end
     end

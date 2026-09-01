@@ -24,8 +24,8 @@ module Exwiw
       #     unchanged, so MongoDB and the other SQL adapters are untouched.
       #   - the streaming pass ties up the connection until fully drained. The
       #     Runner always drains it (write_inserts) before issuing any further
-      #     query (post_insert_sql / DELETE) on the same connection, so the
-      #     ordering invariant holds.
+      #     query (post_insert_sql) on the same connection, so the ordering
+      #     invariant holds.
       class StreamingResult
         include Enumerable
 
@@ -277,14 +277,6 @@ module Exwiw
         suppress_triggers_sql
       end
 
-      # The delete pass runs against a target that already carries the source's
-      # triggers, so a DELETE fires them exactly as an INSERT does. FK ordering
-      # is not the concern here: delete_idx counts down, so the files are
-      # applied child-first.
-      def pre_delete_sql(_table)
-        suppress_triggers_sql
-      end
-
       # Suppress trigger and foreign-key enforcement for the statements that
       # follow. insert-000-schema.sql carries the source's triggers now, so an
       # unguarded pass would fire every one of them per row it touches — on the
@@ -353,73 +345,6 @@ module Exwiw
         is_called_sql = (is_called == 't' || is_called == true) ? 'true' : 'false'
 
         "SELECT pg_catalog.setval('#{escape_single_quote(seq_name)}', #{last_value}, #{is_called_sql});"
-      end
-
-      def to_bulk_delete(select_query_ast, table)
-        raise NotImplementedError unless select_query_ast.is_a?(Exwiw::QueryAst::Select)
-
-        sql = "DELETE FROM #{quote_table_name(select_query_ast.from_table_name)}"
-
-        if select_query_ast.join_clauses.empty?
-          # Ignore filter option, because bulk delete is for cleaning before import,
-          # so it should delete all records to avoid foreign key violation & data consistancy.
-          compiled_where_conditions = select_query_ast.
-            where_clauses.
-            select { |where| where.is_a?(Exwiw::QueryAst::WhereClause) }.
-            map do |where|
-            compile_where_condition(where, select_query_ast.from_table_name)
-          end
-
-          if compiled_where_conditions.size > 0
-            sql += "\nWHERE "
-            sql += compiled_where_conditions.join(' AND ')
-          end
-          sql += ";"
-
-          return sql
-        end
-
-        subquery_ast = Exwiw::QueryAst::Select.new
-        first_join = select_query_ast.join_clauses.first.clone
-
-        subquery_ast.from(first_join.join_table_name)
-        primay_key_col = table.columns.find { |col| col.name == table.primary_key }
-        subquery_ast.select([primay_key_col])
-        select_query_ast.join_clauses[1..].each do |join|
-          subquery_ast.join(join)
-        end
-        first_join.where_clauses.each do |where|
-          # Ignore filter option, because bulk delete is for cleaning before import,
-          # so it should delete all records to avoid foreign key violation & data consistancy.
-          subquery_ast.where(where) if where.is_a?(Exwiw::QueryAst::WhereClause)
-        end
-
-        foreign_key = first_join.foreign_key
-        outer_table = select_query_ast.from_table_name
-        inner_table = first_join.join_table_name
-        inner_column = first_join.primary_key
-        cast_to = types_need_cast?(
-          column_pg_type(outer_table, foreign_key),
-          column_pg_type(inner_table, inner_column)
-        ) ? 'text' : nil
-        subquery_sql = compile_ast(subquery_ast, select_cast_to: cast_to)
-        outer_expr = qualified_name(outer_table, foreign_key)
-        outer_expr = "#{outer_expr}::text" if cast_to
-        sql += "\nWHERE #{outer_expr} IN (#{subquery_sql})"
-
-        # first_join.base_where_clauses holds conditions on the outer
-        # delete-target table (from_table_name), such as a polymorphic type
-        # column. They are not part of the subquery, so add them to the outer
-        # WHERE. This prevents deleting rows that belong to a different
-        # polymorphic type.
-        first_join.base_where_clauses.each do |where|
-          next unless where.is_a?(Exwiw::QueryAst::WhereClause)
-
-          sql += " AND #{compile_where_condition(where, select_query_ast.from_table_name)}"
-        end
-        sql += ";"
-
-        sql
       end
 
       def compile_ast(query_ast, select_cast_to: nil)
