@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-01
+
 ### Removed
 
 - **BREAKING — delete SQL support is removed ([#166](https://github.com/heyinc/exwiw/issues/166)): `export` no longer generates `delete-NNN-<table>.sql` files.** They existed to clear an already-populated import target before re-inserting; the supported workflow is now to import into an empty database (`insert-000-schema.sql` provisions one) or to clear the target yourself. Every export now behaves as `--insert-only` always did, so the `--insert-only` flag and the `insert_only:` config key have nothing left to toggle — both are still **accepted but ignored**, with a warning naming them obsolete, so an existing invocation or committed config file keeps working across the upgrade; remove them at your leisure (a future release will reject them). For the adapter API, `to_bulk_delete`, `supports_bulk_delete?`, and `pre_delete_sql` are removed.
