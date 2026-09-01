@@ -23,17 +23,18 @@ $PSQL_CMD -c "CREATE DATABASE ${FROM_DATABASE_NAME}" > /dev/null
 $PSQL_CMD -c "DROP DATABASE IF EXISTS ${TO_DATABASE_NAME}" > /dev/null
 $PSQL_CMD -c "CREATE DATABASE ${TO_DATABASE_NAME}" > /dev/null
 
-# Setup db
+# Setup db. The TO (import target) database gets the schema only: exwiw emits
+# no delete-*.sql, so the target must not already hold the rows being imported.
 if [ -n "$CI" ]; then
   $PSQL_FILE_CMD -d "${FROM_DATABASE_NAME}" -f seed/postgresql-dump.sql > /dev/null
-  $PSQL_FILE_CMD -d "${TO_DATABASE_NAME}" -f seed/postgresql-dump.sql > /dev/null
+  $PSQL_FILE_CMD -d "${TO_DATABASE_NAME}" -f seed/postgresql-schema.sql > /dev/null
 else
   docker compose exec postgres psql -U postgres -d "${FROM_DATABASE_NAME}" -f /seed/postgresql-dump.sql > /dev/null
-  docker compose exec postgres psql -U postgres -d "${TO_DATABASE_NAME}" -f /seed/postgresql-dump.sql > /dev/null
+  docker compose exec postgres psql -U postgres -d "${TO_DATABASE_NAME}" -f /seed/postgresql-schema.sql > /dev/null
 fi
 
-# Clean output dir so stale insert-*.sql / delete-*.sql from previous runs do
-# not leak in via the glob loops below.
+# Clean output dir so stale insert-*.sql from previous runs do not leak in via
+# the glob loops below.
 rm -rf tmp/postgresql
 
 # run exwiw
@@ -55,15 +56,6 @@ bundle exec exe/exwiw \
 LOAD_LOG=$(mktemp)
 
 # import to db
-for file in tmp/postgresql/delete-*.sql; do
-  echo "Run ${file}"
-  if [ -n "$CI" ]; then
-    $PSQL_FILE_CMD -d "${TO_DATABASE_NAME}" -f "${file}" 2>> "${LOAD_LOG}" > /dev/null
-  else
-    docker compose exec postgres psql -U postgres -d "${TO_DATABASE_NAME}" -f "/e2e/${file}" 2>> "${LOAD_LOG}" > /dev/null
-  fi
-done
-
 for file in tmp/postgresql/insert-*.sql; do
   echo "Run ${file}"
   if [ -n "$CI" ]; then
@@ -73,11 +65,11 @@ for file in tmp/postgresql/insert-*.sql; do
   fi
 done
 
-# Every delete and insert file must disable triggers/FKs for its own statements,
-# and under a privileged role it must succeed at it — the WARNING is the
+# Every insert file must disable triggers/FKs for its own statements, and
+# under a privileged role it must succeed at it — the WARNING is the
 # unprivileged fallback, not an acceptable outcome here.
 echo "Verifying the data files suppress triggers during the load..."
-for file in tmp/postgresql/delete-*.sql tmp/postgresql/insert-*.sql; do
+for file in tmp/postgresql/insert-*.sql; do
   case "${file}" in */insert-000-schema.sql) continue ;; esac
   if ! grep -q "set_config('session_replication_role', 'replica', false)" "${file}"; then
     echo "✗ ${file} does not disable triggers"
@@ -90,10 +82,10 @@ if grep -q 'could not disable triggers for the load' "${LOAD_LOG}"; then
   exit 1
 fi
 rm -f "${LOAD_LOG}"
-echo "✓ Triggers and foreign keys were suppressed for the delete and insert passes"
+echo "✓ Triggers and foreign keys were suppressed for the insert pass"
 
 # The seed's trigger must be in the generated schema and on the target. The TO
-# database is seeded with the same dump, so the trigger already existed when
+# database is seeded with the same schema, so the trigger already existed when
 # insert-000-schema.sql was applied — which also asserts the generated
 # CREATE TRIGGER is re-appliable (a bare one would have aborted with
 # duplicate_object).

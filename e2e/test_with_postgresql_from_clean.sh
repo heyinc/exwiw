@@ -4,9 +4,6 @@
 # The TO database is created empty (no schema, no rows), so the run must
 # succeed purely on the strength of insert-000-schema.sql creating the schema
 # before subsequent insert-*.sql statements run.
-#
-# Unlike test_with_postgresql.sh, the delete-*.sql pass is skipped because the
-# TO database has no tables to delete from.
 
 set -e
 

@@ -16,9 +16,12 @@ NEW_DB_PATH="tmp/scenario-config-new.sqlite3"
 rm -rf tmp/sqlite
 mkdir -p tmp/sqlite
 
-# Setup db
+# Setup db. The NEW (import target) DB gets the schema only: exwiw emits no
+# delete-*.sql, so the target must not already hold the rows being imported.
+# (sqlite_sequence is internal; sqlite3 refuses to CREATE it explicitly.)
 cp e2e/initdb/init.sqlite3 $TARGET_DB_PATH
-cp e2e/initdb/init.sqlite3 $NEW_DB_PATH
+rm -f $NEW_DB_PATH
+sed '/sqlite_sequence/d' seed/sqlite-schema.sql | sqlite3 $NEW_DB_PATH
 
 # run exwiw — adapter/schema-dir/target-table/log-level are read from the config
 # file; the connection, the per-run --ids, and the output dir are on the CLI.

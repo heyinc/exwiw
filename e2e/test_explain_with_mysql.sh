@@ -65,7 +65,7 @@ fi
 echo "✓ mysql explain produced expected output and wrote no extra files"
 
 # Rejection case: dump-only flag must be refused.
-echo "Testing explain rejection of --insert-only..."
+echo "Testing explain rejection of --after-insert-hook..."
 set +e
 bundle exec exe/exwiw explain \
     --adapter=mysql \
@@ -74,12 +74,12 @@ bundle exec exe/exwiw explain \
     --user=root \
     --database="${FROM_DATABASE_NAME}" \
     --schema-dir=e2e/mysql-schema \
-    --insert-only \
+    --after-insert-hook=/tmp/hook.rb \
     2>&1 | tee tmp/mysql-explain.err
 rejection_exit=${PIPESTATUS[0]}
 set -e
 if [ "$rejection_exit" -eq 0 ]; then
-  echo "✗ explain should have rejected --insert-only (exit 0)"
+  echo "✗ explain should have rejected --after-insert-hook (exit 0)"
   exit 1
 fi
 grep -q "not applicable in 'explain'" tmp/mysql-explain.err || {
@@ -87,4 +87,4 @@ grep -q "not applicable in 'explain'" tmp/mysql-explain.err || {
   cat tmp/mysql-explain.err
   exit 1
 }
-echo "✓ mysql explain rejects --insert-only with the expected message"
+echo "✓ mysql explain rejects --after-insert-hook with the expected message"

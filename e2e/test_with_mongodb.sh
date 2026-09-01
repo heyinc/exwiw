@@ -11,8 +11,8 @@ mkdir -p tmp/mongodb
 rm -f tmp/mongodb/*.jsonl
 
 # Setup source db from seed. Target db is populated entirely by import
-# (MongoDB adapter has no delete-*.jsonl; import_with_mongodb.rb drops
-# each target collection before insert).
+# (exwiw emits no delete files; import_with_mongodb.rb drops each target
+# collection before insert).
 bundle exec ruby e2e/setup_with_mongodb.rb "${FROM_DATABASE_NAME}"
 
 # Run exwiw. This scenario connects via a full --uri (rather than

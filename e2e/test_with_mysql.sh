@@ -18,9 +18,10 @@ fi
 $MYSQL_CMD -e "DROP DATABASE IF EXISTS ${FROM_DATABASE_NAME}; CREATE DATABASE ${FROM_DATABASE_NAME};"
 $MYSQL_CMD -e "DROP DATABASE IF EXISTS ${TO_DATABASE_NAME}; CREATE DATABASE ${TO_DATABASE_NAME};"
 
-# Setup db
+# Setup db. The TO (import target) database gets the schema only: exwiw emits
+# no delete-*.sql, so the target must not already hold the rows being imported.
 $MYSQL_CMD "${FROM_DATABASE_NAME}" < seed/mysql-dump.sql
-$MYSQL_CMD "${TO_DATABASE_NAME}" < seed/mysql-dump.sql
+$MYSQL_CMD "${TO_DATABASE_NAME}" < seed/mysql-schema.sql
 
 # run exwiw
 export DATABASE_PASSWORD="rootpassword"
@@ -37,11 +38,6 @@ bundle exec exe/exwiw \
   --log-level=debug
 
 # import to db
-for file in tmp/mysql/delete-*.sql; do
-  echo "Run ${file}"
-  $MYSQL_CMD "${TO_DATABASE_NAME}" < "${file}"
-done
-
 for file in tmp/mysql/insert-*.sql; do
   echo "Run ${file}"
   $MYSQL_CMD "${TO_DATABASE_NAME}" < "${file}"
