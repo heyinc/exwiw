@@ -43,6 +43,13 @@ module Exwiw
       expect { runner.run }.not_to raise_error
     end
 
+    it 'generates no delete files' do
+      runner.run
+
+      expect(Dir[File.join(output_dir, 'insert-*.sql')]).not_to be_empty
+      expect(Dir[File.join(output_dir, 'delete-*.sql')]).to be_empty
+    end
+
     describe 'output dir cleaning' do
       it 'removes pre-existing contents of the output dir before export' do
         stale_file = File.join(output_dir, 'insert-999-stale.sql')
