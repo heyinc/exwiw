@@ -82,11 +82,6 @@ module Exwiw
       def dump_schema(ordered_tables, output_path)
       end
 
-      # Whether this adapter emits delete-NNN-*.sql files.
-      def supports_bulk_delete?
-        true
-      end
-
       # Whether the given config produces its own dump output and needs an
       # independent processing pass. SQL adapters always do; non-SQL adapters
       # may exclude e.g. embedded subdocument configs.
@@ -112,13 +107,6 @@ module Exwiw
       # explicit IDs that were just inserted (e.g. PostgreSQL sequences).
       # Default: nil (nothing appended).
       def post_insert_sql(_table)
-        nil
-      end
-
-      # Optional SQL prepended to the per-table delete-NNN-<table>.* file before
-      # the bulk DELETE statement, for the session-level setup that statement
-      # needs. Default: nil (nothing prepended).
-      def pre_delete_sql(_table)
         nil
       end
 
@@ -343,12 +331,6 @@ module Exwiw
     # @params [Array<Array<String>>] array of rows
     # @params [Exwiw::TableConfig] table
     def to_bulk_insert(results, table)
-      raise NotImplementedError
-    end
-
-    # @params [Exwiw::QueryAst] select_query_ast
-    # @params [Exwiw::TableConfig] table
-    def to_bulk_delete(select_query_ast, table)
       raise NotImplementedError
     end
 

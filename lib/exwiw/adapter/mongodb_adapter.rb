@@ -217,10 +217,6 @@ module Exwiw
         end.join("\n")
       end
 
-      def to_bulk_delete(_query, _config)
-        raise NotImplementedError, "MongodbAdapter does not support bulk delete"
-      end
-
       # Default explain verbosity. `queryPlanner` asks the server to PLAN the
       # query without executing it, so it is safe to run against a production
       # source — no documents are scanned or returned. `executionStats` and
@@ -323,10 +319,6 @@ module Exwiw
           end
         end
         @logger.info("  Wrote schema for #{collections.size} collection(s) to #{output_path}.")
-      end
-
-      def supports_bulk_delete?
-        false
       end
 
       # `--ids` from the CLI arrives as Strings. Mongo compares types strictly,
