@@ -21,6 +21,15 @@ module Exwiw
       added_tables added_columns removed_tables removed_columns changed_tables needs_mask_decision
     ].freeze
 
+    # The subset of the removals that would break an `export` run: a non-ignored
+    # config still referencing a table or column the schema no longer has, i.e.
+    # the extraction SELECT would name something that does not exist. Removals of
+    # `ignore: true` entries stay out (nothing selects them), as do additions.
+    # `--fail-on=stale` keys the exit code to these. Deliberate over-approximation:
+    # a hand-written config naming a database VIEW lands here too (tidy's stance),
+    # though a SELECT against it would succeed.
+    STALE_CATEGORIES = %w[stale_tables stale_columns].freeze
+
     def self.from_rails_application(schema_dir:)
       Rails.application.eager_load!
       new(models: ActiveRecord::Base.descendants, schema_dir: schema_dir)
@@ -81,6 +90,12 @@ module Exwiw
       CATEGORIES.all? { |category| report.fetch(category, []).empty? }
     end
 
+    # Whether the report contains drift that would break an extraction run
+    # (see STALE_CATEGORIES). Always a subset of what makes clean? false.
+    def self.stale?(report)
+      STALE_CATEGORIES.any? { |category| !report.fetch(category, []).empty? }
+    end
+
     private def regenerate_into(tmp_dir)
       FileUtils.cp_r(File.join(@schema_dir, "."), tmp_dir) if Dir.exist?(@schema_dir)
       @regenerator.call(tmp_dir)
@@ -111,7 +126,7 @@ module Exwiw
     end
 
     private def diff(committed, regenerated)
-      report = CATEGORIES.to_h { |category| [category, []] }
+      report = (CATEGORIES + STALE_CATEGORIES).to_h { |category| [category, []] }
 
       (committed.keys | regenerated.keys).sort.each do |key|
         before = committed[key]
@@ -122,7 +137,11 @@ module Exwiw
           next
         end
         if after.nil?
-          report["removed_tables"] << table_label(key, before)
+          label = table_label(key, before)
+          report["removed_tables"] << label
+          # A rails-managed table is dumped whole, so its disappearance breaks
+          # the export too; only `ignore: true` keeps a removed table out.
+          report["stale_tables"] << label unless before["ignore"]
           next
         end
         next if before == after
@@ -132,6 +151,10 @@ module Exwiw
         added, removed = column_diff(before, after)
         report["added_columns"] += added.sort.map { |column| "#{label}.#{column}" }
         report["removed_columns"] += removed.sort.map { |column| "#{label}.#{column}" }
+        if extracted?(before)
+          stale = removed & extracted_column_names(before)
+          report["stale_columns"] += stale.sort.map { |column| "#{label}.#{column}" }
+        end
       end
 
       report
@@ -146,6 +169,22 @@ module Exwiw
     # `fields` is the MongoDB config's spelling of `columns`.
     private def column_names(config)
       (config["columns"] || config["fields"] || []).map { |column| column["name"] }
+    end
+
+    # Whether the extraction SELECT names this table's columns: an `ignore: true`
+    # config only contributes DDL, and a rails-managed one is dumped as
+    # `SELECT *` — so a removed column cannot break either. (A removed
+    # rails-managed table still can; #diff handles that separately.)
+    private def extracted?(config)
+      !config["ignore"] && !TableConfig::RAILS_MANAGED_TYPES.include?(config["type"])
+    end
+
+    # The columns the extraction SELECT actually names: `ignore: true` columns
+    # are dropped when the config loads, so their staleness breaks nothing.
+    private def extracted_column_names(config)
+      (config["columns"] || config["fields"] || [])
+        .reject { |column| column["ignore"] }
+        .map { |column| column["name"] }
     end
 
     # How a table is named in the report. The database is part of the label, or
