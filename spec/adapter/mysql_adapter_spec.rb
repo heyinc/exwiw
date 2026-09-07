@@ -113,6 +113,24 @@ module Exwiw
           expect(data_sql_of(result)).to include("JOIN exwiw_scope_id_set_0")
         end
 
+        it "compiles nested scopes inside union arms inline, never reopening a temp table" do
+          # Both arms carry the same nested id-set; materializing it would put
+          # one TEMPORARY table twice into the outer set's CREATE statement,
+          # which MySQL rejects (ER_CANT_REOPEN_TABLE). The arms must embed the
+          # nested scope as an inline derived table instead.
+          result = adapter.execute(build_union_arms_sharing_nested_scope_ast)
+
+          creates = recorded.grep(/\ACREATE TEMPORARY TABLE/)
+          expect(creates.size).to eq(1)
+          expect(creates.first.scan("exwiw_scope_id_set").size).to eq(1) # its own name only
+          expect(creates.first).to include("SELECT agreements.document_id FROM agreements")
+          expect(creates.first).to include(" UNION ")
+
+          expect(data_sql_of(result)).to include(
+            "JOIN exwiw_scope_id_set_0 AS exwiw_scope_ids_0 ON attachments.id = exwiw_scope_ids_0.exwiw_scope_id"
+          )
+        end
+
         it "materializes nested scopes bottom-up, building outer sets from inner ones" do
           result = adapter.execute(build_multi_hop_nested_in_ast)
 

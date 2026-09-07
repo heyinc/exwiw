@@ -269,6 +269,17 @@ module Exwiw
         @materialize_scopes = false
       end
 
+      # The inverse, for a region whose compiled SQL may embed the same id-set
+      # more than once in one statement (UNION arms): a temporary table there
+      # would be reopened and MySQL rejects that, so compile those scopes inline.
+      private def without_scope_materialization
+        saved = @materialize_scopes
+        @materialize_scopes = false
+        yield
+      ensure
+        @materialize_scopes = saved
+      end
+
       private def materialized_scope_table(subquery)
         return nil unless @materialize_scopes
         return nil if @scope_materialization_disabled
@@ -348,9 +359,15 @@ module Exwiw
         return compile_ast(subquery.query) if subquery.is_a?(Exwiw::QueryAst::SelectSubquery)
 
         # A UnionSubquery wraps several such Selects; UNION their compiled forms
-        # into a single id set.
+        # into a single id set. Sibling arms can carry the same nested scope
+        # id-set (e.g. several foreign keys of one referencer feeding a
+        # reverse_scope), and MySQL cannot reference one TEMPORARY table twice
+        # in a single statement (ER_CANT_REOPEN_TABLE), so inside the arms
+        # nested scopes compile inline instead of joining a materialized table.
         if subquery.is_a?(Exwiw::QueryAst::UnionSubquery)
-          return subquery.queries.map { |q| compile_ast(q) }.join(' UNION ')
+          return without_scope_materialization do
+            subquery.queries.map { |q| compile_ast(q) }.join(' UNION ')
+          end
         end
 
         inner_values = subquery.where_values.map { |v| escape_value(v) }

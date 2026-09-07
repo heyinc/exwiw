@@ -286,6 +286,53 @@ module AstFactory
     end
   end
 
+  # A reverse-scope UNION whose two arms are foreign keys of the SAME referencer
+  # (`documents`), and that referencer is itself constrained to a nested scope
+  # id-set (its own reverse_scope through `agreements`). This is what the
+  # builder emits for a declared reverse_scope chain — and the shape that would
+  # reopen one TEMPORARY table twice in a single statement if the nested set
+  # were materialized inside the arms. Adapter-agnostic; built directly so the
+  # adapters' rendering can be asserted in isolation.
+  def build_union_arms_sharing_nested_scope_ast
+    plain = ->(name) { Exwiw::TableColumn.from_symbol_keys(name: name) }
+
+    nested_arm = QueryAst::Select.new.tap do |q|
+      q.from("agreements")
+      q.select([plain.call("document_id")])
+      q.where(QueryAst::WhereClause.new(column_name: "business_entity_id", operator: :eq, value: [1]))
+      q.where(QueryAst::WhereClause.new(column_name: "document_id", operator: :not_null))
+    end
+
+    arm = lambda do |column|
+      QueryAst::Select.new.tap do |q|
+        q.from("documents")
+        q.select([plain.call(column)])
+        q.where(
+          QueryAst::WhereClause.new(
+            column_name: "id",
+            operator: :in_subquery,
+            value: QueryAst::UnionSubquery.new(queries: [nested_arm]),
+          )
+        )
+        q.where(QueryAst::WhereClause.new(column_name: column, operator: :not_null))
+      end
+    end
+
+    QueryAst::Select.new.tap do |ast|
+      ast.from("attachments")
+      ast.select_all!
+      ast.where(
+        QueryAst::WhereClause.new(
+          column_name: "id",
+          operator: :in_subquery,
+          value: QueryAst::UnionSubquery.new(
+            queries: [arm.call("cover_attachment_id"), arm.call("body_attachment_id")]
+          ),
+        )
+      )
+    end
+  end
+
   # A reverse-scope UNION over tables that actually exist in the seed, so it can
   # be executed and EXPLAINed against the real databases (the customers/staff
   # fixtures above are compile-only). `users` is constrained to the union of two
