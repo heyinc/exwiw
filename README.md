@@ -442,15 +442,22 @@ the comparison as JSON, then exits non-zero when anything needs attention:
   "added_tables": [],
   "added_columns": ["users.contact_email"],
   "removed_tables": [],
-  "removed_columns": [],
-  "changed_tables": ["users"],
-  "needs_mask_decision": ["orders.memo"]
+  "removed_columns": ["orders.legacy_flag"],
+  "changed_tables": ["orders", "users"],
+  "needs_mask_decision": ["orders.memo"],
+  "stale_tables": [],
+  "stale_columns": ["orders.legacy_flag"]
 }
 ```
 
 `added_*` / `removed_*` / `changed_tables` mean the config no longer matches the schema — run
 `schema:generate` and `schema:tidy` to reconcile it. `needs_mask_decision` lists the columns
-whose masking nobody has decided on yet (see [the flag](#needs_mask_decision)). The exit code
+whose masking nobody has decided on yet (see [the flag](#needs_mask_decision)). `stale_tables` /
+`stale_columns` are the subset of the removals an extraction would actually trip over — a
+non-ignored config still naming a table or column the schema no longer has, so the export's
+SELECT would fail; removals of `ignore: true` entries (and of a rails-managed table's columns,
+which are dumped as `SELECT *`) stay out of them. They drive the exit code only under
+[`--fail-on=stale`](#non-rails-applications-exwiw-schema---from-db). The exit code
 makes it usable as a CI check that keeps a schema change from being merged until both are
 resolved; the JSON is stable and sorted, so it can be posted as-is. In a multi-database app each
 entry is prefixed with its database (`primary/users.email`), so the same table name in two
@@ -539,6 +546,9 @@ exwiw schema tidy --from-db -a postgresql -h db.example.com -p 5432 -u app --dat
   export's SELECT. Additions and unresolved `needs_mask_decision` flags stay visible in the
   report but do not stop the run, so a schema migration that merely *adds* a column does not
   block extraction. The default (`--fail-on=any`) is the CI behavior above, unchanged.
+  `--fail-on` is command-line only (not a config-file key — a gate flag belongs to the
+  invocation, not the committed config) and is meaningful only on `schema check`: the other
+  schema verbs reject it, and `export` ignores it like the other schema-only flags.
 - One run covers one database — the connection addresses one — so the files are written flat into
   the schema directory. There is no per-database subdirectory layout here; a second database is a
   second run against a second connection.
