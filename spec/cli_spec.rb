@@ -599,7 +599,7 @@ module Exwiw
           expect(JSON.parse(@stdout)['added_tables']).not_to be_empty
         end
 
-        it 'exits 1 under --fail-on=stale when the config names a column the database lost' do
+        it 'exits 1 under --fail-on=stale when the config names a column the database lost, naming it' do
           generate_plain
           path = File.join(schema_dir, 'users.json')
           config = JSON.parse(File.read(path))
@@ -609,8 +609,16 @@ module Exwiw
           expect do
             expect { capture_stdout { run_cli(schema_argv('check', ['--fail-on=stale'])) } }
               .to raise_error(SystemExit) { |error| expect(error.status).to eq(1) }
-          end.to output(/out of date or has undecided masking/).to_stderr
+          end.to output(/still references users\.removed_by_migration — gone from the database/).to_stderr
           expect(JSON.parse(@stdout)['stale_columns']).to eq(['users.removed_by_migration'])
+        end
+
+        it 'exits 1 under an explicit --fail-on=any on drift a stale gate would wave through' do
+          expect do
+            expect { capture_stdout { run_cli(schema_argv('check', ['--fail-on=any'])) } }
+              .to raise_error(SystemExit) { |error| expect(error.status).to eq(1) }
+          end.to output(/out of date or has undecided masking/).to_stderr
+          expect(JSON.parse(@stdout)['added_tables']).not_to be_empty
         end
 
         it 'exits 0 and prints the report when the config matches the database' do

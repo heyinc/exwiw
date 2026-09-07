@@ -260,15 +260,25 @@ module Exwiw
       # would break the export itself; additions and undecided masking are
       # someone's TODO, not a reason to stop a run. The report above still
       # carries them.
-      if @fail_on == "stale" && !SchemaCheck.stale?(report)
+      stale = SchemaCheck::STALE_CATEGORIES.flat_map { |category| report.fetch(category, []) }
+      if @fail_on == "stale" && stale.empty?
         $stderr.puts "exwiw: the schema config has drifted, but nothing the extraction reads is stale " \
                      "(--fail-on=stale); run `exwiw schema generate --from-db` at your leisure."
         return
       end
 
-      $stderr.puts "exwiw: the schema config is out of date or has undecided masking; " \
-                   "run `exwiw schema generate --from-db` (then `exwiw schema tidy --from-db`) " \
-                   "and resolve every `needs_mask_decision` column."
+      if stale.any?
+        # Name what blocks the export, so an operator whose run was just gated
+        # is not sent off to resolve mask decisions that have nothing to do
+        # with the failure.
+        $stderr.puts "exwiw: the config still references #{stale.join(', ')} — gone from the database, " \
+                     "so an extraction SELECT would fail on them; " \
+                     "run `exwiw schema generate --from-db` (then `exwiw schema tidy --from-db`) to drop them."
+      else
+        $stderr.puts "exwiw: the schema config is out of date or has undecided masking; " \
+                     "run `exwiw schema generate --from-db` (then `exwiw schema tidy --from-db`) " \
+                     "and resolve every `needs_mask_decision` column."
+      end
       exit SCHEMA_CHECK_DIRTY_EXIT
     end
 

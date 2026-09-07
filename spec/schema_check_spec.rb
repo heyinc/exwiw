@@ -110,6 +110,18 @@ module Exwiw
         expect(described_class.stale?(report)).to be(true)
       end
 
+      it "marks a removed rails-managed table stale: it is dumped whole" do
+        generate_current_config
+        File.write(
+          config_path("gone_migrations"),
+          JSON.pretty_generate("name" => "gone_migrations", "type" => "rails_managed_schema_migrations") + "\n"
+        )
+
+        expect(report["removed_tables"]).to eq(["gone_migrations"])
+        expect(report["stale_tables"]).to eq(["gone_migrations"])
+        expect(described_class.stale?(report)).to be(true)
+      end
+
       it "does not mark an ignored table stale, however it drifts" do
         generate_current_config
         FileUtils.cp(config_path("users"), config_path("obsolete"))

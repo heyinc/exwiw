@@ -28,6 +28,11 @@ module Exwiw
     # selects them — as do additions, which only mean data is not extracted yet.
     # `--fail-on=stale` keys the exit code to these, so a gate that runs before
     # every extraction fails only when the extraction itself would.
+    #
+    # One deliberate over-approximation: a config naming a database VIEW lands
+    # here when the generator treats views as removed tables (tidy's stance),
+    # even though a SELECT against the view would succeed. Generated configs
+    # never name views, so this only affects a hand-written one.
     STALE_CATEGORIES = %w[stale_tables stale_columns].freeze
 
     def self.from_rails_application(schema_dir:)
@@ -139,7 +144,10 @@ module Exwiw
         if after.nil?
           label = table_label(key, before)
           report["removed_tables"] << label
-          report["stale_tables"] << label if extracted?(before)
+          # A rails-managed table is extracted too (dumped whole), so its
+          # disappearance breaks the export just the same; only `ignore: true`
+          # keeps a removed table out of the stale set.
+          report["stale_tables"] << label unless before["ignore"]
           next
         end
         next if before == after
@@ -169,9 +177,11 @@ module Exwiw
       (config["columns"] || config["fields"] || []).map { |column| column["name"] }
     end
 
-    # Whether an extraction run reads this table at all: an `ignore: true`
+    # Whether the extraction SELECT names this table's columns: an `ignore: true`
     # config only contributes DDL, and a rails-managed one is dumped whole
-    # without naming columns, so neither can go stale in the breaking sense.
+    # (`SELECT *`) without naming columns — so a removed COLUMN cannot break
+    # either. A removed rails-managed TABLE still breaks the export; the
+    # removed-table branch in #diff handles that case on its own.
     private def extracted?(config)
       !config["ignore"] && !TableConfig::RAILS_MANAGED_TYPES.include?(config["type"])
     end
