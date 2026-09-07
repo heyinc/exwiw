@@ -621,6 +621,23 @@ module Exwiw
           expect(JSON.parse(@stdout)['added_tables']).not_to be_empty
         end
 
+        it 'keeps the mask advice next to the stale one in the default one-shot mode' do
+          # A CI run reports everything at once: with both a dropped column and
+          # an undecided masking present, the operator must not fix the stale
+          # part, re-run, and only then learn about the mask decisions.
+          generate_plain
+          path = File.join(schema_dir, 'users.json')
+          config = JSON.parse(File.read(path))
+          config['columns'] << { 'name' => 'removed_by_migration' }
+          config['columns'].find { |column| column['name'] == 'email' }['needs_mask_decision'] = true
+          File.write(path, JSON.pretty_generate(config) + "\n")
+
+          expect do
+            expect { capture_stdout { run_cli(schema_argv('check')) } }
+              .to raise_error(SystemExit) { |error| expect(error.status).to eq(1) }
+          end.to output(/still references users\.removed_by_migration.*needs_mask_decision/m).to_stderr
+        end
+
         it 'exits 0 and prints the report when the config matches the database' do
           generate_plain
 

@@ -60,7 +60,7 @@ exwiw has three subcommands:
 
 - `export` (default) — generate INSERT/COPY SQL files. If the subcommand is omitted, `export` is assumed.
 - `explain` — print each query `export` would run together with its `EXPLAIN` output. SQL adapters compile the SELECT without executing it; mongodb runs the server's explain (defaulting to the execution-free `queryPlanner`).
-- `schema generate|check|tidy --from-db` — maintain the schema config by reading a live database, for applications that cannot be loaded to generate it from their models. See [Non-Rails applications](#non-rails-applications-exwiw-schema---from-db).
+- `schema generate|check|tidy --from-db` — maintain the schema config by reading a live database, for applications that cannot be loaded to generate it from their models. See [Non-Rails applications](#non-rails-applications-exwiw-schema----from-db).
 
 ### `exwiw export`
 
@@ -457,7 +457,7 @@ whose masking nobody has decided on yet (see [the flag](#needs_mask_decision)). 
 non-ignored config still naming a table or column the schema no longer has, so the export's
 SELECT would fail; removals of `ignore: true` entries (and of a rails-managed table's columns,
 which are dumped as `SELECT *`) stay out of them. They drive the exit code only under
-[`--fail-on=stale`](#non-rails-applications-exwiw-schema---from-db). The exit code
+[`--fail-on=stale`](#non-rails-applications-exwiw-schema----from-db). The exit code
 makes it usable as a CI check that keeps a schema change from being merged until both are
 resolved; the JSON is stable and sorted, so it can be posted as-is. In a multi-database app each
 entry is prefixed with its database (`primary/users.email`), so the same table name in two
@@ -471,7 +471,7 @@ the same `EXWIW_SCHEMA_CHECK_OUTPUT` file and the same exit code — it just reg
 `MongoidSchemaGenerator` (safe mode + `tidy_mongoid`) instead. Collections and fields are
 reported under the same keys as tables and columns. An application that cannot be loaded to
 generate from its models at all can run the same check against its database instead: see
-[Non-Rails applications](#non-rails-applications-exwiw-schema---from-db).
+[Non-Rails applications](#non-rails-applications-exwiw-schema----from-db).
 
 #### Multiple databases
 

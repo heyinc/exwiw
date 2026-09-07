@@ -260,20 +260,29 @@ module Exwiw
       # would break the export itself; additions and undecided masking are
       # someone's TODO, not a reason to stop a run. The report above still
       # carries them.
-      stale = SchemaCheck::STALE_CATEGORIES.flat_map { |category| report.fetch(category, []) }
-      if @fail_on == "stale" && stale.empty?
+      if @fail_on == "stale" && !SchemaCheck.stale?(report)
         $stderr.puts "exwiw: the schema config has drifted, but nothing the extraction reads is stale " \
                      "(--fail-on=stale); run `exwiw schema generate --from-db` at your leisure."
         return
       end
 
-      if stale.any?
+      if SchemaCheck.stale?(report)
         # Name what blocks the export, so an operator whose run was just gated
         # is not sent off to resolve mask decisions that have nothing to do
-        # with the failure.
-        $stderr.puts "exwiw: the config still references #{stale.join(', ')} — gone from the database, " \
+        # with the failure. Capped: a migration can drop dozens of columns, and
+        # the full list is in the report above.
+        stale = SchemaCheck::STALE_CATEGORIES.flat_map { |category| report.fetch(category, []) }
+        listed = stale.first(10)
+        listed << "and #{stale.size - listed.size} more (see the report)" if stale.size > listed.size
+        $stderr.puts "exwiw: the config still references #{listed.join(', ')} — gone from the database, " \
                      "so an extraction SELECT would fail on them; " \
                      "run `exwiw schema generate --from-db` (then `exwiw schema tidy --from-db`) to drop them."
+        # The default (CI) mode is a one-shot report, so keep the mask advice
+        # alongside the stale one rather than revealing it on the next run. The
+        # gate deliberately stays quiet about it.
+        if @fail_on != "stale" && report.fetch("needs_mask_decision", []).any?
+          $stderr.puts "exwiw: the report also lists `needs_mask_decision` columns; resolve those too."
+        end
       else
         $stderr.puts "exwiw: the schema config is out of date or has undecided masking; " \
                      "run `exwiw schema generate --from-db` (then `exwiw schema tidy --from-db`) " \
