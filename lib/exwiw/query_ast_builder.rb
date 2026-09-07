@@ -400,7 +400,7 @@ module Exwiw
       return nil if arms.empty?
 
       QueryAst::WhereClause.new(
-        column_name: table.primary_key,
+        column_name: table.reverse_scope.key_for(table.primary_key),
         operator: :in_subquery,
         value: QueryAst::UnionSubquery.new(queries: arms)
       )

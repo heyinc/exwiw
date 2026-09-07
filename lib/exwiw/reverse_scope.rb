@@ -2,7 +2,8 @@
 
 module Exwiw
   # One referencer arm of a {ReverseScope}: the referencing table and the column
-  # on it that points at the reverse-scoped table's primary key.
+  # on it that points at the reverse-scoped table's key (its primary key, or the
+  # column named by {ReverseScope#column}).
   #
   # `column` is given explicitly so a *non-default* foreign key (e.g.
   # `business_entity_customers.kantan_yoyaku_user_id`, or `organization_admins.id`
@@ -27,7 +28,7 @@ module Exwiw
   # extraction queries should be UNION'd into the id set this table is
   # constrained to:
   #
-  #   <table>.<pk> IN (
+  #   <table>.<column or pk> IN (
   #     SELECT <ref1>.<col1> FROM <ref1> <ref1 scope> WHERE <col1> IS NOT NULL
   #     UNION SELECT <ref2>.<col2> FROM <ref2> <ref2 scope> WHERE <col2> IS NOT NULL
   #     UNION ...
@@ -42,6 +43,11 @@ module Exwiw
   class ReverseScope
     include Serdes
 
+    attribute :column, optional(String), skip_serializing_if_nil: true
     attribute :via, array(ReverseScopeVia), default: []
+
+    def key_for(primary_key)
+      column || primary_key
+    end
   end
 end

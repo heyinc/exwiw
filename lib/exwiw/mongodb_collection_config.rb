@@ -68,6 +68,7 @@ module Exwiw
       instance.__send__(:validate_belongs_tos!)
       instance.__send__(:validate_fake_data!)
       instance.__send__(:validate_ignored_fields!)
+      instance.__send__(:validate_reverse_scope_column!)
       instance
     end
 
@@ -220,6 +221,14 @@ module Exwiw
             "MongodbCollectionConfig '#{name}': the primary key '#{primary_key}' must not be " \
             "marked ignore: true (the dump has to keep the identifier; remove the ignore, " \
             "or use ignore: true on the collection to exclude it entirely)."
+    end
+
+    private def validate_reverse_scope_column!
+      column = reverse_scope&.column
+      return if column.nil? || ignore || column == primary_key || fields.any? { |f| f.name == column }
+
+      raise ArgumentError,
+            "MongodbCollectionConfig '#{name}': reverse_scope.column '#{column}' is not a declared field."
     end
 
     private def validate_embedded!
