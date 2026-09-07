@@ -40,6 +40,9 @@ Gem::Specification.new do |spec|
 
   # Uncomment to register a new dependency of your gem
   spec.add_dependency "serdes", "~> 0.1"
+  # A bundled (not default) gem since Ruby 4.0: without this, `bundle exec`
+  # cannot load it unless the application happens to depend on it itself.
+  spec.add_dependency "logger"
 
   # For more information and examples about making a new gem, check out our
   # guide at: https://bundler.io/guides/creating_gem.html
