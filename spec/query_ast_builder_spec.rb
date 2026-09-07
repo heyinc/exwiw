@@ -1588,6 +1588,44 @@ RSpec.describe Exwiw::QueryAstBuilder do
           .to include('hub is referenced by multiple constrained tables (c1, c2)')
           .and include('Declare `reverse_scope`')
       end
+
+      context 'but the forward cascade rescues the table' do
+        # The ambiguity alone is not the problem — only the outcome is. When
+        # hub also belongs_to a scopable parent (here one with no path of its
+        # own, scoped by its declared reverse_scope), the cascade scopes hub
+        # after the detection steps aside, and a warning on that healthy
+        # config would teach people to skim past warnings.
+        let(:owners) do
+          Exwiw::TableConfig.from_symbol_keys(
+            name: 'owners', primary_key: 'id', belongs_tos: [],
+            reverse_scope: { via: [{ table: 'owner_grants', column: 'owner_id' }] },
+            columns: [{ name: 'id' }]
+          )
+        end
+        let(:owner_grants) do
+          Exwiw::TableConfig.from_symbol_keys(
+            name: 'owner_grants', primary_key: 'id',
+            belongs_tos: [{ table_name: 'business_entities', foreign_key: 'business_entity_id' }],
+            columns: [{ name: 'id' }, { name: 'business_entity_id' }, { name: 'owner_id' }]
+          )
+        end
+        let(:hub) do
+          Exwiw::TableConfig.from_symbol_keys(
+            name: 'hub', primary_key: 'id',
+            belongs_tos: [{ table_name: 'owners', foreign_key: 'owner_id' }],
+            columns: [{ name: 'id' }, { name: 'owner_id' }]
+          )
+        end
+        let(:all_tables) do
+          [business_entities, owners, owner_grants, hub, child('c1'), child('c2'), schema_migrations]
+        end
+
+        it 'stays quiet' do
+          ast = build('hub')
+          expect(ast.where_clauses.size).to eq(1)
+          expect(log_output.string).not_to include('multiple constrained tables')
+        end
+      end
     end
 
     context 'when declarations chain deeper than the intended shape' do
@@ -1600,29 +1638,32 @@ RSpec.describe Exwiw::QueryAstBuilder do
           columns: [{ name: 'id' }, { name: 'business_entity_id' }, { name: 'a1_id' }]
         )
       end
-      def chained(name, via_table, via_column)
+      def chained(name, via, extra_columns: [])
         Exwiw::TableConfig.from_symbol_keys(
           name: name, primary_key: 'id', belongs_tos: [],
-          reverse_scope: { via: [{ table: via_table, column: via_column }] },
-          columns: [{ name: 'id' }, { name: "#{name.succ}_id" }]
+          reverse_scope: { via: via },
+          columns: [{ name: 'id' }, { name: "#{name.succ}_id" }, *extra_columns]
         )
       end
+      # a4 reaches a3 through TWO arms, so every level below is rebuilt once
+      # per arm — the shape that would repeat the depth warning exponentially
+      # without dedup.
       let(:all_tables) do
         [
           base,
-          chained('a1', 'base', 'a1_id'),
-          chained('a2', 'a1', 'a2_id'),
-          chained('a3', 'a2', 'a3_id'),
-          chained('a4', 'a3', 'a4_id'),
+          chained('a1', [{ table: 'base', column: 'a1_id' }]),
+          chained('a2', [{ table: 'a1', column: 'a2_id' }]),
+          chained('a3', [{ table: 'a2', column: 'a3_id' }], extra_columns: [{ name: 'a4_alt_id' }]),
+          chained('a4', [{ table: 'a3', column: 'a4_id' }, { table: 'a3', column: 'a4_alt_id' }]),
           schema_migrations,
         ]
       end
 
-      it 'resolves the whole chain but warns about the depth' do
+      it 'resolves the whole chain but warns about the depth exactly once' do
         ast = build('a4')
         expect(ast.where_clauses.size).to eq(1)
-        expect(log_output.string).to include('a1.reverse_scope is nested 4 declarations deep')
-          .and include('a4 -> a3 -> a2 -> a1')
+        expect(log_output.string).to include('a4 -> a3 -> a2 -> a1')
+        expect(log_output.string.scan('a1.reverse_scope is nested 4 declarations deep').size).to eq(1)
       end
     end
 

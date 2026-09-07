@@ -2,8 +2,8 @@
 
 module Exwiw
   class QueryAstBuilder
-    def self.run(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_declared_reverse: true, forward_path: [], reverse_path: [], batch_ids: nil)
-      new(table_name, table_by_name, dump_target, logger, allow_reverse: allow_reverse, allow_declared_reverse: allow_declared_reverse, forward_path: forward_path, reverse_path: reverse_path, batch_ids: batch_ids).run
+    def self.run(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_declared_reverse: true, forward_path: [], reverse_path: [], deep_chain_warned: nil, batch_ids: nil)
+      new(table_name, table_by_name, dump_target, logger, allow_reverse: allow_reverse, allow_declared_reverse: allow_declared_reverse, forward_path: forward_path, reverse_path: reverse_path, deep_chain_warned: deep_chain_warned, batch_ids: batch_ids).run
     end
 
     # Scope-column mode classification for a single table. One of
@@ -58,7 +58,7 @@ module Exwiw
 
     attr_reader :table_name, :table_by_name, :dump_target
 
-    def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_declared_reverse: true, forward_path: [], reverse_path: [], batch_ids: nil)
+    def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_declared_reverse: true, forward_path: [], reverse_path: [], deep_chain_warned: nil, batch_ids: nil)
       @table_name = table_name
       @table_by_name = table_by_name
       @dump_target = dump_target
@@ -92,6 +92,11 @@ module Exwiw
       # children count as constrained, and flipping that count from one to two
       # makes the detection bail — silently costing a table the scope it had.
       @allow_declared_reverse = allow_declared_reverse
+      # Deep-chain warnings already emitted, keyed by the chain path and SHARED
+      # (the same Hash object) across every recursive build under one top-level
+      # run. A deep chain is rebuilt once per arm per level — exponentially many
+      # times — and must not warn exponentially many times.
+      @deep_chain_warned = deep_chain_warned || {}
     end
 
     def run
@@ -140,6 +145,20 @@ module Exwiw
             "or switch to scope-column mode to scope it directly."
           )
         end
+      end
+
+      # The reverse detection stepped aside on an ambiguity and nothing else
+      # scoped the table: at the top level of single-target mode that is a full
+      # dump, which must not happen at debug volume. Only the final outcome
+      # warns — a table the cascade rescued stays quiet. (Scope-column mode
+      # aborts in pre-flight instead.)
+      if @ambiguous_referencers && where_clauses.empty? && join_clauses.empty? &&
+         @forward_path.empty? && @reverse_path.empty? && !scope_exempt?(table)
+        @logger.warn(
+          "  #{table.name} is referenced by multiple constrained tables (#{@ambiguous_referencers}), " \
+          "which the automatic reverse extraction cannot pick between, and nothing else scopes it — " \
+          "it is dumped in full. Declare `reverse_scope` on it to union their ids."
+        )
       end
 
       QueryAst::Select.new.tap do |ast|
@@ -265,7 +284,7 @@ module Exwiw
         # reverse_scope must stay unconstrained here, or it would join the
         # candidate set and could flip it from one child to several — bailing
         # this detection out of a scope the table used to have.
-        child_query = self.class.run(other.name, table_by_name, dump_target, @logger, allow_reverse: false, allow_declared_reverse: false, forward_path: @forward_path + [table.name], reverse_path: @reverse_path + [table.name])
+        child_query = self.class.run(other.name, table_by_name, dump_target, @logger, allow_reverse: false, allow_declared_reverse: false, forward_path: @forward_path + [table.name], reverse_path: @reverse_path + [table.name], deep_chain_warned: @deep_chain_warned)
 
         # Only an *already constrained* child narrows anything; an unconstrained
         # child would select every fk value (i.e. dump all) and not help.
@@ -279,19 +298,12 @@ module Exwiw
       # behavior for those.
       if candidates.size != 1
         if candidates.size > 1
-          if @forward_path.empty? && @reverse_path.empty?
-            # A top-level build that ends up unscoped is a full dump in
-            # single-target mode (scope-column mode aborts in pre-flight), and
-            # that must not happen at debug volume.
-            names = candidates.map { |_, query| query.from_table_name }.sort.join(', ')
-            @logger.warn(
-              "  #{table.name} is referenced by multiple constrained tables (#{names}), which the " \
-              "automatic reverse extraction cannot pick between; unless something else scopes " \
-              "#{table.name}, it is dumped in full. Declare `reverse_scope` on it to union their ids."
-            )
-          else
-            @logger.debug("  #{table.name} has multiple referencing tables; skipping reverse extraction.")
-          end
+          # Remember the ambiguity, but whether it deserves a warning depends
+          # on the outcome — the forward cascade gets its turn after this and
+          # may still scope the table — so `run` decides once the clauses are
+          # final.
+          @ambiguous_referencers = candidates.map { |_, query| query.from_table_name }.sort.join(', ')
+          @logger.debug("  #{table.name} has multiple referencing tables; skipping reverse extraction.")
         end
         return nil
       end
@@ -346,12 +358,18 @@ module Exwiw
       # subqueries, so the generated SQL grows exponentially with depth (arms ^
       # depth copies of the innermost scope). Depth 2-3 is the intended shape;
       # flag anything deeper before it arrives as a mysteriously slow extraction.
+      # Deduped via @deep_chain_warned: this very build repeats once per arm per
+      # level, and the warning must not multiply with it.
       if @reverse_path.size >= 3
-        @logger.warn(
-          "  #{table.name}.reverse_scope is nested #{@reverse_path.size + 1} declarations deep " \
-          "(#{(@reverse_path + [table.name]).join(' -> ')}); the generated SQL grows exponentially " \
-          "with chain depth — consider scoping an intermediate table another way."
-        )
+        path = (@reverse_path + [table.name]).join(' -> ')
+        unless @deep_chain_warned[path]
+          @deep_chain_warned[path] = true
+          @logger.warn(
+            "  #{table.name}.reverse_scope is nested #{@reverse_path.size + 1} declarations deep " \
+            "(#{path}); the generated SQL grows exponentially with chain depth — consider scoping " \
+            "an intermediate table another way."
+          )
+        end
       end
 
       arms = table.reverse_scope.via.filter_map do |via|
@@ -369,7 +387,7 @@ module Exwiw
         # tables, and — allow_declared_reverse — may resolve its own explicit
         # reverse_scope, with reverse_path carrying this table so that
         # resolution cannot come back here.
-        ref_query = self.class.run(referencer.name, table_by_name, dump_target, @logger, allow_reverse: false, allow_declared_reverse: true, forward_path: @forward_path + [table.name], reverse_path: @reverse_path + [table.name])
+        ref_query = self.class.run(referencer.name, table_by_name, dump_target, @logger, allow_reverse: false, allow_declared_reverse: true, forward_path: @forward_path + [table.name], reverse_path: @reverse_path + [table.name], deep_chain_warned: @deep_chain_warned)
 
         unless ref_query.where_clauses.any? || ref_query.join_clauses.any?
           @logger.warn(
@@ -472,7 +490,7 @@ module Exwiw
           # cascade multi-hop. reverse_path rides along so a reverse_scope
           # resolution in progress further up cannot be re-entered through the
           # cascade.
-          parent_query = self.class.run(parent.name, table_by_name, dump_target, @logger, allow_reverse: true, forward_path: forward_path, reverse_path: @reverse_path)
+          parent_query = self.class.run(parent.name, table_by_name, dump_target, @logger, allow_reverse: true, forward_path: forward_path, reverse_path: @reverse_path, deep_chain_warned: @deep_chain_warned)
 
           # Only a constrained parent narrows anything; an unconstrained parent
           # would select every pk (i.e. dump all) and not help.
@@ -944,7 +962,7 @@ module Exwiw
 
       target_query = self.class.run(
         target.name, table_by_name, dump_target, @logger,
-        allow_reverse: true, forward_path: @forward_path + [table.name], reverse_path: @reverse_path
+        allow_reverse: true, forward_path: @forward_path + [table.name], reverse_path: @reverse_path, deep_chain_warned: @deep_chain_warned
       )
       # An unconstrained target selects every id, i.e. does not scope the arm at
       # all; dropping the arm is the safe outcome.
