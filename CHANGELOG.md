@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-09-07
+
 ### Fixed
 
 - **`logger` is now a declared runtime dependency.** It stopped being a default gem in Ruby 4.0, so `exwiw` running under `bundle exec` on Ruby 4.0 failed at load with `cannot load such file -- logger` unless the application happened to depend on it itself (Rails applications do, through `activesupport`, which is why the gem's own test suite never noticed). Invoking the bare `exwiw` executable outside Bundler was unaffected, since RubyGems finds the bundled gem on its own.
