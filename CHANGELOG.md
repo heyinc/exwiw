@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-09-07
+
 ### Added
 
 - **`reverse_scope.column` matches the arm union against a column other than the primary key.** A table referenced by a shared code rather than by its id (`rate_cards.code <- contracts.rate_code`) could not be reverse-scoped, because the generated clause was always `<table>.<primary_key> IN (…)`. The new optional key names the column on the reverse-scoped table to compare with; unset, the primary key is used as before. Both the SQL adapters and the MongoDB runtime filter honor it, and a `column` that is not declared on the table/collection is rejected on load.
