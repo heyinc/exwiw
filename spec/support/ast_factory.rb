@@ -286,13 +286,10 @@ module AstFactory
     end
   end
 
-  # A reverse-scope UNION whose two arms are foreign keys of the SAME referencer
-  # (`documents`), and that referencer is itself constrained to a nested scope
-  # id-set (its own reverse_scope through `agreements`). This is what the
-  # builder emits for a declared reverse_scope chain — and the shape that would
-  # reopen one TEMPORARY table twice in a single statement if the nested set
-  # were materialized inside the arms. Adapter-agnostic; built directly so the
-  # adapters' rendering can be asserted in isolation.
+  # A reverse-scope UNION whose two arms are foreign keys of the same referencer,
+  # itself constrained to a nested scope id-set — the shape that would reopen one
+  # TEMPORARY table twice in a statement if the nested set were materialized
+  # inside the arms. Adapter-agnostic.
   def build_union_arms_sharing_nested_scope_ast
     plain = ->(name) { Exwiw::TableColumn.from_symbol_keys(name: name) }
 

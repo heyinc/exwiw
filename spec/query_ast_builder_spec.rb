@@ -1410,18 +1410,11 @@ RSpec.describe Exwiw::QueryAstBuilder do
     end
 
     context 'when a via referencer is itself scoped only by its own reverse_scope (a declared chain)' do
-      # The canonical shape is a normalized side table referenced through several
-      # foreign keys of a document-style table that is in turn reachable only
-      # through a polymorphic join row:
+      # attachments <-(cover/body fk)- documents <-(document_id)- agreements -> the target
       #
-      #   attachments <-(cover/body fk)- documents <-(document_id)- agreements -> the target
-      #
-      # `documents` has no belongs_to of its own — it is scoped by its declared
-      # reverse_scope through `agreements` — so before this worked, every
-      # `attachments` arm came out unconstrained and was dropped, silently
-      # degrading `attachments` to a full dump in single-target mode. A declared
-      # arm now resolves the referencer's own declared reverse_scope, so the
-      # chain nests.
+      # `documents` is scoped only by its own reverse_scope, so every
+      # `attachments` arm used to come out unconstrained and be dropped —
+      # silently degrading `attachments` to a full dump in single-target mode.
       let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'business_entities', ids: [1]) }
       let(:business_entities) do
         Exwiw::TableConfig.from_symbol_keys(
@@ -1491,13 +1484,10 @@ RSpec.describe Exwiw::QueryAstBuilder do
     end
 
     context 'when the automatic detection has a sibling referencer that is reverse_scope-only' do
-      # The regression guard for nesting declared scopes: `hub` declares nothing
-      # and is scoped by the AUTOMATIC single-referencer detection through `c1`.
-      # Its other referencer `c2` is scoped only by c2's own reverse_scope — if
-      # the detection's child builds resolved that declaration, `c2` would join
-      # the candidate set, the count would flip from one to two, and the
-      # detection would bail `hub` into a silent full dump. The declared-chain
-      # support must therefore stay out of the auto-detection's child builds.
+      # `hub` is scoped by the automatic detection through `c1`; its other
+      # referencer `c2` is scoped only by c2's own reverse_scope. If the
+      # detection's child builds resolved that declaration, the candidate count
+      # would flip from one to two and bail `hub` into a silent full dump.
       let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'business_entities', ids: [1]) }
       let(:business_entities) do
         Exwiw::TableConfig.from_symbol_keys(
@@ -1554,8 +1544,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
 
     context 'when multiple constrained referencers leave a table to the auto-detection' do
       # Two directly-scoped children reference `hub`; the detection cannot pick
-      # one, and in single-target mode nothing aborts — the table is dumped in
-      # full. That outcome must be loud (warn), not a debug line.
+      # one, and in single-target mode the table is dumped in full — loudly.
       let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'business_entities', ids: [1]) }
       let(:business_entities) do
         Exwiw::TableConfig.from_symbol_keys(
@@ -1591,9 +1580,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
 
       context 'in scope-column mode' do
         # The identical ambiguity aborts in the pre-flight there — the message
-        # operators actually read — so THAT message must carry the same precise
-        # remedy the single-target warning gives; none of the generic
-        # unscopable options is the right fix.
+        # operators actually read — so it must carry the same precise remedy.
         let(:dump_target) { Exwiw::DumpTarget.new(ids: ['be1'], scope_column: 'business_entity_id') }
 
         it 'names the referencers and suggests reverse_scope in the pre-flight abort' do
@@ -1614,11 +1601,8 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
 
       context 'but the forward cascade rescues the table' do
-        # The ambiguity alone is not the problem — only the outcome is. When
-        # hub also belongs_to a scopable parent (here one with no path of its
-        # own, scoped by its declared reverse_scope), the cascade scopes hub
-        # after the detection steps aside, and a warning on that healthy
-        # config would teach people to skim past warnings.
+        # Only the outcome matters: the cascade scopes hub after the detection
+        # steps aside, and a healthy config must not warn.
         let(:owners) do
           Exwiw::TableConfig.from_symbol_keys(
             name: 'owners', primary_key: 'id', belongs_tos: [],
@@ -1653,8 +1637,8 @@ RSpec.describe Exwiw::QueryAstBuilder do
     end
 
     context 'when declarations chain deeper than the intended shape' do
-      # Each level re-embeds its referencers' subqueries, so SQL size is
-      # exponential in chain depth; a chain of four declarations gets flagged.
+      # A chain of four declarations gets flagged (SQL size is exponential in
+      # chain depth).
       let(:dump_target) { Exwiw::DumpTarget.new(ids: ['be1'], scope_column: 'business_entity_id') }
       let(:base) do
         Exwiw::TableConfig.from_symbol_keys(
@@ -1669,9 +1653,8 @@ RSpec.describe Exwiw::QueryAstBuilder do
           columns: [{ name: 'id' }, { name: "#{name.succ}_id" }, *extra_columns]
         )
       end
-      # a4 reaches a3 through TWO arms, so every level below is rebuilt once
-      # per arm — the shape that would repeat the depth warning exponentially
-      # without dedup.
+      # a4 reaches a3 through two arms, so every level below is rebuilt once per
+      # arm — the shape that would repeat the depth warning without dedup.
       let(:all_tables) do
         [
           base,
@@ -1693,9 +1676,7 @@ RSpec.describe Exwiw::QueryAstBuilder do
 
     context 'when two declared reverse_scopes form a cycle' do
       # hub_x is declared as scoped by hub_y and hub_y by hub_x, with no real
-      # scope anywhere in the loop. Resolving one arm may not re-enter a table
-      # already being reverse-resolved — the cycle is cut, both come out
-      # unconstrained, and the pre-flight rejects them instead of looping.
+      # scope anywhere in the loop; the cycle must be cut, not recursed.
       let(:hub_x) do
         Exwiw::TableConfig.from_symbol_keys(
           name: 'hub_x', primary_key: 'id', belongs_tos: [],

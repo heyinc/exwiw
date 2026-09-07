@@ -114,10 +114,6 @@ module Exwiw
         end
 
         it "compiles nested scopes inside union arms inline, never reopening a temp table" do
-          # Both arms carry the same nested id-set; materializing it would put
-          # one TEMPORARY table twice into the outer set's CREATE statement,
-          # which MySQL rejects (ER_CANT_REOPEN_TABLE). The arms must embed the
-          # nested scope as an inline derived table instead.
           result = adapter.execute(build_union_arms_sharing_nested_scope_ast)
 
           creates = recorded.grep(/\ACREATE TEMPORARY TABLE/)
@@ -896,12 +892,9 @@ module Exwiw
       end
 
       describe "chained reverse_scope against a live database" do
-        # The shape that used to raise ER_CANT_REOPEN_TABLE during id-set
-        # materialization: both arms of nr_attachments' union carry the SAME
-        # nested id-set (nr_documents' own reverse_scope through
-        # nr_agreements), so materializing it inside the arms would reference
-        # one TEMPORARY table twice in the outer set's CREATE. Real MySQL is
-        # the only thing that can prove the emitted statement is accepted.
+        # Both arms of nr_attachments' union carry the same nested id-set; only
+        # real MySQL can prove the emitted statement is accepted
+        # (ER_CANT_REOPEN_TABLE is a server-side restriction).
         let(:log_output) { StringIO.new }
         let(:logger) { Logger.new(log_output) }
         let(:client) { adapter.send(:connection) }
