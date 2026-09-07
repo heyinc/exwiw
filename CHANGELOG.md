@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`reverse_scope` declarations now chain: an arm whose referencer is itself scoped only by its own `reverse_scope` resolves instead of being dropped.** Previously the arm's referencer query was built with reverse extraction disabled entirely, so a referencer with no `belongs_to` path of its own came out unconstrained and the arm was skipped — and in single `--target-table` mode the table then silently fell back to a **full dump** (scope-column mode rejected it in pre-flight). Declared chains — `attachments <- documents <- join rows <- the target` — now nest: each arm resolves the referencer's own declared `reverse_scope`, while the automatic single-referencer detection stays top-level only. A cycle of declarations is cut (the repeated table's arm comes out unconstrained and is dropped with the existing warning) rather than recursing forever. MongoDB's runtime reverse scoping is unchanged.
+
+### Fixed
+
+- **MySQL: sibling `UNION` arms sharing a nested scope id-set no longer fail id-set materialization.** Each arm of a union id-set (several foreign keys of one referencer, or polymorphic arms probing the same ancestor) could embed the same materialized id-set, and MySQL cannot reference one `TEMPORARY` table twice in a single statement (`ER_CANT_REOPEN_TABLE`); the failed `CREATE` then disabled materialization for the rest of the run. Nested scopes inside union arms now compile as inline derived tables, so the outer id-set materializes once and the temp table appears once per statement.
+
 ## [1.0.0] - 2026-09-01
 
 ### Removed
