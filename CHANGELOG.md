@@ -8,7 +8,7 @@
 
 ### Changed
 
-- **A table left unscoped because several constrained tables reference it is now flagged at `warn`, not `debug`.** In single `--target-table` mode that outcome is a full dump of the table, and the only signal used to be a debug line; the warning names the referencers and suggests declaring `reverse_scope` to union their ids.
+- **A table left unscoped because several constrained tables reference it is now flagged at `warn`, not `debug`.** In single `--target-table` mode that outcome is a full dump of the table, and the only signal used to be a debug line; the warning names the referencers and suggests declaring `reverse_scope` to union their ids. In scope-column mode the pre-flight abort message changed shape for the same situation: the affected table's entry now names the referencers with the same `reverse_scope` suggestion, per table, instead of a generic clause in the message tail.
 
 ### Fixed
 
