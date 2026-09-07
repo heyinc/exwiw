@@ -637,7 +637,7 @@ module Exwiw
         ids = ids.flat_map { |value| value.is_a?(Array) ? value : [value] }
         ids.compact!
         ids.uniq!
-        { config.primary_key => { "$in" => ids } }
+        { config.reverse_scope.key_for(config.primary_key) => { "$in" => ids } }
       end
 
       # The set of collection names *genuinely scoped* by the dump target: the

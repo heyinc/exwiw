@@ -338,6 +338,14 @@ module Exwiw
           expect(config.reverse_scope).to be_nil
           expect(config.to_hash).not_to have_key("reverse_scope")
         end
+
+        it 'loads reverse_scope.column and rejects one that is not a declared field' do
+          with_column = ->(column) { json.merge("reverse_scope" => json["reverse_scope"].merge("column" => column)) }
+          expect(described_class.from(with_column.call("_id")).reverse_scope.column).to eq("_id")
+          expect {
+            described_class.from(with_column.call("handle"))
+          }.to raise_error(ArgumentError, /reverse_scope\.column 'handle' is not a declared field/)
+        end
       end
 
       context 'when reverse_scope is set on an embedded config' do

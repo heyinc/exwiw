@@ -607,6 +607,35 @@ module Exwiw
         ])
         expect(merged.column_names).to eq(['id', 'added'])
       end
+
+      it 'round-trips column, which defaults to the primary key when unset' do
+        config = TableConfig.from_symbol_keys(
+          name: 'rate_cards', primary_key: 'id',
+          reverse_scope: { column: 'code', via: [{ table: 'contracts', column: 'rate_code' }] },
+          columns: [{ name: 'id' }, { name: 'code' }],
+        )
+        reloaded = TableConfig.from(JSON.parse(JSON.generate(config.to_hash)))
+        expect(reloaded.reverse_scope.column).to eq('code')
+        expect(reloaded.reverse_scope.key_for('id')).to eq('code')
+
+        hash = TableConfig.from_symbol_keys(
+          name: 'users', primary_key: 'id',
+          reverse_scope: { via: [{ table: 'customers', column: 'user_id' }] },
+          columns: [{ name: 'id' }],
+        ).to_hash
+        expect(hash['reverse_scope']).not_to have_key('column')
+        expect(ReverseScope.from(hash['reverse_scope']).key_for('id')).to eq('id')
+      end
+
+      it 'rejects a column that is not declared on the table' do
+        expect {
+          TableConfig.from_symbol_keys(
+            name: 'rate_cards', primary_key: 'id',
+            reverse_scope: { column: 'code', via: [{ table: 'contracts', column: 'rate_code' }] },
+            columns: [{ name: 'id' }],
+          )
+        }.to raise_error(ArgumentError, /reverse_scope\.column 'code' is not a declared column/)
+      end
     end
 
     describe 'batch_scope' do

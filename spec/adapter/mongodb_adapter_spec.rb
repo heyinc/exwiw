@@ -563,6 +563,22 @@ module Exwiw
             query = adapter.build_query(accounts, dump_target, local_config_by_name)
             expect(query.filter).to eq("_id" => { "$in" => [placeholder] })
           end
+
+          it "matches the captured arm ids against reverse_scope.column when it is set" do
+            accounts_by_handle = MongodbCollectionConfig.from(
+              "name" => "accounts", "primary_key" => "_id",
+              "reverse_scope" => accounts_reverse_scope.merge("column" => "handle"),
+              "belongs_tos" => [], "fields" => [{ "name" => "_id" }, { "name" => "handle" }],
+            )
+            adapter.instance_variable_set(:@state, {
+              "articles" => { "_id" => %w[ar1], "author_account_id" => %w[h1] },
+              "invitations" => { "_id" => %w[in1], "invitee_account_id" => %w[h2] },
+            })
+            query = adapter.build_query(
+              accounts_by_handle, dump_target, local_config_by_name.merge("accounts" => accounts_by_handle)
+            )
+            expect(query.filter).to eq("handle" => { "$in" => %w[h1 h2] })
+          end
         end
       end
 

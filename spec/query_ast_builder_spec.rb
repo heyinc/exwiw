@@ -1708,6 +1708,38 @@ RSpec.describe Exwiw::QueryAstBuilder do
         logger,
       )
     end
+
+    context 'when reverse_scope.column names a non-primary-key column' do
+      let(:rate_cards) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'rate_cards', primary_key: 'id', belongs_tos: [],
+          reverse_scope: { column: 'code', via: [{ table: 'contracts', column: 'rate_code' }] },
+          columns: [{ name: 'id' }, { name: 'code' }, { name: 'percentage' }]
+        )
+      end
+      let(:contracts) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'contracts', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }, { name: 'business_entity_id' }, { name: 'rate_code' }]
+        )
+      end
+      let(:all_tables) { [users, customers, staff, end_users, rate_cards, contracts, schema_migrations] }
+
+      it 'matches the arm union against that column instead of the primary key' do
+        ast = build('rate_cards')
+        expect(ast.where_clauses.map(&:column_name)).to eq(['code'])
+        expect(sqlite_adapter.compile_ast(ast)).to eq(
+          "SELECT rate_cards.id, rate_cards.code, rate_cards.percentage FROM rate_cards JOIN (SELECT DISTINCT exwiw_scope_src_0.rate_code AS exwiw_scope_id FROM (SELECT contracts.rate_code FROM contracts WHERE contracts.business_entity_id = 'be1' AND contracts.rate_code IS NOT NULL) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON rate_cards.code = exwiw_scope_ids_0.exwiw_scope_id"
+        )
+      end
+
+      it 'classifies the table as :referenced_by and passes validate_scope!' do
+        expect(described_class.scope_category('rate_cards', table_by_name, dump_target, logger)).to eq(:referenced_by)
+        expect {
+          described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+        }.not_to raise_error
+      end
+    end
   end
 
   describe 'multi-hop forward scope cascade (via_scoped_parent)' do

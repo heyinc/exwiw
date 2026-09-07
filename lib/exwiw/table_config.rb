@@ -245,6 +245,11 @@ module Exwiw
                 "(got #{batch_scope.size})."
         end
 
+        if reverse_scope&.column && !ignore && reverse_scope.column != primary_key && columns.none? { |c| c.name == reverse_scope.column }
+          raise ArgumentError,
+                "Table '#{name}': reverse_scope.column '#{reverse_scope.column}' is not a declared column."
+        end
+
         columns.each { |column| validate_ruby_side_masking!(column) }
       end
     end
