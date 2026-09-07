@@ -513,6 +513,20 @@ module Exwiw
         ENV['DATABASE_PASSWORD'] = original
       end
 
+      it 'rejects --fail-on on a verb other than check' do
+        argv = ['schema', 'generate', '--from-db', '--fail-on=stale', '--adapter=mysql', '--host=localhost',
+                '--port=3306', '--user=root', '--database=app', '--schema-dir=e2e/mysql-schema']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--fail-on only applies to `exwiw schema check`/).to_stderr
+      end
+
+      it 'rejects an unknown --fail-on category' do
+        argv = ['schema', 'check', '--from-db', '--fail-on=warnings', '--adapter=mysql', '--host=localhost',
+                '--port=3306', '--user=root', '--database=app', '--schema-dir=e2e/mysql-schema']
+        expect { run_cli(argv) }.to raise_error(SystemExit)
+          .and output(/--fail-on must be 'any' or 'stale'/).to_stderr
+      end
+
       it 'requires an existing schema dir for check' do
         argv = ['schema', 'check', '--from-db', '--adapter=mysql', '--host=localhost', '--port=3306',
                 '--user=root', '--database=app', '--schema-dir=/no/such/schema/dir']
@@ -572,6 +586,31 @@ module Exwiw
             .to raise_error(SystemExit) { |error| expect(error.status).to eq(1) }
             .and output(/"added_tables": \[\s*"users"|"added_tables"/).to_stdout
             .and output(/exwiw schema generate --from-db.*needs_mask_decision/m).to_stderr
+        end
+
+        # The two sides of --fail-on=stale: a config that is merely behind the
+        # database (pure additions) must not stop an extraction gate, while a
+        # config naming a column the database no longer has must.
+        it 'exits 0 under --fail-on=stale when the drift is additions only' do
+          expect do
+            expect { capture_stdout { run_cli(schema_argv('check', ['--fail-on=stale'])) } }
+              .not_to raise_error
+          end.to output(/nothing the extraction reads is stale/).to_stderr
+          expect(JSON.parse(@stdout)['added_tables']).not_to be_empty
+        end
+
+        it 'exits 1 under --fail-on=stale when the config names a column the database lost' do
+          generate_plain
+          path = File.join(schema_dir, 'users.json')
+          config = JSON.parse(File.read(path))
+          config['columns'] << { 'name' => 'removed_by_migration' }
+          File.write(path, JSON.pretty_generate(config) + "\n")
+
+          expect do
+            expect { capture_stdout { run_cli(schema_argv('check', ['--fail-on=stale'])) } }
+              .to raise_error(SystemExit) { |error| expect(error.status).to eq(1) }
+          end.to output(/out of date or has undecided masking/).to_stderr
+          expect(JSON.parse(@stdout)['stale_columns']).to eq(['users.removed_by_migration'])
         end
 
         it 'exits 0 and prints the report when the config matches the database' do

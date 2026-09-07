@@ -533,6 +533,12 @@ exwiw schema tidy --from-db -a postgresql -h db.example.com -p 5432 -u app --dat
   `EXWIW_SCHEMA_CHECK_OUTPUT`, and exits 1 when the config needs attention. A check that could
   not *run* (an unreachable database, a malformed config) exits with a different status, so CI
   can tell the two apart.
+- `check` also accepts `--fail-on=stale` for use as a pre-extraction gate: the exit code then
+  tracks only the report's `stale_tables` / `stale_columns` — a non-ignored config still naming
+  a table or column the schema no longer has, which is exactly the drift that would fail the
+  export's SELECT. Additions and unresolved `needs_mask_decision` flags stay visible in the
+  report but do not stop the run, so a schema migration that merely *adds* a column does not
+  block extraction. The default (`--fail-on=any`) is the CI behavior above, unchanged.
 - One run covers one database — the connection addresses one — so the files are written flat into
   the schema directory. There is no per-database subdirectory layout here; a second database is a
   second run against a second connection.

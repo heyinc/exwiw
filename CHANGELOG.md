@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`exwiw schema check --from-db --fail-on=stale` keys the exit code to the drift that would break an export, so the check can run as a pre-extraction gate.** The report gains two categories, `stale_tables` and `stale_columns`: a non-ignored config still naming a table or column the schema no longer has — the extraction SELECT would name something that does not exist. Additions (a new table or column the config has not adopted yet) and unresolved `needs_mask_decision` flags stay in the report but no longer drive the exit code under `--fail-on=stale`, because for a gate that runs before every extraction they are someone's TODO rather than a reason to stop the run; `--fail-on=any` (the default) keeps today's behavior exactly, and the new report keys are additive, so existing consumers of the JSON are unaffected. Removals on an `ignore: true` table, of an `ignore: true` column, or on a rails-managed table are not stale — nothing selects them.
+
+
 ## [1.0.0] - 2026-09-01
 
 ### Removed
