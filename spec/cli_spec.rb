@@ -622,9 +622,6 @@ module Exwiw
         end
 
         it 'keeps the mask advice next to the stale one in the default one-shot mode' do
-          # A CI run reports everything at once: with both a dropped column and
-          # an undecided masking present, the operator must not fix the stale
-          # part, re-run, and only then learn about the mask decisions.
           generate_plain
           path = File.join(schema_dir, 'users.json')
           config = JSON.parse(File.read(path))

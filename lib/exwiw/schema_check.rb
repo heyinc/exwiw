@@ -22,17 +22,12 @@ module Exwiw
     ].freeze
 
     # The subset of the removals that would break an `export` run: a non-ignored
-    # config still referencing a table or column the schema no longer has means
-    # the extraction SELECT names something that does not exist. Removals on an
-    # `ignore: true` table (or of an `ignore: true` column) stay out — nothing
-    # selects them — as do additions, which only mean data is not extracted yet.
-    # `--fail-on=stale` keys the exit code to these, so a gate that runs before
-    # every extraction fails only when the extraction itself would.
-    #
-    # One deliberate over-approximation: a config naming a database VIEW lands
-    # here when the generator treats views as removed tables (tidy's stance),
-    # even though a SELECT against the view would succeed. Generated configs
-    # never name views, so this only affects a hand-written one.
+    # config still referencing a table or column the schema no longer has, i.e.
+    # the extraction SELECT would name something that does not exist. Removals of
+    # `ignore: true` entries stay out (nothing selects them), as do additions.
+    # `--fail-on=stale` keys the exit code to these. Deliberate over-approximation:
+    # a hand-written config naming a database VIEW lands here too (tidy's stance),
+    # though a SELECT against it would succeed.
     STALE_CATEGORIES = %w[stale_tables stale_columns].freeze
 
     def self.from_rails_application(schema_dir:)
@@ -144,9 +139,8 @@ module Exwiw
         if after.nil?
           label = table_label(key, before)
           report["removed_tables"] << label
-          # A rails-managed table is extracted too (dumped whole), so its
-          # disappearance breaks the export just the same; only `ignore: true`
-          # keeps a removed table out of the stale set.
+          # A rails-managed table is dumped whole, so its disappearance breaks
+          # the export too; only `ignore: true` keeps a removed table out.
           report["stale_tables"] << label unless before["ignore"]
           next
         end
@@ -178,10 +172,9 @@ module Exwiw
     end
 
     # Whether the extraction SELECT names this table's columns: an `ignore: true`
-    # config only contributes DDL, and a rails-managed one is dumped whole
-    # (`SELECT *`) without naming columns — so a removed COLUMN cannot break
-    # either. A removed rails-managed TABLE still breaks the export; the
-    # removed-table branch in #diff handles that case on its own.
+    # config only contributes DDL, and a rails-managed one is dumped as
+    # `SELECT *` — so a removed column cannot break either. (A removed
+    # rails-managed table still can; #diff handles that separately.)
     private def extracted?(config)
       !config["ignore"] && !TableConfig::RAILS_MANAGED_TYPES.include?(config["type"])
     end

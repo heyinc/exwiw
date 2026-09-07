@@ -256,10 +256,8 @@ module Exwiw
 
       return if SchemaCheck.clean?(report)
 
-      # --fail-on=stale: an extraction gate cares only about the drift that
-      # would break the export itself; additions and undecided masking are
-      # someone's TODO, not a reason to stop a run. The report above still
-      # carries them.
+      # --fail-on=stale: a pre-extraction gate stops only on the drift that
+      # would break the export itself; the report above still carries the rest.
       if @fail_on == "stale" && !SchemaCheck.stale?(report)
         $stderr.puts "exwiw: the schema config has drifted, but nothing the extraction reads is stale " \
                      "(--fail-on=stale); run `exwiw schema generate --from-db` at your leisure."
@@ -267,19 +265,16 @@ module Exwiw
       end
 
       if SchemaCheck.stale?(report)
-        # Name what blocks the export, so an operator whose run was just gated
-        # is not sent off to resolve mask decisions that have nothing to do
-        # with the failure. Capped: a migration can drop dozens of columns, and
-        # the full list is in the report above.
+        # Name what blocks the export, capped — a migration can drop dozens of
+        # columns, and the full list is in the report above.
         stale = SchemaCheck::STALE_CATEGORIES.flat_map { |category| report.fetch(category, []) }
         listed = stale.first(10)
         listed << "and #{stale.size - listed.size} more (see the report)" if stale.size > listed.size
         $stderr.puts "exwiw: the config still references #{listed.join(', ')} — gone from the database, " \
                      "so an extraction SELECT would fail on them; " \
                      "run `exwiw schema generate --from-db` (then `exwiw schema tidy --from-db`) to drop them."
-        # The default (CI) mode is a one-shot report, so keep the mask advice
-        # alongside the stale one rather than revealing it on the next run. The
-        # gate deliberately stays quiet about it.
+        # The default (CI) mode is a one-shot report; the gate deliberately
+        # stays quiet about mask decisions.
         if @fail_on != "stale" && report.fetch("needs_mask_decision", []).any?
           $stderr.puts "exwiw: the report also lists `needs_mask_decision` columns; resolve those too."
         end
