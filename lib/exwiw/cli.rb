@@ -119,6 +119,10 @@ module Exwiw
       @parallel_workers = nil
       @mongodb_query_timeout_ms = nil
       @explain_verbosity = nil
+      # `schema check` only: which part of the report drives the exit code.
+      # nil (not "any") so validation can tell "user passed --fail-on" apart
+      # from the default when rejecting it on the other verbs.
+      @fail_on = nil
       # nil (not :info) so we can tell "user passed --log-level" from the default,
       # letting a config-file value fill in; the :info default is applied later.
       @log_level = nil
@@ -252,9 +256,33 @@ module Exwiw
 
       return if SchemaCheck.clean?(report)
 
-      $stderr.puts "exwiw: the schema config is out of date or has undecided masking; " \
-                   "run `exwiw schema generate --from-db` (then `exwiw schema tidy --from-db`) " \
-                   "and resolve every `needs_mask_decision` column."
+      # --fail-on=stale: a pre-extraction gate stops only on the drift that
+      # would break the export itself; the report above still carries the rest.
+      if @fail_on == "stale" && !SchemaCheck.stale?(report)
+        $stderr.puts "exwiw: the schema config has drifted, but nothing the extraction reads is stale " \
+                     "(--fail-on=stale); run `exwiw schema generate --from-db` at your leisure."
+        return
+      end
+
+      if SchemaCheck.stale?(report)
+        # Name what blocks the export, capped — a migration can drop dozens of
+        # columns, and the full list is in the report above.
+        stale = SchemaCheck::STALE_CATEGORIES.flat_map { |category| report.fetch(category, []) }
+        listed = stale.first(10)
+        listed << "and #{stale.size - listed.size} more (see the report)" if stale.size > listed.size
+        $stderr.puts "exwiw: the config still references #{listed.join(', ')} — gone from the database, " \
+                     "so an extraction SELECT would fail on them; " \
+                     "run `exwiw schema generate --from-db` (then `exwiw schema tidy --from-db`) to drop them."
+        # The default (CI) mode is a one-shot report; the gate deliberately
+        # stays quiet about mask decisions.
+        if @fail_on != "stale" && report.fetch("needs_mask_decision", []).any?
+          $stderr.puts "exwiw: the report also lists `needs_mask_decision` columns; resolve those too."
+        end
+      else
+        $stderr.puts "exwiw: the schema config is out of date or has undecided masking; " \
+                     "run `exwiw schema generate --from-db` (then `exwiw schema tidy --from-db`) " \
+                     "and resolve every `needs_mask_decision` column."
+      end
       exit SCHEMA_CHECK_DIRTY_EXIT
     end
 
@@ -639,6 +667,15 @@ module Exwiw
         exit 1
       end
 
+      if @fail_on && @schema_verb != "check"
+        $stderr.puts "--fail-on only applies to `exwiw schema check` (got `exwiw schema #{@schema_verb}`)."
+        exit 1
+      end
+      if @fail_on && !%w[any stale].include?(@fail_on)
+        $stderr.puts "--fail-on must be 'any' or 'stale' (got '#{@fail_on}')."
+        exit 1
+      end
+
       unless DbIntrospector::SUPPORTED_ADAPTERS.include?(@database_adapter)
         $stderr.puts "--from-db supports the #{DbIntrospector::SUPPORTED_ADAPTERS.join(' and ')} adapters only " \
                      "(got '#{@database_adapter}'). sqlite and mongodb schemas are not read this way."
@@ -826,6 +863,7 @@ module Exwiw
         end
         opts.on("--parallel-workers=N", Integer, "Fork N workers for the MongoDB dump's parallel schedule (mongodb + export only; N>=2 enables it, default is serial). Output is byte-identical to serial; falls back to serial where fork is unavailable.") { |v| @parallel_workers = v }
         opts.on("--mongodb-query-timeout-ms=N", Integer, "Global server-enforced timeout (ms) for every MongoDB query (mongodb only). Aborts an accidentally heavy/unscoped query past the deadline. Overridden per collection by `query_timeout_ms` in the schema config.") { |v| @mongodb_query_timeout_ms = v }
+        opts.on("--fail-on=CATEGORY", "schema check only: what makes the exit code non-zero. 'any' (default) fails on any drift or undecided masking; 'stale' fails only when the committed config references tables/columns the schema no longer has - the drift that would break an export. The full report is printed either way.") { |v| @fail_on = v }
         opts.on("--log-level=LEVEL", "Log level (debug, info). default is info") { |v| @log_level = v.to_sym }
 
         opts.on("--help", "Print this help") do

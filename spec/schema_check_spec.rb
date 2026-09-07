@@ -91,6 +91,71 @@ module Exwiw
       expect(described_class.clean?(report)).to be(false)
     end
 
+    describe "staleness (the drift that would break an export)" do
+      it "marks a removed column of an extracted table stale" do
+        generate_current_config
+        rewrite("users") { |config| config["columns"] << { "name" => "removed_by_migration" } }
+
+        expect(report["stale_columns"]).to eq(["users.removed_by_migration"])
+        expect(report["stale_tables"]).to be_empty
+        expect(described_class.stale?(report)).to be(true)
+      end
+
+      it "marks a removed table stale when its config is extracted" do
+        generate_current_config
+        FileUtils.cp(config_path("users"), config_path("obsolete"))
+        rewrite("obsolete") { |config| config["name"] = "obsolete" }
+
+        expect(report["stale_tables"]).to eq(["obsolete"])
+        expect(described_class.stale?(report)).to be(true)
+      end
+
+      it "marks a removed rails-managed table stale: it is dumped whole" do
+        generate_current_config
+        File.write(
+          config_path("gone_migrations"),
+          JSON.pretty_generate("name" => "gone_migrations", "type" => "rails_managed_schema_migrations") + "\n"
+        )
+
+        expect(report["removed_tables"]).to eq(["gone_migrations"])
+        expect(report["stale_tables"]).to eq(["gone_migrations"])
+        expect(described_class.stale?(report)).to be(true)
+      end
+
+      it "does not mark an ignored table stale, however it drifts" do
+        generate_current_config
+        FileUtils.cp(config_path("users"), config_path("obsolete"))
+        rewrite("obsolete") do |config|
+          config["name"] = "obsolete"
+          config["ignore"] = true
+        end
+
+        expect(report["removed_tables"]).to eq(["obsolete"])
+        expect(report["stale_tables"]).to be_empty
+        expect(described_class.stale?(report)).to be(false)
+      end
+
+      it "does not mark an ignored column stale: the SELECT never names it" do
+        generate_current_config
+        rewrite("users") do |config|
+          config["columns"] << { "name" => "removed_by_migration", "ignore" => true }
+        end
+
+        expect(report["removed_columns"]).to eq(["users.removed_by_migration"])
+        expect(report["stale_columns"]).to be_empty
+        expect(described_class.stale?(report)).to be(false)
+      end
+
+      it "does not mark additions stale: data is only not extracted yet" do
+        generate_current_config
+        rewrite("users") { |config| config["columns"].reject! { |c| c["name"] == "email" } }
+
+        expect(report["added_columns"]).to eq(["users.email"])
+        expect(described_class.stale?(report)).to be(false)
+        expect(described_class.clean?(report)).to be(false)
+      end
+    end
+
     it "leaves the config directory untouched" do
       generate_current_config
       rewrite("users") { |config| config["columns"].reject! { |c| c["name"] == "email" } }
