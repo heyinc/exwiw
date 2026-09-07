@@ -894,6 +894,76 @@ module Exwiw
           expect(rows.map(&:last)).to eq(['on t1 post', 'on t1 page'])
         end
       end
+
+      describe "chained reverse_scope against a live database" do
+        # The shape that used to raise ER_CANT_REOPEN_TABLE during id-set
+        # materialization: both arms of nr_attachments' union carry the SAME
+        # nested id-set (nr_documents' own reverse_scope through
+        # nr_agreements), so materializing it inside the arms would reference
+        # one TEMPORARY table twice in the outer set's CREATE. Real MySQL is
+        # the only thing that can prove the emitted statement is accepted.
+        let(:log_output) { StringIO.new }
+        let(:logger) { Logger.new(log_output) }
+        let(:client) { adapter.send(:connection) }
+        let(:raw_connection) { client.send(:raw) }
+        let(:dump_target) { Exwiw::DumpTarget.new(ids: ['t1'], scope_column: 'tenant_id') }
+        let(:nr_agreements) do
+          TableConfig.from_symbol_keys(
+            name: 'nr_agreements', primary_key: 'id', belongs_tos: [],
+            columns: [{ name: 'id' }, { name: 'tenant_id' }, { name: 'document_id' }]
+          )
+        end
+        let(:nr_documents) do
+          TableConfig.from_symbol_keys(
+            name: 'nr_documents', primary_key: 'id', belongs_tos: [],
+            reverse_scope: { via: [{ table: 'nr_agreements', column: 'document_id' }] },
+            columns: [{ name: 'id' }, { name: 'cover_attachment_id' }, { name: 'body_attachment_id' }]
+          )
+        end
+        let(:nr_attachments) do
+          TableConfig.from_symbol_keys(
+            name: 'nr_attachments', primary_key: 'id', belongs_tos: [],
+            reverse_scope: {
+              via: [
+                { table: 'nr_documents', column: 'cover_attachment_id' },
+                { table: 'nr_documents', column: 'body_attachment_id' },
+              ],
+            },
+            columns: [{ name: 'id' }, { name: 'name' }]
+          )
+        end
+        let(:table_by_name) do
+          [nr_agreements, nr_documents, nr_attachments].each_with_object({}) { |t, h| h[t.name] = t }
+        end
+        let(:attachments_ast) { QueryAstBuilder.run('nr_attachments', table_by_name, dump_target, logger) }
+
+        before do
+          raw_connection.query("DROP TABLE IF EXISTS nr_attachments, nr_documents, nr_agreements")
+          raw_connection.query("CREATE TABLE nr_agreements (id INT PRIMARY KEY, tenant_id VARCHAR(8), document_id INT)")
+          raw_connection.query(
+            "CREATE TABLE nr_documents (id INT PRIMARY KEY, cover_attachment_id INT, body_attachment_id INT)"
+          )
+          raw_connection.query("CREATE TABLE nr_attachments (id INT PRIMARY KEY, name VARCHAR(32))")
+          raw_connection.query("INSERT INTO nr_agreements VALUES (1, 't1', 10), (2, 't2', 20)")
+          raw_connection.query("INSERT INTO nr_documents VALUES (10, 100, 101), (20, 200, 201)")
+          raw_connection.query(<<~SQL)
+            INSERT INTO nr_attachments VALUES
+              (100, 't1 cover'), (101, 't1 body'),
+              (200, 't2 cover'), (201, 't2 body')
+          SQL
+        end
+
+        after do
+          raw_connection.query("DROP TABLE IF EXISTS nr_attachments, nr_documents, nr_agreements")
+        end
+
+        it "extracts only the tenant's rows through the chain, with materialization intact" do
+          rows = adapter.execute(attachments_ast).to_a
+
+          expect(rows).to eq([["100", "t1 cover"], ["101", "t1 body"]])
+          expect(log_output.string).not_to include("Disabling scope id-set materialization")
+        end
+      end
     end
   end
 end

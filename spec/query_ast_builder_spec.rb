@@ -1490,6 +1490,142 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
     end
 
+    context 'when the automatic detection has a sibling referencer that is reverse_scope-only' do
+      # The regression guard for nesting declared scopes: `hub` declares nothing
+      # and is scoped by the AUTOMATIC single-referencer detection through `c1`.
+      # Its other referencer `c2` is scoped only by c2's own reverse_scope — if
+      # the detection's child builds resolved that declaration, `c2` would join
+      # the candidate set, the count would flip from one to two, and the
+      # detection would bail `hub` into a silent full dump. The declared-chain
+      # support must therefore stay out of the auto-detection's child builds.
+      let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'business_entities', ids: [1]) }
+      let(:business_entities) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'business_entities', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }]
+        )
+      end
+      let(:hub) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'hub', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }]
+        )
+      end
+      let(:c1) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'c1', primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'business_entities', foreign_key: 'business_entity_id' },
+            { table_name: 'hub', foreign_key: 'hub_id' },
+          ],
+          columns: [{ name: 'id' }, { name: 'business_entity_id' }, { name: 'hub_id' }]
+        )
+      end
+      let(:c2) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'c2', primary_key: 'id',
+          belongs_tos: [{ table_name: 'hub', foreign_key: 'hub_id' }],
+          reverse_scope: { via: [{ table: 'r2', column: 'c2_id' }] },
+          columns: [{ name: 'id' }, { name: 'hub_id' }]
+        )
+      end
+      let(:r2) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'r2', primary_key: 'id',
+          belongs_tos: [{ table_name: 'business_entities', foreign_key: 'business_entity_id' }],
+          columns: [{ name: 'id' }, { name: 'business_entity_id' }, { name: 'c2_id' }]
+        )
+      end
+      let(:all_tables) { [business_entities, hub, c1, c2, r2, schema_migrations] }
+
+      it 'keeps hub scoped through the single auto-detected referencer' do
+        ast = build('hub')
+        expect(ast.where_clauses.size).to eq(1)
+        clause = ast.where_clauses.first.to_h
+        expect(clause.dig(:value, :query, :from)).to eq('c1')
+        expect(log_output.string).not_to include('multiple constrained tables')
+      end
+
+      it 'still classifies hub as :referenced_by in scope-column mode' do
+        scope_target = Exwiw::DumpTarget.new(ids: ['be1'], scope_column: 'business_entity_id')
+        expect(described_class.scope_category('hub', table_by_name, scope_target, logger)).to eq(:referenced_by)
+      end
+    end
+
+    context 'when multiple constrained referencers leave a table to the auto-detection' do
+      # Two directly-scoped children reference `hub`; the detection cannot pick
+      # one, and in single-target mode nothing aborts — the table is dumped in
+      # full. That outcome must be loud (warn), not a debug line.
+      let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'business_entities', ids: [1]) }
+      let(:business_entities) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'business_entities', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }]
+        )
+      end
+      let(:hub) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'hub', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }]
+        )
+      end
+      def child(name)
+        Exwiw::TableConfig.from_symbol_keys(
+          name: name, primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'business_entities', foreign_key: 'business_entity_id' },
+            { table_name: 'hub', foreign_key: 'hub_id' },
+          ],
+          columns: [{ name: 'id' }, { name: 'business_entity_id' }, { name: 'hub_id' }]
+        )
+      end
+      let(:all_tables) { [business_entities, hub, child('c1'), child('c2'), schema_migrations] }
+
+      it 'warns that the table is dumped in full and suggests reverse_scope' do
+        ast = build('hub')
+        expect(ast.where_clauses).to eq([])
+        expect(log_output.string)
+          .to include('hub is referenced by multiple constrained tables (c1, c2)')
+          .and include('Declare `reverse_scope`')
+      end
+    end
+
+    context 'when declarations chain deeper than the intended shape' do
+      # Each level re-embeds its referencers' subqueries, so SQL size is
+      # exponential in chain depth; a chain of four declarations gets flagged.
+      let(:dump_target) { Exwiw::DumpTarget.new(ids: ['be1'], scope_column: 'business_entity_id') }
+      let(:base) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'base', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }, { name: 'business_entity_id' }, { name: 'a1_id' }]
+        )
+      end
+      def chained(name, via_table, via_column)
+        Exwiw::TableConfig.from_symbol_keys(
+          name: name, primary_key: 'id', belongs_tos: [],
+          reverse_scope: { via: [{ table: via_table, column: via_column }] },
+          columns: [{ name: 'id' }, { name: "#{name.succ}_id" }]
+        )
+      end
+      let(:all_tables) do
+        [
+          base,
+          chained('a1', 'base', 'a1_id'),
+          chained('a2', 'a1', 'a2_id'),
+          chained('a3', 'a2', 'a3_id'),
+          chained('a4', 'a3', 'a4_id'),
+          schema_migrations,
+        ]
+      end
+
+      it 'resolves the whole chain but warns about the depth' do
+        ast = build('a4')
+        expect(ast.where_clauses.size).to eq(1)
+        expect(log_output.string).to include('a1.reverse_scope is nested 4 declarations deep')
+          .and include('a4 -> a3 -> a2 -> a1')
+      end
+    end
+
     context 'when two declared reverse_scopes form a cycle' do
       # hub_x is declared as scoped by hub_y and hub_y by hub_x, with no real
       # scope anywhere in the loop. Resolving one arm may not re-enter a table
