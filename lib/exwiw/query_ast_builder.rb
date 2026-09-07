@@ -45,7 +45,9 @@ module Exwiw
                 "scope-column mode: #{unscopable.size} table(s) cannot be scoped: #{names}. " \
                 "For each, declare `scope_column: <column>` on the table to filter it directly, " \
                 "add a belongs_to path to a table that carries the scope column, mark it " \
-                "`scope_exempt: true` to export it in full, or set `ignore: true` to skip it."
+                "`scope_exempt: true` to export it in full, set `ignore: true` to skip it — " \
+                "or, when the table is referenced by several constrained tables, declare " \
+                "`reverse_scope` on it to union their ids."
         end
       end
 
@@ -1148,11 +1150,23 @@ module Exwiw
     end
 
     private def scope_unscopable_message(table)
-      "Table '#{table.name}' cannot be scoped in scope-column mode: it carries no scope " \
+      message =
+        "Table '#{table.name}' cannot be scoped in scope-column mode: it carries no scope " \
         "column (no per-table `scope_column` is declared on it) and has no belongs_to path " \
         "to a table that does. Declare `scope_column: <column>` on it, mark it " \
         "`scope_exempt: true` to export it in full, set `ignore: true` to skip it, or add " \
         "the missing belongs_to."
+
+      # The single-target mode gets this hint as a warning from `run`; give the
+      # scope-mode operator hitting the identical ambiguity the same precise
+      # remedy — none of the generic options above is the right fix for it.
+      if @ambiguous_referencers
+        message += " Note: it is referenced by multiple constrained tables " \
+                   "(#{@ambiguous_referencers}); declaring `reverse_scope` on it to union " \
+                   "their ids is likely the fix."
+      end
+
+      message
     end
   end
 end

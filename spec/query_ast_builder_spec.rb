@@ -1589,6 +1589,20 @@ RSpec.describe Exwiw::QueryAstBuilder do
           .and include('Declare `reverse_scope`')
       end
 
+      context 'in scope-column mode' do
+        # The identical ambiguity aborts in pre-flight there; the abort message
+        # must carry the same precise remedy the single-target warning gives,
+        # since none of the generic unscopable options is the right fix.
+        let(:dump_target) { Exwiw::DumpTarget.new(ids: ['be1'], scope_column: 'business_entity_id') }
+
+        it 'names the referencers and suggests reverse_scope in the raise' do
+          expect { build('hub') }.to raise_error(
+            ArgumentError,
+            /referenced by multiple constrained tables \(c1, c2\).*`reverse_scope`/m
+          )
+        end
+      end
+
       context 'but the forward cascade rescues the table' do
         # The ambiguity alone is not the problem — only the outcome is. When
         # hub also belongs_to a scopable parent (here one with no path of its
