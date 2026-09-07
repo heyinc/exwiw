@@ -1590,12 +1590,22 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
 
       context 'in scope-column mode' do
-        # The identical ambiguity aborts in pre-flight there; the abort message
-        # must carry the same precise remedy the single-target warning gives,
-        # since none of the generic unscopable options is the right fix.
+        # The identical ambiguity aborts in the pre-flight there — the message
+        # operators actually read — so THAT message must carry the same precise
+        # remedy the single-target warning gives; none of the generic
+        # unscopable options is the right fix.
         let(:dump_target) { Exwiw::DumpTarget.new(ids: ['be1'], scope_column: 'business_entity_id') }
 
-        it 'names the referencers and suggests reverse_scope in the raise' do
+        it 'names the referencers and suggests reverse_scope in the pre-flight abort' do
+          expect {
+            described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+          }.to raise_error(
+            ArgumentError,
+            /hub \(referenced by multiple constrained tables: c1, c2 — declaring `reverse_scope`/
+          )
+        end
+
+        it 'carries the same hint on the direct build raise (pre-flight skipped)' do
           expect { build('hub') }.to raise_error(
             ArgumentError,
             /referenced by multiple constrained tables \(c1, c2\).*`reverse_scope`/m

@@ -34,20 +34,30 @@ module Exwiw
       # Unscopable is reported before a bad batch_scope shape — it is the more
       # fundamental problem.
       if scope_mode?(table_by_name, dump_target)
+        # Keep each table's builder: classification records why the reverse
+        # detection stepped aside (ambiguous_referencers), and this pre-flight
+        # message is what an operator actually reads — the per-table raise in
+        # build_scoped is only reachable when this pre-flight was skipped.
         unscopable =
-          tables.reject(&:ignore).select do |table|
-            scope_category(table.name, table_by_name, dump_target, logger) == :unscopable
+          tables.reject(&:ignore).filter_map do |table|
+            builder = new(table.name, table_by_name, dump_target, logger)
+            next unless builder.scope_category == :unscopable
+
+            if builder.ambiguous_referencers
+              "#{table.name} (referenced by multiple constrained tables: " \
+                "#{builder.ambiguous_referencers} — declaring `reverse_scope` on it " \
+                "to union their ids is likely the fix)"
+            else
+              table.name
+            end
           end
 
         if unscopable.any?
-          names = unscopable.map(&:name).sort.join(", ")
           raise ArgumentError,
-                "scope-column mode: #{unscopable.size} table(s) cannot be scoped: #{names}. " \
+                "scope-column mode: #{unscopable.size} table(s) cannot be scoped: #{unscopable.sort.join(', ')}. " \
                 "For each, declare `scope_column: <column>` on the table to filter it directly, " \
                 "add a belongs_to path to a table that carries the scope column, mark it " \
-                "`scope_exempt: true` to export it in full, set `ignore: true` to skip it — " \
-                "or, when the table is referenced by several constrained tables, declare " \
-                "`reverse_scope` on it to union their ids."
+                "`scope_exempt: true` to export it in full, or set `ignore: true` to skip it."
         end
       end
 
@@ -59,6 +69,12 @@ module Exwiw
     end
 
     attr_reader :table_name, :table_by_name, :dump_target
+
+    # Why the automatic reverse detection stepped aside, when it did: the
+    # sorted, comma-joined names of the multiple constrained referencers. Set
+    # as a side effect of building (or classifying) this table; validate_scope!
+    # reads it to make its abort message name the tables to union.
+    attr_reader :ambiguous_referencers
 
     def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_declared_reverse: true, forward_path: [], reverse_path: [], deep_chain_warned: nil, batch_ids: nil)
       @table_name = table_name
