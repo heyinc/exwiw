@@ -1409,6 +1409,114 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
     end
 
+    context 'when a via referencer is itself scoped only by its own reverse_scope (a declared chain)' do
+      # The canonical shape is a normalized side table referenced through several
+      # foreign keys of a document-style table that is in turn reachable only
+      # through a polymorphic join row:
+      #
+      #   attachments <-(cover/body fk)- documents <-(document_id)- agreements -> the target
+      #
+      # `documents` has no belongs_to of its own — it is scoped by its declared
+      # reverse_scope through `agreements` — so before this worked, every
+      # `attachments` arm came out unconstrained and was dropped, silently
+      # degrading `attachments` to a full dump in single-target mode. A declared
+      # arm now resolves the referencer's own declared reverse_scope, so the
+      # chain nests.
+      let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'business_entities', ids: [1]) }
+      let(:business_entities) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'business_entities', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }]
+        )
+      end
+      let(:agreements) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'agreements', primary_key: 'id',
+          belongs_tos: [{ table_name: 'business_entities', foreign_key: 'business_entity_id' }],
+          columns: [{ name: 'id' }, { name: 'business_entity_id' }, { name: 'document_id' }]
+        )
+      end
+      let(:documents) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'documents', primary_key: 'id', belongs_tos: [],
+          reverse_scope: { via: [{ table: 'agreements', column: 'document_id' }] },
+          columns: [{ name: 'id' }, { name: 'cover_attachment_id' }, { name: 'body_attachment_id' }]
+        )
+      end
+      let(:attachments) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'attachments', primary_key: 'id', belongs_tos: [],
+          reverse_scope: {
+            via: [
+              { table: 'documents', column: 'cover_attachment_id' },
+              { table: 'documents', column: 'body_attachment_id' },
+            ],
+          },
+          columns: [{ name: 'id' }, { name: 'name' }]
+        )
+      end
+      let(:all_tables) { [business_entities, agreements, documents, attachments, schema_migrations] }
+
+      it 'nests each arm on the referencer query resolved through ITS reverse_scope' do
+        expect(sqlite_adapter.compile_ast(build('attachments'))).to eq(
+          'SELECT attachments.id, attachments.name FROM attachments ' \
+            'JOIN (SELECT DISTINCT exwiw_scope_src_0.cover_attachment_id AS exwiw_scope_id FROM (' \
+            'SELECT documents.cover_attachment_id FROM documents ' \
+            'JOIN (SELECT DISTINCT exwiw_scope_src_0.document_id AS exwiw_scope_id FROM (' \
+            'SELECT agreements.document_id FROM agreements WHERE agreements.business_entity_id = 1 AND agreements.document_id IS NOT NULL' \
+            ') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON documents.id = exwiw_scope_ids_0.exwiw_scope_id ' \
+            'WHERE documents.cover_attachment_id IS NOT NULL ' \
+            'UNION ' \
+            'SELECT documents.body_attachment_id FROM documents ' \
+            'JOIN (SELECT DISTINCT exwiw_scope_src_0.document_id AS exwiw_scope_id FROM (' \
+            'SELECT agreements.document_id FROM agreements WHERE agreements.business_entity_id = 1 AND agreements.document_id IS NOT NULL' \
+            ') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON documents.id = exwiw_scope_ids_0.exwiw_scope_id ' \
+            'WHERE documents.body_attachment_id IS NOT NULL' \
+            ') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON attachments.id = exwiw_scope_ids_0.exwiw_scope_id'
+        )
+        expect(log_output.string).not_to include('is not scoped')
+      end
+
+      it 'still resolves the chain in scope-column mode' do
+        scope_target = Exwiw::DumpTarget.new(ids: ['be1'], scope_column: 'business_entity_id')
+        ast = described_class.run('attachments', table_by_name, scope_target, logger)
+
+        expect(ast.where_clauses.size).to eq(1)
+        union = ast.where_clauses.first.to_h.fetch(:value).fetch(:union)
+        expect(union.size).to eq(2)
+        expect(union.map { |arm| arm.fetch(:columns).first.fetch(:name) })
+          .to eq(%w[cover_attachment_id body_attachment_id])
+        expect(described_class.scope_category('attachments', table_by_name, scope_target, logger)).to eq(:referenced_by)
+      end
+    end
+
+    context 'when two declared reverse_scopes form a cycle' do
+      # hub_x is declared as scoped by hub_y and hub_y by hub_x, with no real
+      # scope anywhere in the loop. Resolving one arm may not re-enter a table
+      # already being reverse-resolved — the cycle is cut, both come out
+      # unconstrained, and the pre-flight rejects them instead of looping.
+      let(:hub_x) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'hub_x', primary_key: 'id', belongs_tos: [],
+          reverse_scope: { via: [{ table: 'hub_y', column: 'x_id' }] },
+          columns: [{ name: 'id' }, { name: 'y_id' }]
+        )
+      end
+      let(:hub_y) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'hub_y', primary_key: 'id', belongs_tos: [],
+          reverse_scope: { via: [{ table: 'hub_x', column: 'y_id' }] },
+          columns: [{ name: 'id' }, { name: 'x_id' }]
+        )
+      end
+      let(:all_tables) { [hub_x, hub_y, schema_migrations] }
+
+      it 'terminates and leaves both unscopable' do
+        expect { build('hub_x') }.to raise_error(ArgumentError, /cannot be scoped/)
+        expect(log_output.string).to include("arm 'hub_y.x_id' is not scoped")
+      end
+    end
+
     def sqlite_adapter
       Exwiw::Adapter::SqliteAdapter.new(
         Exwiw::ConnectionConfig.new(

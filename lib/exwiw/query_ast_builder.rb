@@ -2,8 +2,8 @@
 
 module Exwiw
   class QueryAstBuilder
-    def self.run(table_name, table_by_name, dump_target, logger, allow_reverse: true, forward_path: [], batch_ids: nil)
-      new(table_name, table_by_name, dump_target, logger, allow_reverse: allow_reverse, forward_path: forward_path, batch_ids: batch_ids).run
+    def self.run(table_name, table_by_name, dump_target, logger, allow_reverse: true, forward_path: [], reverse_path: [], batch_ids: nil)
+      new(table_name, table_by_name, dump_target, logger, allow_reverse: allow_reverse, forward_path: forward_path, reverse_path: reverse_path, batch_ids: batch_ids).run
     end
 
     # Scope-column mode classification for a single table. One of
@@ -58,7 +58,7 @@ module Exwiw
 
     attr_reader :table_name, :table_by_name, :dump_target
 
-    def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true, forward_path: [], batch_ids: nil)
+    def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true, forward_path: [], reverse_path: [], batch_ids: nil)
       @table_name = table_name
       @table_by_name = table_by_name
       @dump_target = dump_target
@@ -76,6 +76,15 @@ module Exwiw
       # table already on the path is not re-resolved, falling through to
       # :unscopable instead of looping forever.
       @forward_path = forward_path
+      # @reverse_path is the reverse counterpart: the chain of tables whose
+      # reverse (referenced-by / reverse_scope) resolution is currently in
+      # progress up the stack. An explicit `reverse_scope` may be honored inside
+      # a subquery build — so a reverse_scope'd table can feed another table's
+      # reverse_scope arm — and this path is what bounds that recursion: a table
+      # already being reverse-resolved is not resolved again (its arm comes out
+      # unconstrained and is dropped), so a reverse_scope cycle terminates
+      # instead of looping forever.
+      @reverse_path = reverse_path
     end
 
     def run
@@ -91,9 +100,13 @@ module Exwiw
       # every row (see the "no relation -> dump all" case). If an extractable
       # child table references it via a foreign key (e.g. active_storage_blobs is
       # referenced by active_storage_attachments.blob_id), constrain it to just
-      # the referenced ids instead. Disabled (@allow_reverse=false) while building
-      # a child's subquery, so this never recurses.
-      if @allow_reverse && table.name != dump_target.table_name &&
+      # the referenced ids instead. The automatic detection is disabled
+      # (@allow_reverse=false) while building a child's subquery, so it never
+      # recurses; an explicit `reverse_scope` still applies there — the schema
+      # author enumerated the referencers deliberately — with @reverse_path
+      # cutting cycles (see build_reverse_scope_via_clause).
+      if (@allow_reverse || explicit_reverse_scope?(table)) &&
+         table.name != dump_target.table_name &&
          where_clauses.empty? && join_clauses.empty?
         reverse_clause = build_referenced_by_clause(table)
         where_clauses.push(reverse_clause) if reverse_clause
@@ -210,10 +223,17 @@ module Exwiw
       # the schema author has enumerated the referencers explicitly, constrain
       # the table to the UNION of those referencers' scoped queries instead of
       # the single-referencer auto-detection below (which bails to a full dump
-      # once two or more tables reference the table).
-      if table.reverse_scope && table.reverse_scope.via.any?
+      # once two or more tables reference the table). Unlike the auto-detection,
+      # this branch also runs during a subquery build (!@allow_reverse): the
+      # enumeration is deliberate config, and @reverse_path bounds the recursion.
+      if explicit_reverse_scope?(table)
         return build_reverse_scope_via_clause(table)
       end
+
+      # The automatic single-referencer detection is top-level only: during a
+      # subquery build it could recurse through a chain of FK-less tables that
+      # reference each other.
+      return nil unless @allow_reverse
 
       candidates = table_by_name.each_value.filter_map do |other|
         next if other.name == table.name
@@ -228,8 +248,9 @@ module Exwiw
         # chain of FK-less tables from recursing back into each other; adding this
         # table to forward_path stops the child from forward-scoping back through
         # it (which would loop) while still letting the child forward-scope
-        # through other tables.
-        child_query = self.class.run(other.name, table_by_name, dump_target, @logger, allow_reverse: false, forward_path: @forward_path + [table.name])
+        # through other tables, and adding it to reverse_path stops a child's
+        # explicit reverse_scope from resolving this table again.
+        child_query = self.class.run(other.name, table_by_name, dump_target, @logger, allow_reverse: false, forward_path: @forward_path + [table.name], reverse_path: @reverse_path + [table.name])
 
         # Only an *already constrained* child narrows anything; an unconstrained
         # child would select every fk value (i.e. dump all) and not help.
@@ -279,7 +300,21 @@ module Exwiw
     # every row's id and union the whole table back, silently defeating the
     # prune. Returns nil when no arm survives, leaving the caller to fall back to
     # the dump-all behavior (which validate_scope! then rejects in scope mode).
+    #
+    # A referencer that is itself scoped only by its own `reverse_scope` still
+    # resolves: the arm build honors explicit reverse_scope declarations (see
+    # build_referenced_by_clause), so declared chains nest —
+    # attachments <- documents <- join rows <- the dump target — with
+    # @reverse_path cutting a cycle of declarations.
     private def build_reverse_scope_via_clause(table)
+      if @reverse_path.include?(table.name)
+        @logger.debug(
+          "  #{table.name}.reverse_scope is already being resolved " \
+          "(#{(@reverse_path + [table.name]).join(' -> ')}); cutting the cycle."
+        )
+        return nil
+      end
+
       arms = table.reverse_scope.via.filter_map do |via|
         referencer = table_by_name[via.table]
         if referencer.nil?
@@ -287,12 +322,14 @@ module Exwiw
           next
         end
 
-        # Build the referencer's own scoped extraction query. allow_reverse is
-        # disabled and this table is added to forward_path to bound recursion
-        # exactly as the single-referencer path does (a referencer that could only
-        # be scoped by recursing back into this table would loop); the referencer
-        # may still forward-scope through other tables.
-        ref_query = self.class.run(referencer.name, table_by_name, dump_target, @logger, allow_reverse: false, forward_path: @forward_path + [table.name])
+        # Build the referencer's own scoped extraction query. The automatic
+        # reverse detection is disabled and this table is added to forward_path
+        # to bound recursion exactly as the single-referencer path does (a
+        # referencer that could only be scoped by recursing back into this table
+        # would loop); the referencer may still forward-scope through other
+        # tables, and may resolve its own explicit reverse_scope — reverse_path
+        # carries this table so that resolution cannot come back here.
+        ref_query = self.class.run(referencer.name, table_by_name, dump_target, @logger, allow_reverse: false, forward_path: @forward_path + [table.name], reverse_path: @reverse_path + [table.name])
 
         unless ref_query.where_clauses.any? || ref_query.join_clauses.any?
           @logger.warn(
@@ -392,8 +429,10 @@ module Exwiw
 
           # allow_reverse and forward scoping stay enabled so the parent may itself
           # be scoped via referenced_by or via *its* parent — this is what makes the
-          # cascade multi-hop.
-          parent_query = self.class.run(parent.name, table_by_name, dump_target, @logger, allow_reverse: true, forward_path: forward_path)
+          # cascade multi-hop. reverse_path rides along so a reverse_scope
+          # resolution in progress further up cannot be re-entered through the
+          # cascade.
+          parent_query = self.class.run(parent.name, table_by_name, dump_target, @logger, allow_reverse: true, forward_path: forward_path, reverse_path: @reverse_path)
 
           # Only a constrained parent narrows anything; an unconstrained parent
           # would select every pk (i.e. dump all) and not help.
@@ -570,8 +609,10 @@ module Exwiw
         return ast
       end
 
-      if @allow_reverse
+      if @allow_reverse || explicit_reverse_scope?(table)
         # Referenced by an extractable (scoped) child: constrain via subquery.
+        # As in target mode, only the explicit reverse_scope form applies during
+        # a subquery build; the auto-detection stays top-level only.
         reverse_clause = build_referenced_by_clause(table)
         if reverse_clause
           ast.where(reverse_clause)
@@ -617,6 +658,14 @@ module Exwiw
 
     private def scope_exempt?(table)
       table.scope_exempt || table.rails_managed?
+    end
+
+    # Whether the schema author declared how this table is reverse-scoped. The
+    # declared form is honored even during a subquery build (unlike the
+    # automatic referenced-by detection); build_reverse_scope_via_clause itself
+    # cuts declaration cycles via @reverse_path.
+    private def explicit_reverse_scope?(table)
+      !!(table.reverse_scope && table.reverse_scope.via.any?)
     end
 
     private def directly_scoped?(table)
@@ -855,7 +904,7 @@ module Exwiw
 
       target_query = self.class.run(
         target.name, table_by_name, dump_target, @logger,
-        allow_reverse: true, forward_path: @forward_path + [table.name]
+        allow_reverse: true, forward_path: @forward_path + [table.name], reverse_path: @reverse_path
       )
       # An unconstrained target selects every id, i.e. does not scope the arm at
       # all; dropping the arm is the safe outcome.
