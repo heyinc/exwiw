@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-09-08
+
 ### Fixed
 
 - **MySQL (mysql2): `query` no longer reads the field list after draining the result.** mysql2 frees the underlying `MYSQL_RES` as soon as the last row has been fetched, and `Result#fields` dereferences it afterwards, so a buffered query followed by `fields` was a use-after-free. It went unnoticed on the export path, which issues only a handful of such queries, but `exwiw schema check --from-db` / `schema generate --from-db` issue several per table and crashed with a segmentation fault on Ruby 4.0 with MariaDB Connector/C 3.4. The field list is now captured before the rows are read.
