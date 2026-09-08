@@ -110,8 +110,10 @@ module Exwiw
           # mysql2 returns nil for a statement with no result set (SET, DDL, ...).
           return Result.new([], []) if res.nil?
 
+          # mysql2 frees the MYSQL_RES once every row is fetched; #fields after that is a use-after-free.
+          fields = res.fields
           rows = res.to_a.map { |row| row.map { |value| self.class.stringify_value(value) } }
-          Result.new(res.fields, rows)
+          Result.new(fields, rows)
         when :trilogy
           res = raw.query(sql)
           rows = res.rows.map { |row| row.map { |value| self.class.stringify_value(value) } }
