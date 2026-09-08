@@ -45,9 +45,7 @@ module Exwiw
       end
 
       describe '#query (mysql2)' do
-        # mysql2 frees the C result once every row has been fetched, after which
-        # Result#fields is a use-after-free. Model that: fields raises once to_a
-        # has run.
+        # Models mysql2 freeing the C result once every row has been fetched.
         let(:freed_after_drain_result) do
           Class.new do
             def initialize = @drained = false
