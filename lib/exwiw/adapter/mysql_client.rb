@@ -110,8 +110,12 @@ module Exwiw
           # mysql2 returns nil for a statement with no result set (SET, DDL, ...).
           return Result.new([], []) if res.nil?
 
+          # Read the field list before draining the rows: once every row is fetched
+          # mysql2 frees the underlying MYSQL_RES, and #fields on it afterwards is a
+          # use-after-free that segfaults under memory pressure.
+          fields = res.fields
           rows = res.to_a.map { |row| row.map { |value| self.class.stringify_value(value) } }
-          Result.new(res.fields, rows)
+          Result.new(fields, rows)
         when :trilogy
           res = raw.query(sql)
           rows = res.rows.map { |row| row.map { |value| self.class.stringify_value(value) } }

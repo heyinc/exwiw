@@ -44,6 +44,36 @@ module Exwiw
         end
       end
 
+      describe '#query (mysql2)' do
+        # mysql2 frees the C result once every row has been fetched, after which
+        # Result#fields is a use-after-free. Model that: fields raises once to_a
+        # has run.
+        let(:freed_after_drain_result) do
+          Class.new do
+            def initialize = @drained = false
+            def to_a
+              @drained = true
+              [['1', 'a']]
+            end
+            def fields
+              raise 'MYSQL_RES already freed' if @drained
+              %w[id name]
+            end
+          end.new
+        end
+
+        it 'reads the field list before draining the rows' do
+          client = MysqlClient.new(double('config'), driver: :mysql2)
+          raw = double('mysql2 client')
+          allow(raw).to receive(:query).and_return(freed_after_drain_result)
+          client.instance_variable_set(:@raw, raw)
+
+          result = client.query('SELECT id, name FROM t')
+          expect(result.fields).to eq(%w[id name])
+          expect(result.rows).to eq([['1', 'a']])
+        end
+      end
+
       describe '.detect_driver' do
         around do |example|
           original = ENV['EXWIW_MYSQL_DRIVER']
