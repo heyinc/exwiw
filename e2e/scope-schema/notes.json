@@ -1,0 +1,26 @@
+{
+  "name": "notes",
+  "primary_key": "id",
+  "belongs_tos": [{
+    "table_name": "accounts",
+    "foreign_key": "account_id",
+    "foreign_type": "notable_type",
+    "type_value": "Account"
+  }, {
+    "table_name": "orders",
+    "foreign_key": "order_id",
+    "foreign_type": "notable_type",
+    "type_value": "Order"
+  }],
+  "columns": [{
+    "name": "id"
+  }, {
+    "name": "notable_type"
+  }, {
+    "name": "account_id"
+  }, {
+    "name": "order_id"
+  }, {
+    "name": "body"
+  }]
+}

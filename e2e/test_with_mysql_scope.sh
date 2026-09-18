@@ -39,6 +39,7 @@ CREATE TABLE orders (id INT PRIMARY KEY, tenant_id INT NOT NULL, amount INT NOT 
 CREATE TABLE order_lines (id INT PRIMARY KEY, order_id INT NOT NULL, qty INT NOT NULL);
 CREATE TABLE regions (id INT PRIMARY KEY, code VARCHAR(8) NOT NULL);
 CREATE TABLE attachments (id INT PRIMARY KEY, attachable_type VARCHAR(32) NOT NULL, attachable_id INT NOT NULL, label VARCHAR(64) NOT NULL);
+CREATE TABLE notes (id INT PRIMARY KEY, notable_type VARCHAR(32) NOT NULL, account_id INT, order_id INT, body VARCHAR(64) NOT NULL);
 
 INSERT INTO accounts (id, tenant_id, name) VALUES (1, 1, 'acct-t1'), (2, 2, 'acct-t2');
 INSERT INTO orders (id, tenant_id, amount) VALUES (1, 1, 100), (2, 1, 200), (3, 2, 300);
@@ -51,6 +52,12 @@ INSERT INTO attachments (id, attachable_type, attachable_id, label) VALUES
   (4, 'Order', 3, 'order-t2'),
   (5, 'Order', 2, 'order2-t1'),
   (6, 'Account', 3, 'dangling');
+INSERT INTO notes (id, notable_type, account_id, order_id, body) VALUES
+  (1, 'Account', 1, NULL, 'acct-t1'),
+  (2, 'Order', NULL, 1, 'order-t1'),
+  (3, 'Account', 2, NULL, 'acct-t2'),
+  (4, 'Order', NULL, 3, 'order-t2'),
+  (5, 'Order', NULL, 2, 'order2-t1');
 SQL
 
 export DATABASE_PASSWORD="rootpassword"
@@ -122,5 +129,8 @@ check_count regions 2
 check_ids regions "1,2"
 check_count attachments 3
 check_ids attachments "1,2,5"
+# notes: same, with a separate foreign key column per arm.
+check_count notes 3
+check_ids notes "1,2,5"
 
 echo "✓ scope-column mode on mysql extracted only the scoped rows via materialized id-sets"

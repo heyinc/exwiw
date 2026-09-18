@@ -25,6 +25,7 @@ CREATE TABLE orders (id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL, amount 
 CREATE TABLE order_lines (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, qty INTEGER NOT NULL);
 CREATE TABLE regions (id INTEGER PRIMARY KEY, code TEXT NOT NULL);
 CREATE TABLE attachments (id INTEGER PRIMARY KEY, attachable_type TEXT NOT NULL, attachable_id INTEGER NOT NULL, label TEXT NOT NULL);
+CREATE TABLE notes (id INTEGER PRIMARY KEY, notable_type TEXT NOT NULL, account_id INTEGER, order_id INTEGER, body TEXT NOT NULL);
 "
 
 # Target DB: schema + seed (tenant 1 and tenant 2). order_lines #3 belongs to
@@ -46,6 +47,15 @@ INSERT INTO attachments (id, attachable_type, attachable_id, label) VALUES
   (4, 'Order', 3, 'order-t2'),
   (5, 'Order', 2, 'order2-t1'),
   (6, 'Account', 3, 'dangling');
+-- notes: the same polymorphic shape as attachments, except each arm has its own
+-- foreign key column (account_id / order_id) and only notable_type selects
+-- between them. Tenant 1 owns 1, 2 and 5; tenant 2 owns 3 and 4.
+INSERT INTO notes (id, notable_type, account_id, order_id, body) VALUES
+  (1, 'Account', 1, NULL, 'acct-t1'),
+  (2, 'Order', NULL, 1, 'order-t1'),
+  (3, 'Account', 2, NULL, 'acct-t2'),
+  (4, 'Order', NULL, 3, 'order-t2'),
+  (5, 'Order', NULL, 2, 'order2-t1');
 "
 
 # Fresh DB: schema only.
@@ -108,5 +118,8 @@ check_ids regions "1,2"
 # (1 = Account arm, 2/5 = Order arm; 3/4 are tenant 2 and 6 is a type mismatch).
 check_count attachments 3
 check_ids attachments "1,2,5"
+# notes: same, with a separate foreign key column per arm.
+check_count notes 3
+check_ids notes "1,2,5"
 
 echo "✓ scope-column mode extracted only the scoped rows (plus the exempt table)"
