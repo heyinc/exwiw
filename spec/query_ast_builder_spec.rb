@@ -891,14 +891,17 @@ RSpec.describe Exwiw::QueryAstBuilder do
         foreign_type: 'commentable_type', type_value: 'Page' }
     end
     let(:comment_arms) { [post_arm, page_arm] }
+    let(:comment_columns) do
+      [
+        { name: 'id' }, { name: 'commentable_type' },
+        { name: 'commentable_id' }, { name: 'body' }
+      ]
+    end
     let(:comments) do
       Exwiw::TableConfig.from_symbol_keys(
         name: 'comments', primary_key: 'id',
         belongs_tos: comment_arms,
-        columns: [
-          { name: 'id' }, { name: 'commentable_type' },
-          { name: 'commentable_id' }, { name: 'body' }
-        ]
+        columns: comment_columns
       ).reject_ignored_members!
     end
     let(:all_tables) { [shops, posts, pages, widgets, comments] }
@@ -1005,6 +1008,86 @@ RSpec.describe Exwiw::QueryAstBuilder do
         # ...but the arms and the join key stay plain, or the ids would not match.
         expect(sql.scan('SELECT comments.id FROM comments').size).to eq(2)
         expect(sql).to end_with('ON comments.id = exwiw_scope_ids_0.exwiw_scope_id')
+      end
+    end
+
+    # Rails keeps every arm's id in one column, but a hand-written config can
+    # give each arm its own foreign key while one type column still selects
+    # between them. The group is keyed on the type column so those arms stay
+    # together; each arm then joins on its own key.
+    context 'with arms sharing the type column but not the foreign key' do
+      let(:post_arm) do
+        { table_name: 'posts', foreign_key: 'post_id',
+          foreign_type: 'commentable_type', type_value: 'Post' }
+      end
+      let(:page_arm) do
+        { table_name: 'pages', foreign_key: 'page_id',
+          foreign_type: 'commentable_type', type_value: 'Page' }
+      end
+      let(:comment_columns) do
+        [
+          { name: 'id' }, { name: 'commentable_type' },
+          { name: 'post_id' }, { name: 'page_id' }, { name: 'body' }
+        ]
+      end
+
+      it 'unions every arm, each joined on its own foreign key' do
+        ast = build('comments')
+
+        expect(ast.where_clauses.size).to eq(1)
+        arms = ast.where_clauses.first.value.queries
+        expect(arms.map { |q| q.join_clauses.first.foreign_key }).to eq(%w[post_id page_id])
+        expect(arms.map { |q| q.join_clauses.map(&:join_table_name) }).to eq([
+          %w[posts shops],
+          %w[pages shops],
+        ])
+        expect(arms.map { |q| q.join_clauses.first.base_where_clauses.map(&:to_h) }).to eq([
+          [{ column_name: 'commentable_type', operator: :eq, value: ['Post'] }],
+          [{ column_name: 'commentable_type', operator: :eq, value: ['Page'] }],
+        ])
+      end
+
+      it 'compiles to a materialized UNION id-set JOIN (sqlite)' do
+        expect(compiled('comments')).to eq(
+          'SELECT comments.id, comments.commentable_type, comments.post_id, comments.page_id, comments.body ' \
+            'FROM comments ' \
+            'JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (' \
+            'SELECT comments.id FROM comments ' \
+            "JOIN posts ON comments.post_id = posts.id AND comments.commentable_type = 'Post' " \
+            "JOIN shops ON posts.shop_id = shops.id AND shops.tenant_id = 't1'" \
+            ' UNION ' \
+            'SELECT comments.id FROM comments ' \
+            "JOIN pages ON comments.page_id = pages.id AND comments.commentable_type = 'Page' " \
+            "JOIN shops ON pages.shop_id = shops.id AND shops.tenant_id = 't1'" \
+            ') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON comments.id = exwiw_scope_ids_0.exwiw_scope_id'
+        )
+      end
+    end
+
+    # Two independent polymorphic associations keep their own type columns, so
+    # they must not be unioned into one group.
+    context 'with two independent polymorphic associations' do
+      let(:comment_arms) do
+        [
+          post_arm,
+          { table_name: 'pages', foreign_key: 'attachable_id',
+            foreign_type: 'attachable_type', type_value: 'Page' },
+        ]
+      end
+      let(:comment_columns) do
+        [
+          { name: 'id' }, { name: 'commentable_type' }, { name: 'commentable_id' },
+          { name: 'attachable_type' }, { name: 'attachable_id' }, { name: 'body' }
+        ]
+      end
+
+      it 'follows the single shortest path instead of unioning the two groups' do
+        sql = compiled('comments')
+
+        expect(sql).to include("JOIN posts ON comments.commentable_id = posts.id AND comments.commentable_type = 'Post'")
+        expect(sql).not_to include('UNION')
+        expect(sql).not_to include('JOIN pages')
+        expect(sql).not_to include('comments.attachable_type =')
       end
     end
 

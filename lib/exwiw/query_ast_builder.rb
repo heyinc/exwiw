@@ -880,7 +880,7 @@ module Exwiw
     # single shortest path `find_path_to_scoped` returns is the whole story and
     # this returns one arm — the historical behavior, byte-for-byte.
     #
-    # A *polymorphic* hop is different: one (foreign_key, foreign_type) pair
+    # A *polymorphic* hop is different: one type column (`foreign_type`)
     # addresses several parent tables — one per `type_value` — and each row
     # belongs to whichever arm its type column names. Following a single path
     # therefore extracts only the rows of that one arm and silently drops every
@@ -888,7 +888,7 @@ module Exwiw
     # settles on one owner table and the query filters `record_type = '<that
     # one>'`, so attachments of the other 20-odd owner types never make it into
     # the dump.) So when the shortest path leaves through a polymorphic relation,
-    # resolve every sibling arm of the same (foreign_key, foreign_type) group.
+    # resolve every sibling arm sharing its type column.
     #
     # Note the entry condition: this only ever widens a table that *already*
     # reaches the scope through a polymorphic join path. A table with no path at
@@ -967,11 +967,19 @@ module Exwiw
       ScopedArm.new(relation: relation, target_query: target_query)
     end
 
-    # The polymorphic belongs_to arms sharing the (foreign_key, foreign_type) of
-    # the relation this table uses to reach `first_hop_table_name`, or nil when
-    # the caller should stay on the single-path behavior: the hop is not
-    # polymorphic, or its group has only one arm, or this table has no usable
-    # primary key to union the arms on.
+    # The polymorphic belongs_to arms sharing the `foreign_type` of the relation
+    # this table uses to reach `first_hop_table_name`, or nil when the caller
+    # should stay on the single-path behavior: the hop is not polymorphic, or its
+    # group has only one arm, or this table has no usable primary key to union
+    # the arms on.
+    #
+    # The group is keyed on the type column alone. A Rails association stores
+    # every arm's id in one column, but a hand-written config may give each arm
+    # its own foreign key while one type column still selects between them; both
+    # are arms of the same discriminator, and everything downstream reads
+    # `foreign_key` off the arm's own relation. Two *independent* polymorphic
+    # associations on one table have distinct type columns, so they stay in
+    # distinct groups.
     #
     # The relation is looked up with `belongs_to(table_name)` — the same lookup
     # #build_scoped_join_clause performs — so the decision is made about exactly
@@ -983,9 +991,7 @@ module Exwiw
       return nil if relation.nil? || !relation.polymorphic?
 
       arms = table.belongs_tos.select do |other|
-        other.polymorphic? &&
-          other.foreign_key == relation.foreign_key &&
-          other.foreign_type == relation.foreign_type
+        other.polymorphic? && other.foreign_type == relation.foreign_type
       end
       arms.size > 1 ? arms : nil
     end
