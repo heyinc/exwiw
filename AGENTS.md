@@ -20,4 +20,5 @@ body, and commit messages against this list before committing or opening a PR.
 
 See [README.md](README.md) for usage and [CHANGELOG.md](CHANGELOG.md) for the
 release history. `bundle exec rake` compiles the native extension and runs the
-specs; the scripts under `e2e/` need the databases from `compose.yml`.
+specs; most scripts under `e2e/` need the databases from `compose.yml`
+(the sqlite ones run without it).
