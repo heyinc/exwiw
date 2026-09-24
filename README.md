@@ -153,7 +153,7 @@ Only the dump target itself is filtered by `--ids` directly. Every *other* table
 How the paths behave and interact:
 
 1. **Direct filter.** In the default single-target mode the target is anchored on its primary key (or a custom field via the mongodb-only `--ids-field`). In [scope-column mode](#scope-column-mode) there is no single anchor: every table that declares a `scope_column` is filtered on that column directly.
-2. **`belongs_to` join walk** — the "normal join" path. exwiw BFS-walks `belongs_to` edges to the nearest terminus (the target table, or a directly scoped table in scope-column mode) and compiles the shortest path into `INNER JOIN`s. A [polymorphic `belongs_to`](#polymorphic-belongs_to) hop additionally pins the type column; in scope-column mode a polymorphic hop is resolved for **every** concrete arm and the arms are `UNION`ed (see [Every arm is extracted](#every-arm-is-extracted-scope-column-mode)).
+2. **`belongs_to` join walk** — the "normal join" path. exwiw BFS-walks `belongs_to` edges to the nearest terminus (the target table, or a directly scoped table in scope-column mode) and compiles the shortest path into `INNER JOIN`s. A [polymorphic `belongs_to`](#polymorphic-belongs_to) hop additionally pins the type column, and is resolved for **every** concrete arm with the arms `UNION`ed (see [Every arm is extracted](#every-arm-is-extracted)).
 3. **Referenced-by** handles a table with no outgoing path that is pointed *at* by a constrained child — `active_storage_blobs`, referenced by `active_storage_attachments.blob_id`, is the canonical case (see [ActiveStorage](#activestorage-has_one_attached--has_many_attached)). It is automatic but deliberately narrow: it requires a single, non-polymorphic referencer. With two or more referencers it steps aside (path 6) unless you declare `reverse_scope`.
 4. **[`reverse_scope`](#reverse-scope-for-multi-referencer-tables-reverse_scope)** is the declared, multi-referencer form of path 3: the config enumerates which referencers' (already scoped) queries feed the id set. Unscoped arms are skipped with a warning rather than widening the dump.
 5. **Scoped-parent cascade** rescues satellites: a table whose only link is a `belongs_to` toward a hub that is itself scoped (e.g. via referenced-by or `reverse_scope`) is constrained to that parent's in-scope ids. The cascade recurses hop by hop (each level requires a single unambiguous scopable parent) and stops on `belongs_to` cycles.
@@ -783,9 +783,9 @@ WHERE reviews.reviewable_id IN (/* products subquery */)
 
 The same type filter is applied on the join path when the polymorphic table is an intermediate hop rather than the directly-dumped table.
 
-#### Every arm is extracted (scope-column mode)
+#### Every arm is extracted
 
-A polymorphic `belongs_to` is several `belongs_to` entries — one per concrete target — that a row selects between via its type column. A single JOIN can only follow **one** of them, so a join table reached through such a hop would come out holding only the rows of that one `type_value`. In [scope-column mode](#scope-column-mode) exwiw therefore resolves **every** arm of the group and constrains the table to the union of the ids the arms keep:
+A polymorphic `belongs_to` is several `belongs_to` entries — one per concrete target — that a row selects between via its type column. A single JOIN can only follow **one** of them, so a join table reached through such a hop would come out holding only the rows of that one `type_value`. exwiw therefore resolves **every** arm of the group and constrains the table to the union of the ids the arms keep. In [scope-column mode](#scope-column-mode):
 
 ```sql
 SELECT comments.* FROM comments
@@ -812,14 +812,34 @@ Notes:
 - An arm's target does not need a `belongs_to` path to a scoped table: if it is scoped by other means (referenced-by, [`reverse_scope`](#reverse-scope-for-multi-referencer-tables-reverse_scope), or the parent cascade) the arm probes that query's ids instead, still pinned by the type column.
 - An arm whose target is scoped **through this same table** (e.g. `active_storage_blobs`, narrowed by referenced-by from `active_storage_attachments`, appearing as an `ActiveStorage::Blob` arm of those same attachments) is dropped: adopting it would make the two tables scope each other and leave the referenced table short of rows the join table kept — a dangling foreign key on import.
 - **Arms are grouped by the type column (`foreign_type`), not by the foreign key.** Rails keeps every arm's id in one `<name>_id` column, which is what the generators emit, but a hand-written config may give each arm its own foreign key while one type column still selects between them — e.g. `merchant_application_type` choosing between `merchant_application_id` and `external_application_id`. Those are arms of the same discriminator, so each is resolved and joined on its own key. Two *independent* polymorphic associations on one table have distinct type columns and therefore stay in distinct groups.
-- Nothing changes when there is a single arm, or when the walk leaves through a non-polymorphic `belongs_to`: the plain single-JOIN SQL is emitted, byte for byte as before.
-- This applies to the scope-column mode walk. The single `--target-table` mode still follows one path per table.
+- **A plain `belongs_to` takes precedence over polymorphic arms.** The route is the shortest one. When it leaves through a non-polymorphic `belongs_to`, the table is joined along that route alone and the polymorphic arms are not unioned in, so a row reachable only through an arm is not extracted. A single arm is likewise emitted as a plain JOIN.
+- A table with no route of its own falls back to the parent cascade, which follows the same precedence. A scopable plain parent is used when there is exactly one. Only when there is none are the polymorphic `belongs_to`s consulted: the arms of one type column that point at tables scoped by other means (referenced-by, `reverse_scope`, or the cascade) are unioned, each pinned by the type column. Two independent polymorphic associations that are both scopable are as ambiguous as two plain parents, so the table is left unscopable (dumped in full with a warning in single-target mode).
+
+In single `--target-table` mode the same union is built. An arm that points at the dump target itself compares its foreign key with `--ids`, and the other arms join or probe their way to the target as above. One difference: an arm target that is constrained **only** by the automatic referenced-by detection does not count. Such a parent is extracted just to keep a child's foreign key valid; it does not own the rows that point at it. So dumping `products` still pulls only `reviewable_type = 'Product'` reviews, even though the product's shop is extracted too, while dumping `shops` pulls the shop's own reviews **and** the reviews of its products:
+
+```sql
+SELECT reviews.* FROM reviews
+JOIN (
+  SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id
+  FROM (
+    SELECT reviews.id FROM reviews
+      JOIN products ON reviews.reviewable_id = products.id
+        AND products.shop_id = 1 AND reviews.reviewable_type = 'Product'
+    UNION
+    SELECT reviews.id FROM reviews
+    WHERE reviews.reviewable_id = 1 AND reviews.reviewable_type = 'Shop'
+  ) AS exwiw_scope_src_0
+) AS exwiw_scope_ids_0
+  ON reviews.id = exwiw_scope_ids_0.exwiw_scope_id
+```
+
+A declared [`reverse_scope`](#reverse-scope-for-multi-referencer-tables-reverse_scope) does count, since declaring it states that the referencers own the rows.
 
 ### ActiveStorage (`has_one_attached` / `has_many_attached`)
 
 ActiveStorage is handled automatically — no ActiveStorage-specific configuration is required. The `has_one_attached` / `has_many_attached` macros don't add a column to the owning model; they generate ordinary associations that exwiw already understands:
 
-- **`active_storage_attachments`** is the polymorphic join row (`belongs_to :record, polymorphic: true` + `belongs_to :blob`). `exwiw:schema:generate` expands the polymorphic `record` into one `belongs_to` per model that declared `has_*_attached` (found via the generated `has_* ..., as: :record` reflections), exactly like any other [polymorphic `belongs_to`](#polymorphic-belongs_to). So only the attachments whose owner is among the dumped rows are extracted. In scope-column mode every owner type that reaches the scope is extracted (see [Every arm is extracted](#every-arm-is-extracted-scope-column-mode)); before that, only the single owner type the walk happened to settle on came out.
+- **`active_storage_attachments`** is the polymorphic join row (`belongs_to :record, polymorphic: true` + `belongs_to :blob`). `exwiw:schema:generate` expands the polymorphic `record` into one `belongs_to` per model that declared `has_*_attached` (found via the generated `has_* ..., as: :record` reflections), exactly like any other [polymorphic `belongs_to`](#polymorphic-belongs_to). So only the attachments whose owner is among the dumped rows are extracted. Every owner type that reaches the scope is extracted (see [Every arm is extracted](#every-arm-is-extracted)); before that, only the single owner type the walk happened to settle on came out.
 - **`active_storage_blobs`** has no `belongs_to` of its own (attachments point *at* it), so it has no path to the dump target. exwiw narrows it via **reverse / "referenced_by" extraction**: a parent table referenced by exactly one constrained, non-polymorphic child is constrained to just the referenced ids instead of dumping every row. The id set is materialized once and joined back (see [Why a JOIN, not `IN (subquery)`](#why-a-join-not-in-subquery)):
 
   ```sql
