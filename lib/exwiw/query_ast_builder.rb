@@ -72,6 +72,8 @@ module Exwiw
     # automatic reverse detection step aside, when it did.
     attr_reader :ambiguous_referencers
 
+    attr_reader :narrowed_by_automatic_reverse
+
     def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_declared_reverse: true, forward_path: [], reverse_path: [], deep_chain_warned: nil, batch_ids: nil)
       @table_name = table_name
       @table_by_name = table_by_name
@@ -103,6 +105,7 @@ module Exwiw
       # Deep-chain warnings already emitted, keyed by chain path and shared (the
       # same Hash) across every recursive build under one top-level run.
       @deep_chain_warned = deep_chain_warned || {}
+      @narrowed_by_automatic_reverse = false
     end
 
     def run
@@ -110,8 +113,15 @@ module Exwiw
 
       return build_scoped(table) if scope_mode?
 
-      where_clauses = build_where_clauses(table, dump_target)
-      join_clauses = build_join_clauses(table, table_by_name, dump_target)
+      arm_queries = target_polymorphic_arm_queries(table)
+      if arm_queries
+        where_clauses = [pk_union_clause(table, arm_queries)]
+        where_clauses.push(table.filter) if table.filter
+        join_clauses = []
+      else
+        where_clauses = build_where_clauses(table, dump_target)
+        join_clauses = build_join_clauses(table, table_by_name, dump_target)
+      end
 
       # Reverse / "referenced_by" extraction. A table with no belongs_to path to
       # the dump target produces no where/join clauses and would otherwise dump
@@ -126,7 +136,10 @@ module Exwiw
          table.name != dump_target.table_name &&
          where_clauses.empty? && join_clauses.empty?
         reverse_clause = build_referenced_by_clause(table)
-        where_clauses.push(reverse_clause) if reverse_clause
+        if reverse_clause
+          where_clauses.push(reverse_clause)
+          @narrowed_by_automatic_reverse = !explicit_reverse_scope?(table)
+        end
       end
 
       # Forward cascade. A satellite of a reverse_scope'd (or referenced-by-scoped)
@@ -141,7 +154,7 @@ module Exwiw
         if parent_clause
           where_clauses.push(parent_clause)
         elsif @allow_reverse && @forward_path.empty? && !scope_exempt?(table) &&
-              scopable_parent_candidates(table).size > 1
+              (scopable_parent_candidates(table).size > 1 || polymorphic_parent_groups(table).size > 1)
           @logger.warn(
             "  #{table.name} belongs_to multiple scopable parents; the cascade cannot " \
             "pick one unambiguously, so it is dumped in full. If this is intended, set " \
@@ -184,63 +197,60 @@ module Exwiw
       # the path is 1, it's impossible case
       return [] if path_tables.size < 2
 
-      join_clauses = []
-
-      path_tables.each_cons(2) do |from_table_name, to_table_name|
+      path_tables.each_cons(2).map do |from_table_name, to_table_name|
         from_table = table_by_name[from_table_name]
         to_table = table_by_name[to_table_name]
+        build_join_clause(from_table, to_table, from_table.belongs_to(to_table_name))
+      end
+    end
 
-        relation = from_table.belongs_to(to_table_name)
+    private def build_join_clause(from_table, to_table, relation)
+      join_clause = QueryAst::JoinClause.new(
+        base_table_name: from_table.name,
+        foreign_key: relation.foreign_key,
+        join_table_name: to_table.name,
+        primary_key: to_table.primary_key,
+        where_clauses: [],
+        base_where_clauses: []
+      )
 
-        join_clause = QueryAst::JoinClause.new(
-          base_table_name: from_table.name,
-          foreign_key: relation.foreign_key,
-          join_table_name: to_table.name,
-          primary_key: to_table.primary_key,
-          where_clauses: [],
-          base_where_clauses: []
+      # When this hop itself is a polymorphic belongs_to (e.g. comments
+      # polymorphically belongs_to posts as commentable), the type column
+      # (foreign_type) lives on the source table (from_table = base_table_name).
+      # The foreign key alone is not enough — a value like reviewable_id=1 can
+      # collide with rows of another model — so add the type condition to
+      # base_where_clauses to narrow down the source table.
+      if relation.polymorphic?
+        join_clause.base_where_clauses.push QueryAst::WhereClause.new(
+          column_name: relation.foreign_type,
+          operator: :eq,
+          value: [relation.type_value]
         )
+      end
+      relation_to_dump_target = to_table.belongs_to(dump_target.table_name)
+      if relation_to_dump_target
+        join_clause.where_clauses.push dump_target_fk_clause(relation_to_dump_target.foreign_key)
 
-        # When this hop itself is a polymorphic belongs_to (e.g. comments
-        # polymorphically belongs_to posts as commentable), the type column
-        # (foreign_type) lives on the source table (from_table = base_table_name).
-        # The foreign key alone is not enough — a value like reviewable_id=1 can
-        # collide with rows of another model — so add the type condition to
-        # base_where_clauses to narrow down the source table.
-        if relation.polymorphic?
-          join_clause.base_where_clauses.push QueryAst::WhereClause.new(
-            column_name: relation.foreign_type,
+        # When the intermediate table polymorphically belongs_to the dump
+        # target, also add the type column (foreign_type) to the join
+        # condition. The type column lives on to_table (= join_table_name), so
+        # it rides on the existing mechanism where a JoinClause's where_clauses
+        # are compiled against join_table_name.
+        if relation_to_dump_target.polymorphic?
+          join_clause.where_clauses.push QueryAst::WhereClause.new(
+            column_name: relation_to_dump_target.foreign_type,
             operator: :eq,
-            value: [relation.type_value]
+            value: [relation_to_dump_target.type_value]
           )
         end
-        relation_to_dump_target = to_table.belongs_to(dump_target.table_name)
-        if relation_to_dump_target
-          join_clause.where_clauses.push dump_target_fk_clause(relation_to_dump_target.foreign_key)
-
-          # When the intermediate table polymorphically belongs_to the dump
-          # target, also add the type column (foreign_type) to the join
-          # condition. The type column lives on to_table (= join_table_name), so
-          # it rides on the existing mechanism where a JoinClause's where_clauses
-          # are compiled against join_table_name.
-          if relation_to_dump_target.polymorphic?
-            join_clause.where_clauses.push QueryAst::WhereClause.new(
-              column_name: relation_to_dump_target.foreign_type,
-              operator: :eq,
-              value: [relation_to_dump_target.type_value]
-            )
-          end
-        end
-
-        # Add filter from intermediate table to join clause
-        if to_table.filter
-          join_clause.where_clauses.push to_table.filter
-        end
-
-        join_clauses.push(join_clause)
       end
 
-      join_clauses
+      # Add filter from intermediate table to join clause
+      if to_table.filter
+        join_clause.where_clauses.push to_table.filter
+      end
+
+      join_clause
     end
 
     # Builds a `pk IN (SELECT child.fk FROM <child extraction query>)` clause
@@ -419,6 +429,14 @@ module Exwiw
     private def build_belongs_to_scoped_clause(table)
       candidates = scopable_parent_candidates(table)
 
+      # Plain parents take precedence over polymorphic ones: polymorphic parents
+      # are consulted only when no plain parent is scopable. Multiple independent
+      # polymorphic associations are as ambiguous as multiple plain parents.
+      if candidates.empty?
+        groups = polymorphic_parent_groups(table)
+        return groups.size == 1 ? pk_union_clause(table, groups.first) : nil
+      end
+
       # Only the unambiguous single-parent case. Multiple scopable parents would
       # need their subqueries combined (not supported); fall back to unscopable.
       if candidates.size != 1
@@ -444,6 +462,21 @@ module Exwiw
         operator: :in_subquery,
         value: QueryAst::SelectSubquery.new(query: projected)
       )
+    end
+
+    private def polymorphic_parent_groups(table)
+      @polymorphic_parent_groups ||= {}
+      return @polymorphic_parent_groups[table.name] if @polymorphic_parent_groups.key?(table.name)
+
+      @polymorphic_parent_groups[table.name] =
+        if table.primary_key.nil?
+          []
+        else
+          table.belongs_tos.select(&:polymorphic?).group_by(&:foreign_type).filter_map do |_, relations|
+            arm_queries = relations.filter_map { |relation| scoped_target_arm_query(table, relation) }
+            arm_queries unless arm_queries.empty?
+          end
+        end
     end
 
     # The scopable belongs_to parents of `table`: each non-polymorphic parent
@@ -554,6 +587,53 @@ module Exwiw
           where_values: dump_target.ids
         )
       )
+    end
+
+    # Single-target counterpart of #scoped_arms.
+    private def target_polymorphic_arm_queries(table)
+      return nil if table.name == dump_target.table_name
+
+      first_hop =
+        if table.belongs_to(dump_target.table_name)
+          dump_target.table_name
+        else
+          find_path_to_dump_target(table, table_by_name, dump_target)[1]
+        end
+      return nil if first_hop.nil?
+
+      sibling_arms = polymorphic_sibling_arms(table, first_hop)
+      return nil if sibling_arms.nil?
+
+      arm_queries = sibling_arms.filter_map { |relation| target_arm_query(table, relation) }
+      @logger.debug(
+        "  #{table.name} reaches the dump target through #{arm_queries.size} of " \
+        "#{sibling_arms.size} polymorphic '#{sibling_arms.first.foreign_type}' arm(s)."
+      )
+      # A lone arm is always the one the shortest path leaves through, which the
+      # single-path build already emits as a plain JOIN.
+      arm_queries.size >= 2 ? arm_queries : nil
+    end
+
+    private def target_arm_query(table, relation)
+      if relation.table_name == dump_target.table_name
+        return arm_pk_query(table).tap do |query|
+          query.where dump_target_fk_clause(relation.foreign_key)
+          query.where polymorphic_type_clause(relation)
+        end
+      end
+
+      target = table_by_name[relation.table_name]
+      return nil if target.nil?
+
+      path = find_path_to_dump_target(target, table_by_name, dump_target)
+      if path.any? && !path.include?(table.name)
+        return arm_pk_query(table).tap do |query|
+          query.join(build_join_clause(table, target, relation))
+          build_join_clauses(target, table_by_name, dump_target).each { |join_clause| query.join(join_clause) }
+        end
+      end
+
+      scoped_target_arm_query(table, relation)
     end
 
     private def find_path_to_dump_target(table, table_by_name, dump_target)
@@ -935,15 +1015,33 @@ module Exwiw
       path = find_path_to_scoped(table, first_relation: relation)
       return ScopedArm.new(relation: relation, path: path) if path.size >= 2
 
+      target_query = scoped_target_query(table, relation, allow_automatic_reverse: true)
+      target_query && ScopedArm.new(relation: relation, target_query: target_query)
+    end
+
+    private def scoped_target_arm_query(table, relation)
+      # A parent kept only by the automatic referenced_by exists to keep a child's
+      # foreign key valid. Single-target mode extracts only what sits under the
+      # dump target, so such a parent must not pull in the rows that point at it.
+      target_query = scoped_target_query(table, relation, allow_automatic_reverse: scope_mode?)
+      target_query && target_ids_arm_query(table, relation, target_query)
+    end
+
+    private def scoped_target_query(table, relation, allow_automatic_reverse:)
       target = table_by_name[relation.table_name]
       return nil if target.nil? || target.primary_key.nil?
       # Descending into a table already being resolved would close a cycle.
       return nil if target.name == table.name || @forward_path.include?(target.name)
 
-      target_query = self.class.run(
+      # Built the same way as the target's own extraction, so the arm never keeps
+      # a row pointing at a target row the dump leaves out.
+      builder = self.class.new(
         target.name, table_by_name, dump_target, @logger,
-        allow_reverse: true, forward_path: @forward_path + [table.name], reverse_path: @reverse_path, deep_chain_warned: @deep_chain_warned
+        forward_path: @forward_path + [table.name], reverse_path: @reverse_path, deep_chain_warned: @deep_chain_warned
       )
+      target_query = builder.run
+      return nil if !allow_automatic_reverse && builder.narrowed_by_automatic_reverse
+
       # An unconstrained target selects every id, i.e. does not scope the arm at
       # all; dropping the arm is the safe outcome.
       return nil unless target_query.where_clauses.any? || target_query.join_clauses.any?
@@ -964,7 +1062,7 @@ module Exwiw
         return nil
       end
 
-      ScopedArm.new(relation: relation, target_query: target_query)
+      target_query
     end
 
     # The polymorphic belongs_to arms sharing the `foreign_type` of the relation
@@ -1019,42 +1117,57 @@ module Exwiw
     # (`replace_with` / `raw_sql`) configured on it cannot corrupt the id
     # comparison — the same guard the reverse-scope projections use.
     private def polymorphic_arms_clause(table, arms)
-      pk_column = TableColumn.from_symbol_keys(name: table.primary_key)
-
       queries = arms.map do |arm|
-        query = QueryAst::Select.new
-        query.from(table.name)
-        query.select([pk_column])
-
         if arm.path
-          build_scoped_join_clauses(arm.path, first_relation: arm.relation).each { |jc| query.join(jc) }
+          arm_pk_query(table).tap do |query|
+            build_scoped_join_clauses(arm.path, first_relation: arm.relation).each { |jc| query.join(jc) }
+          end
         else
-          # The arm's target is scoped without a join path of its own, so probe
-          # its id set instead of joining up to a scoped ancestor. The type
-          # column still has to be constrained: the foreign key alone cannot tell
-          # this arm's rows from another arm's (record_id=1 may be any type).
-          target = table_by_name.fetch(arm.relation.table_name)
-          query.where QueryAst::WhereClause.new(
-            column_name: arm.relation.foreign_key,
-            operator: :in_subquery,
-            value: QueryAst::SelectSubquery.new(
-              query: project_query_to(arm.target_query, target.primary_key)
-            )
-          )
-          query.where QueryAst::WhereClause.new(
-            column_name: arm.relation.foreign_type,
-            operator: :eq,
-            value: [arm.relation.type_value]
-          )
+          target_ids_arm_query(table, arm.relation, arm.target_query)
         end
-
-        query
       end
 
+      pk_union_clause(table, queries)
+    end
+
+    private def pk_union_clause(table, arm_queries)
       QueryAst::WhereClause.new(
         column_name: table.primary_key,
         operator: :in_subquery,
-        value: QueryAst::UnionSubquery.new(queries: queries)
+        value: QueryAst::UnionSubquery.new(queries: arm_queries)
+      )
+    end
+
+    private def arm_pk_query(table)
+      QueryAst::Select.new.tap do |query|
+        query.from(table.name)
+        query.select([TableColumn.from_symbol_keys(name: table.primary_key)])
+      end
+    end
+
+    # The arm's target is scoped without a join path of its own, so probe its id
+    # set instead of joining up to a scoped ancestor. The type column still has
+    # to be constrained: the foreign key alone cannot tell this arm's rows from
+    # another arm's (record_id=1 may be any type).
+    private def target_ids_arm_query(table, relation, target_query)
+      target = table_by_name.fetch(relation.table_name)
+      arm_pk_query(table).tap do |query|
+        query.where QueryAst::WhereClause.new(
+          column_name: relation.foreign_key,
+          operator: :in_subquery,
+          value: QueryAst::SelectSubquery.new(
+            query: project_query_to(target_query, target.primary_key)
+          )
+        )
+        query.where polymorphic_type_clause(relation)
+      end
+    end
+
+    private def polymorphic_type_clause(relation)
+      QueryAst::WhereClause.new(
+        column_name: relation.foreign_type,
+        operator: :eq,
+        value: [relation.type_value]
       )
     end
 

@@ -24,6 +24,16 @@ RSpec.describe Exwiw::QueryAstBuilder do
     let(:logger) { Logger.new(nil) }
     let(:built_query_ast) { described_class.run(table.name, table_by_name, dump_target, logger) }
 
+    def compile_sqlite(ast)
+      Exwiw::Adapter::SqliteAdapter.new(
+        Exwiw::ConnectionConfig.new(
+          adapter: 'sqlite', database_name: 'tmp/test.sqlite3',
+          host: nil, port: nil, user: nil, password: nil
+        ),
+        logger,
+      ).compile_ast(ast)
+    end
+
     def simply_columns(columns)
       columns.map do |c|
         case c
@@ -205,9 +215,11 @@ RSpec.describe Exwiw::QueryAstBuilder do
     end
 
     context 'when the table has polymorphic belongs_tos to multiple targets' do
-      # reviews が reviewable として products と shops の両方へ polymorphic に
-      # belongs_to するケース。dump target に一致する型だけが絞り込まれ、もう一方
-      # の belongs_to (Shop) が products dump に混入しないこと、その逆も確認する。
+      # reviews が products と shops の両方へ polymorphic に belongs_to するケース
+      # products dump の shop は product の親として抽出されるだけなので、
+      # その shop へのレビューは混入させない
+      # shops dump では products が shop に belongs_to するので、
+      # 店舗の商品へのレビューも含める
       let(:reviews_table) do
         Exwiw::TableConfig.from_symbol_keys(
           name: 'reviews',
@@ -261,14 +273,128 @@ RSpec.describe Exwiw::QueryAstBuilder do
       context 'when dumping the Shop target' do
         let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'shops', ids: [1]) }
 
-        it 'filters by the Shop type only' do
-          expect(built_query_ast.from_table_name).to eq('reviews')
-          expect(built_query_ast.join_clauses).to eq([])
-          expect(built_query_ast.where_clauses.map(&:to_h)).to eq([
-            { column_name: 'reviewable_id', operator: :eq, value: [1] },
-            { column_name: 'reviewable_type', operator: :eq, value: ['Shop'] },
-          ])
+        it "unions the shop's own reviews with the reviews of its products" do
+          expect(compile_sqlite(built_query_ast)).to eq(
+            'SELECT reviews.id, reviews.reviewable_type, reviews.reviewable_id, reviews.user_id FROM reviews ' \
+              'JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (' \
+              'SELECT reviews.id FROM reviews ' \
+              "JOIN products ON reviews.reviewable_id = products.id AND products.shop_id = 1 AND reviews.reviewable_type = 'Product'" \
+              ' UNION ' \
+              "SELECT reviews.id FROM reviews WHERE reviews.reviewable_id = 1 AND reviews.reviewable_type = 'Shop'" \
+              ') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON reviews.id = exwiw_scope_ids_0.exwiw_scope_id'
+          )
         end
+      end
+    end
+
+    context 'when polymorphic arms share the type column but not the foreign key' do
+      let(:tags_table) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'tags',
+          primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'products', foreign_key: 'product_id', foreign_type: 'tagged_type', type_value: 'Product' },
+            { table_name: 'shops', foreign_key: 'shop_id', foreign_type: 'tagged_type', type_value: 'Shop' },
+          ],
+          columns: [{ name: 'id' }, { name: 'tagged_type' }, { name: 'product_id' }, { name: 'shop_id' }],
+        )
+      end
+      let(:all_tables) { [tags_table, shops_table(:sqlite), products_table(:sqlite)] }
+      let(:table) { tags_table }
+
+      it 'unions the arms, each joined on its own foreign key' do
+        expect(compile_sqlite(built_query_ast)).to eq(
+          'SELECT tags.id, tags.tagged_type, tags.product_id, tags.shop_id FROM tags ' \
+            'JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (' \
+            'SELECT tags.id FROM tags ' \
+            "JOIN products ON tags.product_id = products.id AND products.shop_id = 1 AND tags.tagged_type = 'Product'" \
+            ' UNION ' \
+            "SELECT tags.id FROM tags WHERE tags.shop_id = 1 AND tags.tagged_type = 'Shop'" \
+            ') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON tags.id = exwiw_scope_ids_0.exwiw_scope_id'
+        )
+      end
+    end
+
+    context 'when polymorphic arms reach the dump target through a reverse_scope and a belongs_to cascade' do
+      let(:memberships) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'memberships', primary_key: 'id',
+          belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id' }],
+          columns: [{ name: 'id' }, { name: 'shop_id' }, { name: 'account_id' }]
+        )
+      end
+      let(:accounts) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'accounts', primary_key: 'id', belongs_tos: [],
+          reverse_scope: { via: [{ table: 'memberships', column: 'account_id' }] },
+          columns: [{ name: 'id' }]
+        )
+      end
+      let(:photos) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'photos', primary_key: 'id',
+          belongs_tos: [{ table_name: 'accounts', foreign_key: 'account_id' }],
+          columns: [{ name: 'id' }, { name: 'account_id' }]
+        )
+      end
+      let(:notes) do
+        arm = ->(table_name, type_value) do
+          { table_name: table_name, foreign_key: 'notable_id', foreign_type: 'notable_type', type_value: type_value }
+        end
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'notes', primary_key: 'id',
+          belongs_tos: [arm.('shops', 'Shop'), arm.('accounts', 'Account'), arm.('photos', 'Photo')],
+          columns: [{ name: 'id' }, { name: 'notable_type' }, { name: 'notable_id' }]
+        )
+      end
+      let(:all_tables) { [shops_table(:sqlite), memberships, accounts, photos, notes] }
+      let(:table) { notes }
+
+      context 'and a referencing table narrows the arm target before the cascade does' do
+        # photos is extracted as the ids orders references (the automatic
+        # referenced_by), not as every photo of the scoped accounts.
+        let(:orders) do
+          Exwiw::TableConfig.from_symbol_keys(
+            name: 'orders', primary_key: 'id',
+            belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id' }, { table_name: 'photos', foreign_key: 'photo_id' }],
+            columns: [{ name: 'id' }, { name: 'shop_id' }, { name: 'photo_id' }]
+          )
+        end
+        let(:all_tables) { [shops_table(:sqlite), memberships, accounts, photos, orders, notes] }
+
+        it 'drops the arm instead of pointing at photos the dump leaves out' do
+          sql = compile_sqlite(built_query_ast)
+
+          expect(sql).to include("notes.notable_type = 'Shop'")
+          expect(sql).to include("notes.notable_type = 'Account'")
+          expect(sql).not_to include("'Photo'")
+        end
+      end
+
+      it 'unions every arm, probing the ids of the targets that have no join path' do
+        account_ids =
+          'SELECT accounts.id FROM accounts ' \
+          'JOIN (SELECT DISTINCT exwiw_scope_src_0.account_id AS exwiw_scope_id FROM (' \
+          'SELECT memberships.account_id FROM memberships WHERE memberships.shop_id = 1 AND memberships.account_id IS NOT NULL' \
+          ') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON accounts.id = exwiw_scope_ids_0.exwiw_scope_id'
+        photo_ids =
+          'SELECT photos.id FROM photos ' \
+          "JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (#{account_ids}) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 " \
+          'ON photos.account_id = exwiw_scope_ids_0.exwiw_scope_id'
+        probe = lambda do |ids_query, type_value|
+          'SELECT notes.id FROM notes ' \
+            "JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (#{ids_query}) AS exwiw_scope_src_0) AS exwiw_scope_ids_0 " \
+            "ON notes.notable_id = exwiw_scope_ids_0.exwiw_scope_id WHERE notes.notable_type = '#{type_value}'"
+        end
+
+        expect(compile_sqlite(built_query_ast)).to eq(
+          'SELECT notes.id, notes.notable_type, notes.notable_id FROM notes ' \
+            'JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (' \
+            "SELECT notes.id FROM notes WHERE notes.notable_id = 1 AND notes.notable_type = 'Shop'" \
+            " UNION #{probe.(account_ids, 'Account')}" \
+            " UNION #{probe.(photo_ids, 'Photo')}" \
+            ') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON notes.id = exwiw_scope_ids_0.exwiw_scope_id'
+        )
       end
     end
 
@@ -1175,6 +1301,95 @@ RSpec.describe Exwiw::QueryAstBuilder do
             ') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON comments.id = exwiw_scope_ids_0.exwiw_scope_id'
         )
       end
+
+      context 'and it is the only arm' do
+        let(:comment_arms) { [account_arm] }
+
+        it 'scopes the table through that arm instead of leaving it unscopable' do
+          expect(compiled('comments')).to eq(
+            'SELECT comments.id, comments.commentable_type, comments.commentable_id, comments.body ' \
+              'FROM comments ' \
+              'JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (' \
+              'SELECT comments.id FROM comments ' \
+              'JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (' \
+              'SELECT accounts.id FROM accounts ' \
+              'JOIN (SELECT DISTINCT exwiw_scope_src_0.account_id AS exwiw_scope_id FROM (' \
+              "SELECT customers.account_id FROM customers WHERE customers.tenant_id = 't1'" \
+              ') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON accounts.id = exwiw_scope_ids_0.exwiw_scope_id' \
+              ') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ' \
+              'ON comments.commentable_id = exwiw_scope_ids_0.exwiw_scope_id ' \
+              "WHERE comments.commentable_type = 'Account'" \
+              ') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON comments.id = exwiw_scope_ids_0.exwiw_scope_id'
+          )
+          expect(described_class.scope_category('comments', table_by_name, dump_target, logger)).to eq(:via_scoped_parent)
+        end
+      end
+
+      context 'and a second, independent polymorphic association is scopable too' do
+        let(:comment_arms) do
+          [account_arm, { table_name: 'accounts', foreign_key: 'subject_id', foreign_type: 'subject_type', type_value: 'Account' }]
+        end
+        let(:comment_columns) do
+          [
+            { name: 'id' }, { name: 'commentable_type' }, { name: 'commentable_id' },
+            { name: 'subject_type' }, { name: 'subject_id' }, { name: 'body' }
+          ]
+        end
+
+        it 'leaves the table unscopable rather than picking one association' do
+          expect(described_class.scope_category('comments', table_by_name, dump_target, logger)).to eq(:unscopable)
+        end
+      end
+
+      context 'and the table carrying the arm also belongs_to a table narrowed by referenced_by' do
+        # Only the account arm makes `comments` a second constrained referencer of `threads`.
+        let(:comment_arms) { [account_arm, { table_name: 'threads', foreign_key: 'thread_id' }] }
+        let(:comment_columns) do
+          [
+            { name: 'id' }, { name: 'commentable_type' }, { name: 'commentable_id' },
+            { name: 'thread_id' }, { name: 'body' }
+          ]
+        end
+        let(:thread_belongs_tos) { [] }
+        let(:thread_reverse_scope) { nil }
+        let(:threads) do
+          Exwiw::TableConfig.from_symbol_keys(
+            name: 'threads', primary_key: 'id', belongs_tos: thread_belongs_tos,
+            reverse_scope: thread_reverse_scope,
+            columns: [{ name: 'id' }, { name: 'account_id' }]
+          )
+        end
+        let(:subscriptions) do
+          Exwiw::TableConfig.from_symbol_keys(
+            name: 'subscriptions', primary_key: 'id',
+            belongs_tos: [{ table_name: 'threads', foreign_key: 'thread_id' }],
+            columns: [{ name: 'id' }, { name: 'thread_id' }, { name: 'tenant_id' }]
+          )
+        end
+        let(:all_tables) { [shops, posts, pages, widgets, comments, accounts, customers, threads, subscriptions] }
+
+        it 'leaves that table unscopable' do
+          expect(described_class.scope_category('threads', table_by_name, dump_target, logger)).to eq(:unscopable)
+        end
+
+        context 'when that table has a scopable parent of its own' do
+          let(:thread_belongs_tos) { [{ table_name: 'accounts', foreign_key: 'account_id' }] }
+
+          it 'narrows that table through its parent instead' do
+            expect(described_class.scope_category('threads', table_by_name, dump_target, logger)).to eq(:via_scoped_parent)
+            expect(build('threads').where_clauses.map(&:column_name)).to eq(['account_id'])
+          end
+        end
+
+        context 'when that table declares reverse_scope via the original referencer' do
+          let(:thread_reverse_scope) { { via: [{ table: 'subscriptions', column: 'thread_id' }] } }
+
+          it 'keeps narrowing that table by the declared referencer' do
+            expect(described_class.scope_category('threads', table_by_name, dump_target, logger)).to eq(:referenced_by)
+            expect(compiled('threads')).to include("SELECT subscriptions.thread_id FROM subscriptions WHERE subscriptions.tenant_id = 't1'")
+          end
+        end
+      end
     end
 
     context 'when an arm target is scoped through this very table' do
@@ -2060,7 +2275,64 @@ RSpec.describe Exwiw::QueryAstBuilder do
         columns: [{ name: 'id' }]
       )
     end
-    let(:all_tables) { [business_entities, hub_a, ref_a, hub_b, ref_b, child, countries] }
+    let(:owner_arm) do
+      { table_name: 'hub_a', foreign_key: 'owner_id', foreign_type: 'owner_type', type_value: 'HubA' }
+    end
+    let(:subject_arm) do
+      { table_name: 'hub_b', foreign_key: 'subject_id', foreign_type: 'subject_type', type_value: 'HubB' }
+    end
+    let(:polymorphic_child) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'polymorphic_child', primary_key: 'id',
+        belongs_tos: [owner_arm, subject_arm],
+        columns: [{ name: 'id' }, { name: 'owner_type' }, { name: 'owner_id' }, { name: 'subject_type' }, { name: 'subject_id' }]
+      )
+    end
+    let(:mixed_child) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'mixed_child', primary_key: 'id',
+        belongs_tos: [{ table_name: 'hub_a', foreign_key: 'hub_a_id' }, subject_arm],
+        columns: [{ name: 'id' }, { name: 'hub_a_id' }, { name: 'subject_type' }, { name: 'subject_id' }]
+      )
+    end
+    let(:lone_polymorphic_child) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'lone_polymorphic_child', primary_key: 'id',
+        belongs_tos: [owner_arm],
+        columns: [{ name: 'id' }, { name: 'owner_type' }, { name: 'owner_id' }]
+      )
+    end
+    # Narrowed only by the automatic referenced_by detection (its single
+    # constrained referencer is auto_ref), with no reverse_scope declared.
+    let(:auto_hub) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'auto_hub', primary_key: 'id', belongs_tos: [],
+        columns: [{ name: 'id' }]
+      )
+    end
+    let(:auto_ref) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'auto_ref', primary_key: 'id',
+        belongs_tos: [
+          { table_name: 'auto_hub', foreign_key: 'auto_hub_id' },
+          { table_name: 'business_entities', foreign_key: 'business_entity_id' },
+        ],
+        columns: [{ name: 'id' }, { name: 'auto_hub_id' }, { name: 'business_entity_id' }]
+      )
+    end
+    let(:auto_polymorphic_child) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'auto_polymorphic_child', primary_key: 'id',
+        belongs_tos: [{ table_name: 'auto_hub', foreign_key: 'owner_id', foreign_type: 'owner_type', type_value: 'AutoHub' }],
+        columns: [{ name: 'id' }, { name: 'owner_type' }, { name: 'owner_id' }]
+      )
+    end
+    let(:all_tables) do
+      [
+        business_entities, hub_a, ref_a, hub_b, ref_b, child, polymorphic_child, mixed_child,
+        lone_polymorphic_child, auto_hub, auto_ref, auto_polymorphic_child, countries,
+      ]
+    end
     let(:table_by_name) { all_tables.each_with_object({}) { |t, h| h[t.name] = t } }
 
     def build(name)
@@ -2072,6 +2344,35 @@ RSpec.describe Exwiw::QueryAstBuilder do
       expect(ast.where_clauses).to eq([])
       expect(ast.join_clauses).to eq([])
       expect(log_output.string).to include('child belongs_to multiple scopable parents')
+    end
+
+    it 'warns and dumps in full when two independent polymorphic associations are both scopable' do
+      ast = build('polymorphic_child')
+      expect(ast.where_clauses).to eq([])
+      expect(ast.join_clauses).to eq([])
+      expect(log_output.string).to include('polymorphic_child belongs_to multiple scopable parents')
+    end
+
+    it 'scopes through a lone polymorphic arm whose target is reverse-scoped' do
+      ast = build('lone_polymorphic_child')
+      expect(ast.where_clauses.size).to eq(1)
+      clause = ast.where_clauses.first
+      expect([clause.column_name, clause.operator]).to eq(['id', :in_subquery])
+      arm_queries = clause.value.queries
+      expect(arm_queries.size).to eq(1)
+      expect(arm_queries.first.where_clauses.map(&:column_name)).to eq(%w[owner_id owner_type])
+    end
+
+    it 'does not scope through a polymorphic arm whose target is narrowed only by the automatic referenced_by' do
+      ast = build('auto_polymorphic_child')
+      expect(ast.where_clauses).to eq([])
+      expect(ast.join_clauses).to eq([])
+    end
+
+    it 'scopes through the plain parent when a polymorphic parent is scopable too' do
+      ast = build('mixed_child')
+      expect(ast.where_clauses.map(&:column_name)).to eq(['hub_a_id'])
+      expect(log_output.string).not_to include('dumped in full')
     end
 
     it 'does not warn for an unrelated table dumped in full' do
