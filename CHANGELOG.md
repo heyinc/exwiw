@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.1.5] - 2026-09-25
+
 ### Fixed
 
 - **Single `--target-table` mode extracts every polymorphic arm, not just one.** The multi-arm union was only built in scope-column mode. In single-target mode a table reached through a polymorphic `belongs_to` followed one arm: the arm pointing at the dump target if there was one, otherwise the arm on the BFS's shortest path. Every other type's rows were dropped without a warning. Dumping `shops`, a `reviews` table with `Shop` and `Product` arms came out with the shop's own reviews but none of the reviews of its products. The arms are now resolved as in scope-column mode (an arm pointing at the dump target compares its foreign key with `--ids`, the others join or probe their target's ids) and the table is constrained to their `UNION`. One single-target rule keeps existing dumps from widening: an arm target that is constrained only by the automatic referenced-by detection does not count, because such a parent is extracted just to keep a child's foreign key valid. Dumping `products` therefore still yields only `reviewable_type = 'Product'` reviews. A declared `reverse_scope` does count. Tables that reach the target through a single arm, or through a non-polymorphic `belongs_to`, emit the same SQL as before.
