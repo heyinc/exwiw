@@ -423,10 +423,9 @@ module Exwiw
     private def build_belongs_to_scoped_clause(table)
       candidates = scopable_parent_candidates(table)
 
-      # Plain parents take precedence over polymorphic ones, as in the join walk:
-      # polymorphic parents are consulted only when no plain parent is scopable.
-      # Multiple independent polymorphic associations are as ambiguous as multiple
-      # plain parents.
+      # Plain parents take precedence over polymorphic ones: polymorphic parents
+      # are consulted only when no plain parent is scopable. Multiple independent
+      # polymorphic associations are as ambiguous as multiple plain parents.
       if candidates.empty?
         groups = polymorphic_parent_groups(table)
         return groups.size == 1 ? pk_union_clause(table, groups.first) : nil

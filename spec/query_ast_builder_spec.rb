@@ -287,6 +287,34 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
     end
 
+    context 'when polymorphic arms share the type column but not the foreign key' do
+      let(:tags_table) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'tags',
+          primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'products', foreign_key: 'product_id', foreign_type: 'tagged_type', type_value: 'Product' },
+            { table_name: 'shops', foreign_key: 'shop_id', foreign_type: 'tagged_type', type_value: 'Shop' },
+          ],
+          columns: [{ name: 'id' }, { name: 'tagged_type' }, { name: 'product_id' }, { name: 'shop_id' }],
+        )
+      end
+      let(:all_tables) { [tags_table, shops_table(:sqlite), products_table(:sqlite)] }
+      let(:table) { tags_table }
+
+      it 'unions the arms, each joined on its own foreign key' do
+        expect(compile_sqlite(built_query_ast)).to eq(
+          'SELECT tags.id, tags.tagged_type, tags.product_id, tags.shop_id FROM tags ' \
+            'JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (' \
+            'SELECT tags.id FROM tags ' \
+            "JOIN products ON tags.product_id = products.id AND products.shop_id = 1 AND tags.tagged_type = 'Product'" \
+            ' UNION ' \
+            "SELECT tags.id FROM tags WHERE tags.shop_id = 1 AND tags.tagged_type = 'Shop'" \
+            ') AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON tags.id = exwiw_scope_ids_0.exwiw_scope_id'
+        )
+      end
+    end
+
     context 'when polymorphic arms reach the dump target through a reverse_scope and a belongs_to cascade' do
       let(:memberships) do
         Exwiw::TableConfig.from_symbol_keys(
@@ -2196,7 +2224,44 @@ RSpec.describe Exwiw::QueryAstBuilder do
         columns: [{ name: 'id' }, { name: 'hub_a_id' }, { name: 'subject_type' }, { name: 'subject_id' }]
       )
     end
-    let(:all_tables) { [business_entities, hub_a, ref_a, hub_b, ref_b, child, polymorphic_child, mixed_child, countries] }
+    let(:lone_polymorphic_child) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'lone_polymorphic_child', primary_key: 'id',
+        belongs_tos: [owner_arm],
+        columns: [{ name: 'id' }, { name: 'owner_type' }, { name: 'owner_id' }]
+      )
+    end
+    # Narrowed only by the automatic referenced_by detection (its single
+    # constrained referencer is auto_ref), with no reverse_scope declared.
+    let(:auto_hub) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'auto_hub', primary_key: 'id', belongs_tos: [],
+        columns: [{ name: 'id' }]
+      )
+    end
+    let(:auto_ref) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'auto_ref', primary_key: 'id',
+        belongs_tos: [
+          { table_name: 'auto_hub', foreign_key: 'auto_hub_id' },
+          { table_name: 'business_entities', foreign_key: 'business_entity_id' },
+        ],
+        columns: [{ name: 'id' }, { name: 'auto_hub_id' }, { name: 'business_entity_id' }]
+      )
+    end
+    let(:auto_polymorphic_child) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'auto_polymorphic_child', primary_key: 'id',
+        belongs_tos: [{ table_name: 'auto_hub', foreign_key: 'owner_id', foreign_type: 'owner_type', type_value: 'AutoHub' }],
+        columns: [{ name: 'id' }, { name: 'owner_type' }, { name: 'owner_id' }]
+      )
+    end
+    let(:all_tables) do
+      [
+        business_entities, hub_a, ref_a, hub_b, ref_b, child, polymorphic_child, mixed_child,
+        lone_polymorphic_child, auto_hub, auto_ref, auto_polymorphic_child, countries,
+      ]
+    end
     let(:table_by_name) { all_tables.each_with_object({}) { |t, h| h[t.name] = t } }
 
     def build(name)
@@ -2215,6 +2280,22 @@ RSpec.describe Exwiw::QueryAstBuilder do
       expect(ast.where_clauses).to eq([])
       expect(ast.join_clauses).to eq([])
       expect(log_output.string).to include('polymorphic_child belongs_to multiple scopable parents')
+    end
+
+    it 'scopes through a lone polymorphic arm whose target is reverse-scoped' do
+      ast = build('lone_polymorphic_child')
+      expect(ast.where_clauses.size).to eq(1)
+      clause = ast.where_clauses.first
+      expect([clause.column_name, clause.operator]).to eq(['id', :in_subquery])
+      arm_queries = clause.value.queries
+      expect(arm_queries.size).to eq(1)
+      expect(arm_queries.first.where_clauses.map(&:column_name)).to eq(%w[owner_id owner_type])
+    end
+
+    it 'does not scope through a polymorphic arm whose target is narrowed only by the automatic referenced_by' do
+      ast = build('auto_polymorphic_child')
+      expect(ast.where_clauses).to eq([])
+      expect(ast.join_clauses).to eq([])
     end
 
     it 'scopes through the plain parent when a polymorphic parent is scopable too' do
