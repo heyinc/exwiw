@@ -72,9 +72,7 @@ module Exwiw
     # automatic reverse detection step aside, when it did.
     attr_reader :ambiguous_referencers
 
-    def narrowed_by_automatic_reverse?
-      !!@narrowed_by_automatic_reverse
-    end
+    attr_reader :narrowed_by_automatic_reverse
 
     def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_declared_reverse: true, forward_path: [], reverse_path: [], deep_chain_warned: nil, batch_ids: nil)
       @table_name = table_name
@@ -107,6 +105,7 @@ module Exwiw
       # Deep-chain warnings already emitted, keyed by chain path and shared (the
       # same Hash) across every recursive build under one top-level run.
       @deep_chain_warned = deep_chain_warned || {}
+      @narrowed_by_automatic_reverse = false
     end
 
     def run
@@ -1041,7 +1040,7 @@ module Exwiw
         forward_path: @forward_path + [table.name], reverse_path: @reverse_path, deep_chain_warned: @deep_chain_warned
       )
       target_query = builder.run
-      return nil if !allow_automatic_reverse && builder.narrowed_by_automatic_reverse?
+      return nil if !allow_automatic_reverse && builder.narrowed_by_automatic_reverse
 
       # An unconstrained target selects every id, i.e. does not scope the arm at
       # all; dropping the arm is the safe outcome.
