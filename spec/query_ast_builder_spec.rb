@@ -1340,6 +1340,56 @@ RSpec.describe Exwiw::QueryAstBuilder do
           expect(described_class.scope_category('comments', table_by_name, dump_target, logger)).to eq(:unscopable)
         end
       end
+
+      context 'and the table carrying the arm also belongs_to a table narrowed by referenced_by' do
+        # Only the account arm makes `comments` a second constrained referencer of `threads`.
+        let(:comment_arms) { [account_arm, { table_name: 'threads', foreign_key: 'thread_id' }] }
+        let(:comment_columns) do
+          [
+            { name: 'id' }, { name: 'commentable_type' }, { name: 'commentable_id' },
+            { name: 'thread_id' }, { name: 'body' }
+          ]
+        end
+        let(:thread_belongs_tos) { [] }
+        let(:thread_reverse_scope) { nil }
+        let(:threads) do
+          Exwiw::TableConfig.from_symbol_keys(
+            name: 'threads', primary_key: 'id', belongs_tos: thread_belongs_tos,
+            reverse_scope: thread_reverse_scope,
+            columns: [{ name: 'id' }, { name: 'account_id' }]
+          )
+        end
+        let(:subscriptions) do
+          Exwiw::TableConfig.from_symbol_keys(
+            name: 'subscriptions', primary_key: 'id',
+            belongs_tos: [{ table_name: 'threads', foreign_key: 'thread_id' }],
+            columns: [{ name: 'id' }, { name: 'thread_id' }, { name: 'tenant_id' }]
+          )
+        end
+        let(:all_tables) { [shops, posts, pages, widgets, comments, accounts, customers, threads, subscriptions] }
+
+        it 'leaves that table unscopable' do
+          expect(described_class.scope_category('threads', table_by_name, dump_target, logger)).to eq(:unscopable)
+        end
+
+        context 'when that table has a scopable parent of its own' do
+          let(:thread_belongs_tos) { [{ table_name: 'accounts', foreign_key: 'account_id' }] }
+
+          it 'narrows that table through its parent instead' do
+            expect(described_class.scope_category('threads', table_by_name, dump_target, logger)).to eq(:via_scoped_parent)
+            expect(build('threads').where_clauses.map(&:column_name)).to eq(['account_id'])
+          end
+        end
+
+        context 'when that table declares reverse_scope via the original referencer' do
+          let(:thread_reverse_scope) { { via: [{ table: 'subscriptions', column: 'thread_id' }] } }
+
+          it 'keeps narrowing that table by the declared referencer' do
+            expect(described_class.scope_category('threads', table_by_name, dump_target, logger)).to eq(:referenced_by)
+            expect(compiled('threads')).to include("SELECT subscriptions.thread_id FROM subscriptions WHERE subscriptions.tenant_id = 't1'")
+          end
+        end
+      end
     end
 
     context 'when an arm target is scoped through this very table' do
