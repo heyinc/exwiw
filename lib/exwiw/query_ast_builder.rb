@@ -72,6 +72,10 @@ module Exwiw
     # automatic reverse detection step aside, when it did.
     attr_reader :ambiguous_referencers
 
+    def narrowed_by_automatic_reverse?
+      !!@narrowed_by_automatic_reverse
+    end
+
     def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_declared_reverse: true, forward_path: [], reverse_path: [], deep_chain_warned: nil, batch_ids: nil)
       @table_name = table_name
       @table_by_name = table_by_name
@@ -133,7 +137,10 @@ module Exwiw
          table.name != dump_target.table_name &&
          where_clauses.empty? && join_clauses.empty?
         reverse_clause = build_referenced_by_clause(table)
-        where_clauses.push(reverse_clause) if reverse_clause
+        if reverse_clause
+          where_clauses.push(reverse_clause)
+          @narrowed_by_automatic_reverse = !explicit_reverse_scope?(table)
+        end
       end
 
       # Forward cascade. A satellite of a reverse_scope'd (or referenced-by-scoped)
@@ -1027,10 +1034,15 @@ module Exwiw
       # Descending into a table already being resolved would close a cycle.
       return nil if target.name == table.name || @forward_path.include?(target.name)
 
-      target_query = self.class.run(
+      # Built the same way as the target's own extraction, so the arm never keeps
+      # a row pointing at a target row the dump leaves out.
+      builder = self.class.new(
         target.name, table_by_name, dump_target, @logger,
-        allow_reverse: allow_automatic_reverse, forward_path: @forward_path + [table.name], reverse_path: @reverse_path, deep_chain_warned: @deep_chain_warned
+        forward_path: @forward_path + [table.name], reverse_path: @reverse_path, deep_chain_warned: @deep_chain_warned
       )
+      target_query = builder.run
+      return nil if !allow_automatic_reverse && builder.narrowed_by_automatic_reverse?
+
       # An unconstrained target selects every id, i.e. does not scope the arm at
       # all; dropping the arm is the safe outcome.
       return nil unless target_query.where_clauses.any? || target_query.join_clauses.any?

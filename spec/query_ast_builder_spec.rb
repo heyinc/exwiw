@@ -350,6 +350,27 @@ RSpec.describe Exwiw::QueryAstBuilder do
       let(:all_tables) { [shops_table(:sqlite), memberships, accounts, photos, notes] }
       let(:table) { notes }
 
+      context 'and a referencing table narrows the arm target before the cascade does' do
+        # photos is extracted as the ids orders references (the automatic
+        # referenced_by), not as every photo of the scoped accounts.
+        let(:orders) do
+          Exwiw::TableConfig.from_symbol_keys(
+            name: 'orders', primary_key: 'id',
+            belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id' }, { table_name: 'photos', foreign_key: 'photo_id' }],
+            columns: [{ name: 'id' }, { name: 'shop_id' }, { name: 'photo_id' }]
+          )
+        end
+        let(:all_tables) { [shops_table(:sqlite), memberships, accounts, photos, orders, notes] }
+
+        it 'drops the arm instead of pointing at photos the dump leaves out' do
+          sql = compile_sqlite(built_query_ast)
+
+          expect(sql).to include("notes.notable_type = 'Shop'")
+          expect(sql).to include("notes.notable_type = 'Account'")
+          expect(sql).not_to include("'Photo'")
+        end
+      end
+
       it 'unions every arm, probing the ids of the targets that have no join path' do
         account_ids =
           'SELECT accounts.id FROM accounts ' \
