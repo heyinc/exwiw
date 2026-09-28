@@ -111,7 +111,8 @@ module Exwiw
       @database_name = nil
       @target_table_name = nil
       @target_collection_name = nil
-      @ids = []
+      @ids_by_id_space = {}
+      @ids_errors = []
       @ids_field = nil
       @scope_column = nil
       @output_format = nil
@@ -151,7 +152,7 @@ module Exwiw
 
       dump_target = DumpTarget.new(
         table_name: @target_table_name,
-        ids: @ids,
+        ids: @ids_by_id_space,
         ids_field: @ids_field,
         scope_column: @scope_column,
       )
@@ -297,6 +298,9 @@ module Exwiw
       # Fill in any options not given on the CLI from the config file. Done first
       # so a config-provided `adapter` is in place before normalization below.
       # CLI values always win (the merge only fills nil/empty ivars).
+      @ids_errors.each { |message| $stderr.puts message }
+      exit 1 if @ids_errors.any?
+
       apply_config_file!
 
       # Default log level once CLI and config have both had their say.
@@ -316,6 +320,7 @@ module Exwiw
       end
 
       resolve_target_collection_alias!
+      resolve_named_ids!
       resolve_scope_column!
       resolve_ids_field!
       resolve_uri_option!
@@ -391,12 +396,12 @@ module Exwiw
         exit 1
       end
 
-      if @target_table_name && @ids.empty?
+      if @target_table_name && !ids_given?
         $stderr.puts "--ids is required when --target-table is specified"
         exit 1
       end
 
-      if @scope_column && @ids.empty?
+      if @scope_column && !ids_given?
         $stderr.puts "--ids is required when --scope-column is specified"
         exit 1
       end
@@ -404,7 +409,7 @@ module Exwiw
       # For the SQL adapters, --ids without a target is scope-column mode; whether
       # the schema supports it is checked once it is loaded
       # (QueryAstBuilder.validate_scope!). MongoDB has no scope-column mode.
-      if @database_adapter == "mongodb" && !@target_table_name && @ids.any?
+      if @database_adapter == "mongodb" && !@target_table_name && default_ids.any?
         $stderr.puts "--target-collection (or --target-table) is required when --ids is specified " \
                      "with the mongodb adapter"
         exit 1
@@ -483,17 +488,79 @@ module Exwiw
       @log_level ||= config["log_level"]&.to_sym
       @target_table_name ||= config["target_table"]
       @target_collection_name ||= config["target_collection"]
-      if @ids.empty? && config.key?("ids")
+      # Like the other keys, `ids` is taken from the config only when the CLI
+      # passed no --ids at all; the two are never merged per ID space.
+      if !ids_given? && config.key?("ids")
         raw = config["ids"]
-        # Accept either a YAML list or a "1,2" string; coerce to strings to match
-        # the CLI's `--ids=1,2` -> ["1", "2"] shape.
-        @ids = (raw.is_a?(String) ? raw.split(",") : Array(raw)).map(&:to_s)
+        if raw.is_a?(Hash)
+          raw.each do |space, values|
+            space = space.to_s
+            unless space.match?(ID_SPACE_NAME_PATTERN)
+              $stderr.puts "config 'ids' keys must be ID space names (a lowercase letter followed by " \
+                           "lowercase letters, digits or underscores; got #{space.inspect}) in #{path}"
+              exit 1
+            end
+            @ids_by_id_space[space] = parse_config_ids(values)
+          end
+        else
+          @ids_by_id_space[DEFAULT_ID_SPACE] = parse_config_ids(raw)
+        end
       end
       @ids_field ||= config["ids_field"]
       @scope_column ||= config["scope_column"]
       @parallel_workers ||= parse_parallel_workers(config["parallel_workers"]) if config.key?("parallel_workers")
       @mongodb_query_timeout_ms ||= parse_mongodb_query_timeout_ms(config["mongodb_query_timeout_ms"]) if config.key?("mongodb_query_timeout_ms")
       @explain_verbosity ||= config["explain_verbosity"]
+    end
+
+    # Accept either a YAML list or a "1,2" string; coerce to strings to match
+    # the CLI's `--ids=1,2` -> ["1", "2"] shape.
+    private def parse_config_ids(raw)
+      (raw.is_a?(String) ? raw.split(",") : Array(raw)).map(&:to_s)
+    end
+
+    # `--ids=<id_space>=1,2` gives the values of a named ID space; without the
+    # prefix the values are the default space's. The prefix is recognized only
+    # when it is shaped like an ID space name, so an id containing `=` is passed
+    # as `--ids=default=<ids>`. Each ID space may be given once: a second --ids
+    # for it would otherwise replace the first without notice.
+    private def add_ids_option(value)
+      prefix, rest = value.to_s.split("=", 2)
+      space, list =
+        if rest && prefix.match?(ID_SPACE_NAME_PATTERN)
+          [prefix, rest]
+        else
+          [DEFAULT_ID_SPACE, value.to_s]
+        end
+
+      if @ids_by_id_space.key?(space)
+        @ids_errors << "--ids was given more than once for the ID space '#{space}'; " \
+                       "pass all of its ids in one comma-separated --ids."
+      end
+      @ids_by_id_space[space] = list.split(",")
+    end
+
+    private def ids_given?
+      @ids_by_id_space.each_value.any?(&:any?)
+    end
+
+    private def default_ids
+      @ids_by_id_space.fetch(DEFAULT_ID_SPACE, [])
+    end
+
+    # Named ID spaces exist only for scope-column mode, which the mongodb
+    # adapter does not have. Whether a SQL run is in scope-column mode depends on
+    # the schema, so that is checked once it is loaded (QueryAstBuilder.validate_scope!).
+    private def resolve_named_ids!
+      named = @ids_by_id_space.keys - [DEFAULT_ID_SPACE]
+      return if named.empty?
+
+      if @database_adapter == "mongodb"
+        $stderr.puts "--ids for a named ID space (#{named.map { |space| "'#{space}'" }.join(', ')}) " \
+                     "is not supported by the mongodb adapter, which uses only the default ID space " \
+                     "(--ids without an `<id_space>=` prefix)."
+        exit 1
+      end
     end
 
     # Strip a trailing slash (like the CLI's dir options) and expand relative to
@@ -784,7 +851,7 @@ module Exwiw
         database_adapter: @database_adapter,
         database_name: @database_name,
         target_table: @target_table_name,
-        ids: @ids.dup.freeze,
+        ids: default_ids.dup.freeze,
         ids_field: @ids_field,
         scope_column: @scope_column,
         output_format: @output_format,
@@ -855,7 +922,7 @@ module Exwiw
         opts.on("--database=DATABASE", "Target database name") { |v| @database_name = v }
         opts.on("--target-table=[TABLE]", "Target table for extraction. If omitted with --ids, run in scope-column mode (SQL adapters; the schema must declare `scope_column:`). If omitted without --ids, dump all tables.") { |v| @target_table_name = v }
         opts.on("--target-collection=[COLLECTION]", "Alias of --target-table for the mongodb adapter.") { |v| @target_collection_name = v }
-        opts.on("--ids=[IDS]", "Comma-separated list of identifiers. Required when --target-table is given.") { |v| @ids = v.split(',') }
+        opts.on("--ids=[IDS]", "Comma-separated list of identifiers. Required when --target-table is given. Prefix with `<id_space>=` (e.g. --ids=org=a,b) to give the values of a named ID space; may be repeated, once per ID space. An id containing `=` is passed as --ids=default=<ids>.") { |v| add_ids_option(v) }
         opts.on("--ids-field=[FIELD]", "Field on the target collection that --ids is matched against. Defaults to the primary key. (mongodb adapter only)") { |v| @ids_field = v }
         opts.on("--scope-column=[COLUMN]", "DEPRECATED. Filter every table by this shared global column (--ids are its values) instead of a single --target-table. SQL adapters only; mutually exclusive with --target-table. Prefer declaring a per-table `scope_column:` in the schema config.") { |v| @scope_column = v }
         opts.on("--output-format=[FORMAT]", "Output format: insert (default) or copy (PostgreSQL only, export subcommand only)") { |v| @output_format = v }

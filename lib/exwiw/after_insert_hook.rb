@@ -4,25 +4,26 @@ require 'erb'
 
 module Exwiw
   class AfterInsertHook
-    def self.run(path:, cli_options:, output_dir:, next_idx:, output_extension:, logger:)
+    def self.run(path:, cli_options:, dump_target:, output_dir:, next_idx:, output_extension:, logger:)
       ext = File.extname(path)
 
       if ext == '.rb'
         run_ruby(
           path: path,
           cli_options: cli_options,
+          dump_target: dump_target,
           output_dir: output_dir,
           next_idx: next_idx,
           output_extension: output_extension,
           logger: logger,
         )
       else
-        run_shell(path: path, cli_options: cli_options, output_dir: output_dir, logger: logger)
+        run_shell(path: path, cli_options: cli_options, dump_target: dump_target, output_dir: output_dir, logger: logger)
       end
     end
 
-    def self.run_ruby(path:, cli_options:, output_dir:, next_idx:, output_extension:, logger:)
-      ctx = Context.new(cli_options, output_extension: output_extension)
+    def self.run_ruby(path:, cli_options:, dump_target:, output_dir:, next_idx:, output_extension:, logger:)
+      ctx = Context.new(cli_options, dump_target: dump_target, output_extension: output_extension)
       ctx.instance_eval(File.read(path), path)
 
       # One output file per buffer, numbered sequentially from next_idx: first
@@ -53,7 +54,7 @@ module Exwiw
       end
     end
 
-    def self.run_shell(path:, cli_options:, output_dir:, logger:)
+    def self.run_shell(path:, cli_options:, dump_target:, output_dir:, logger:)
       env = {
         'EXWIW_OUTPUT_DIR'       => output_dir,
         'EXWIW_SCHEMA_DIR'       => cli_options[:schema_dir].to_s,
@@ -64,9 +65,12 @@ module Exwiw
         'EXWIW_DATABASE_NAME'    => cli_options[:database_name].to_s,
         'EXWIW_TARGET_TABLE'     => cli_options[:target_table].to_s,
         'EXWIW_SCOPE_COLUMN'     => cli_options[:scope_column].to_s,
-        'EXWIW_IDS'              => Array(cli_options[:ids]).join(','),
+        'EXWIW_IDS'              => dump_target.default_ids.join(','),
         'EXWIW_OUTPUT_FORMAT'    => cli_options[:output_format].to_s,
       }
+      dump_target.ids.each do |space, values|
+        env["EXWIW_IDS_#{space.upcase}"] = Array(values).join(',')
+      end
       logger.info("Running after-insert shell hook: #{path}")
       ok = system(env, path)
       raise "after-insert shell hook failed: #{path}" unless ok
@@ -79,11 +83,17 @@ module Exwiw
 
       attr_reader :cli_options, :collected, :collected_by_collection
 
-      def initialize(cli_options, output_extension: nil)
+      def initialize(cli_options, dump_target:, output_extension: nil)
         @cli_options = cli_options
+        @dump_target = dump_target
         @output_extension = output_extension
         @collected = []
         @collected_by_collection = {}
+      end
+
+      # The values the run was scoped by for the given ID space (`default` when omitted).
+      def ids_for(id_space = DEFAULT_ID_SPACE)
+        @dump_target.ids_for(id_space.to_s)
       end
 
       def insert_sql(template)

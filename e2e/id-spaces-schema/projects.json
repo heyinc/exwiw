@@ -1,0 +1,15 @@
+{
+  "name": "projects",
+  "primary_key": "id",
+  "belongs_tos": [{
+    "table_name": "tenants",
+    "foreign_key": "tenant_id"
+  }],
+  "columns": [{
+    "name": "id"
+  }, {
+    "name": "tenant_id"
+  }, {
+    "name": "title"
+  }]
+}

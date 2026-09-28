@@ -64,7 +64,46 @@ module Exwiw
   # (`scope_column IN ids`) and tables lacking it are reached by walking
   # belongs_to up to the nearest table that has it. When set, `table_name` is
   # nil. SQL adapters only.
-  DumpTarget = Struct.new(:table_name, :ids, :ids_field, :scope_column, keyword_init: true)
+  #
+  # `ids` maps an ID space name to its values. A table's `scope_column` values
+  # belong to the ID space it declares (`id_space`, `default` when omitted), so
+  # groups of tables keyed by unrelated kinds of id can be scoped in one run. An
+  # Array is taken as the values of the `default` space. Single-target mode and
+  # the mongodb adapter use the `default` space only.
+  DEFAULT_ID_SPACE = "default"
+  ID_SPACE_NAME_PATTERN = /\A[a-z][a-z0-9_]*\z/
+
+  DumpTarget = Struct.new(:table_name, :ids, :ids_field, :scope_column, keyword_init: true) do
+    def self.normalize_ids(ids)
+      case ids
+      when nil then {}
+      when Hash then ids.to_h { |space, values| [space.to_s, Array(values)] }
+      else { DEFAULT_ID_SPACE => Array(ids) }
+      end
+    end
+
+    def initialize(**kwargs)
+      super
+      self.ids = ids
+    end
+
+    def ids=(value)
+      self[:ids] = self.class.normalize_ids(value)
+    end
+
+    def ids_for(id_space)
+      ids.fetch(id_space, [])
+    end
+
+    def default_ids
+      ids_for(DEFAULT_ID_SPACE)
+    end
+
+    # ID spaces other than `default` that were given, with or without values.
+    def named_id_spaces
+      ids.keys - [DEFAULT_ID_SPACE]
+    end
+  end
   # `uri` is an optional full connection string (currently only honored by the
   # mongodb adapter, e.g. `mongodb+srv://...`). When present it is the source of
   # truth for the connection — host/port/user/password are ignored — so TLS,

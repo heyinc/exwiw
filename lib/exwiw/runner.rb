@@ -203,6 +203,7 @@ module Exwiw
       AfterInsertHook.run(
         path: @after_insert_hook_path,
         cli_options: @cli_options,
+        dump_target: @dump_target,
         output_dir: @output_dir,
         next_idx: total_size + 1,
         output_extension: adapter.output_extension,

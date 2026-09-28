@@ -1,0 +1,11 @@
+{
+  "name": "tenants",
+  "primary_key": "id",
+  "scope_column": "id",
+  "belongs_tos": [],
+  "columns": [{
+    "name": "id"
+  }, {
+    "name": "name"
+  }]
+}

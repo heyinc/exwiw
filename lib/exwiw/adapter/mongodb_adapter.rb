@@ -164,9 +164,9 @@ module Exwiw
             # left as Strings rather than guessed at — the caller passes values
             # matching the field's actual type.
             if dump_target.ids_field
-              { dump_target.ids_field => { "$in" => dump_target.ids } }
+              { dump_target.ids_field => { "$in" => dump_target.default_ids } }
             else
-              { config.primary_key => { "$in" => coerce_ids(dump_target.ids) } }
+              { config.primary_key => { "$in" => coerce_ids(dump_target.default_ids) } }
             end
           else
             related_collection_filter(config, config_by_name, dump_target)

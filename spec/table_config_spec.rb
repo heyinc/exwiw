@@ -419,17 +419,19 @@ module Exwiw
     end
 
     describe 'scope-column attributes' do
-      it 'round-trips scope_exempt and scope_column through JSON' do
+      it 'round-trips scope_exempt, scope_column and id_space through JSON' do
         config = TableConfig.from_symbol_keys(
           name: 'legacy_orders',
           primary_key: 'id',
           scope_exempt: true,
           scope_column: 'legacy_tenant',
+          id_space: 'legacy',
           columns: [{ name: 'id' }, { name: 'legacy_tenant' }],
         )
         reloaded = TableConfig.from(JSON.parse(JSON.generate(config.to_hash)))
         expect(reloaded.scope_exempt).to eq(true)
         expect(reloaded.scope_column).to eq('legacy_tenant')
+        expect(reloaded.id_space).to eq('legacy')
       end
 
       it 'omits the keys when unset (generator default)' do
@@ -438,12 +440,13 @@ module Exwiw
         ).to_hash
         expect(hash).not_to have_key('scope_exempt')
         expect(hash).not_to have_key('scope_column')
+        expect(hash).not_to have_key('id_space')
       end
 
       it 'preserves the user-set values across merge with a regenerated config' do
         current = TableConfig.from_symbol_keys(
           name: 'legacy_orders', primary_key: 'id',
-          scope_exempt: true, scope_column: 'legacy_tenant',
+          scope_exempt: true, scope_column: 'legacy_tenant', id_space: 'legacy',
           columns: [{ name: 'id' }, { name: 'legacy_tenant' }],
         )
         regenerated = TableConfig.from_symbol_keys(
@@ -453,7 +456,25 @@ module Exwiw
         merged = current.merge(regenerated)
         expect(merged.scope_exempt).to eq(true)
         expect(merged.scope_column).to eq('legacy_tenant')
+        expect(merged.id_space).to eq('legacy')
         expect(merged.column_names).to eq(['id', 'legacy_tenant', 'added'])
+      end
+
+      it 'rejects an id_space that is not shaped like an ID space name' do
+        expect {
+          TableConfig.from_symbol_keys(
+            name: 'orgs', primary_key: 'id', scope_column: 'id', id_space: 'Org',
+            columns: [{ name: 'id' }],
+          )
+        }.to raise_error(ArgumentError, /id_space 'Org' must start with a lowercase letter/)
+      end
+
+      it 'rejects an id_space without a scope_column' do
+        expect {
+          TableConfig.from_symbol_keys(
+            name: 'orgs', primary_key: 'id', id_space: 'org', columns: [{ name: 'id' }],
+          )
+        }.to raise_error(ArgumentError, /id_space .* requires scope_column/)
       end
     end
 
