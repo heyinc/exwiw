@@ -959,6 +959,57 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
     end
 
+    context 'scope-column mode triggered by --ids with no target named' do
+      let(:dump_target) { Exwiw::DumpTarget.new(ids: ['t1']) }
+
+      before { orders.scope_column = 'tenant_id' }
+
+      it 'scopes every table from the schema declarations' do
+        expect(described_class.scope_mode?(table_by_name, dump_target)).to eq(true)
+        expect(build('orders').where_clauses.map(&:to_h)).to eq([
+          { column_name: 'tenant_id', operator: :eq, value: ['t1'] },
+        ])
+        expect(build('legacy_orders').where_clauses.map(&:to_h)).to eq([
+          { column_name: 'legacy_tenant', operator: :eq, value: ['t1'] },
+        ])
+        expect(sqlite_adapter.compile_ast(build('order_items'))).to eq(
+          'SELECT order_items.id, order_items.order_id, order_items.quantity FROM order_items ' \
+          "JOIN orders ON order_items.order_id = orders.id AND orders.tenant_id = 't1'"
+        )
+      end
+
+      it 'still triggers validate_scope! so an unscopable table aborts' do
+        expect {
+          described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+        }.to raise_error(ArgumentError, /scope-column mode: 1 table\(s\) cannot be scoped: widgets/)
+      end
+
+      it 'is dump-all mode when no ids are given' do
+        dump_all = Exwiw::DumpTarget.new(ids: [])
+        expect(described_class.scope_mode?(table_by_name, dump_all)).to eq(false)
+        expect {
+          described_class.validate_scope!(all_tables, table_by_name, dump_all, logger)
+        }.not_to raise_error
+      end
+
+      context 'when no extracted table declares scope_column' do
+        before do
+          orders.scope_column = nil
+          legacy_orders.ignore = true
+        end
+
+        it 'raises naming both ways to anchor the ids' do
+          expect(described_class.scope_mode?(table_by_name, dump_target)).to eq(false)
+          expect {
+            described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+          }.to raise_error(
+            ArgumentError,
+            /no table in the schema declares `scope_column`.*--target-table \(single-target mode\).*`scope_column: <column>`.*\(scope-column mode\)/
+          )
+        end
+      end
+    end
+
     def sqlite_adapter
       Exwiw::Adapter::SqliteAdapter.new(
         Exwiw::ConnectionConfig.new(
