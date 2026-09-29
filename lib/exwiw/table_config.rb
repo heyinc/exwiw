@@ -38,6 +38,9 @@ module Exwiw
     # different column name on this table).
     attribute :scope_exempt, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
     attribute :scope_column, optional(String), skip_serializing_if_nil: true
+    # The ID space (Exwiw::DumpTarget#ids) the `scope_column` values belong to.
+    # nil means `default`. User-configured, never generated.
+    attribute :id_space, optional(String), skip_serializing_if_nil: true
 
     # `reverse_scope` opts a table into multi-referencer reverse scoping (see
     # Exwiw::ReverseScope and QueryAstBuilder#build_referenced_by_clause): a
@@ -175,6 +178,7 @@ module Exwiw
         merged_table.bulk_insert_chunk_size = bulk_insert_chunk_size
         merged_table.scope_exempt = scope_exempt
         merged_table.scope_column = scope_column
+        merged_table.id_space = id_space
         merged_table.reverse_scope = reverse_scope
         merged_table.batch_scope = batch_scope
 
@@ -248,6 +252,19 @@ module Exwiw
         if reverse_scope&.column && !ignore && reverse_scope.column != primary_key && columns.none? { |c| c.name == reverse_scope.column }
           raise ArgumentError,
                 "Table '#{name}': reverse_scope.column '#{reverse_scope.column}' is not a declared column."
+        end
+
+        if id_space
+          unless id_space.match?(ID_SPACE_NAME_PATTERN)
+            raise ArgumentError,
+                  "Table '#{name}': id_space '#{id_space}' must start with a lowercase letter and " \
+                  "contain only lowercase letters, digits and underscores."
+          end
+          if scope_column.nil?
+            raise ArgumentError,
+                  "Table '#{name}': id_space names the ID space of the scope_column values, " \
+                  "so it requires scope_column."
+          end
         end
 
         columns.each { |column| validate_ruby_side_masking!(column) }

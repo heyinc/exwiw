@@ -179,7 +179,8 @@ all. Choosing one table as `--target-table` would leave the others unrelated to 
 and an unrelated table is dumped in full — a problem if it holds personal data.
 
 Scope-column mode handles this shape: instead of anchoring on one table's primary
-key, **every table is filtered by a shared column** whose values are `--ids`.
+key, **every table is filtered by a shared column** whose values are `--ids` (tables
+keyed by an unrelated kind of id can use their own [ID space](#per-table-scope_column-and-id-spaces)).
 Declare that column per table in the schema config with `scope_column:`:
 
 ```json
@@ -280,11 +281,13 @@ opt out of the strict check and be exported in full:
 Rails-managed tables (`schema_migrations`, `ar_internal_metadata`) are treated as
 exempt automatically.
 
-#### Per-table `scope_column` and the value space
+#### Per-table `scope_column` and ID spaces
 
-Scope-column mode assumes a single shared **value** space — the same `--ids` apply
-to every scoped table. Each table names its own column, so a table that stores that
-same value under a differently named column simply declares that name:
+The values of every `scope_column` belong to an **ID space**, and `--ids` gives the
+values of each space. A table that does not declare `id_space` is in the `default`
+space, which a plain `--ids=1,2` fills, so without any `id_space` every scoped table
+is filtered by the same `--ids`. Each table names its own column, so a table that
+stores that same value under a differently named column simply declares that name:
 
 ```json
 {
@@ -295,8 +298,42 @@ same value under a differently named column simply declares that name:
 }
 ```
 
-Both `scope_exempt` and `scope_column` are user-maintained and preserved across
-`schema:generate` regeneration (the generators never emit them).
+When one database holds two groups of tables that no foreign key connects, each
+keyed by a different kind of id, put one group in a named ID space. Here `tenants`
+are identified by integer ids and `organizations` by UUIDs (each object is its own
+schema file):
+
+```json
+{ "name": "tenants", "primary_key": "id", "scope_column": "id", "columns": [{ "name": "id" }] }
+{ "name": "organizations", "primary_key": "id", "scope_column": "id", "id_space": "org", "columns": [{ "name": "id" }] }
+```
+
+```bash
+exwiw ... --target-table=tenants \
+  --ids=1,2 \
+  --ids=org=0b6f4c1e-0000-4000-8000-000000000001
+```
+
+`--ids=1,2` is the same as `--ids=default=1,2`. The part before the first `=` is
+read as an ID space name only when it is shaped like one (a lowercase letter
+followed by lowercase letters, digits or underscores), so an id that contains `=`
+itself is passed with an explicit `default=`. Each ID space may be given once. A
+table without a scope column is filtered by the ID space of the table it is scoped
+through (a `belongs_to` join, `reverse_scope`, referenced-by or the parent cascade).
+
+The run aborts before extracting anything when a table is filtered by an ID space
+that was given no values, when values are given for an ID space no table uses, or
+when a table reaches scoped tables of more than one ID space (otherwise the
+`belongs_to` walk would silently settle on the nearest one).
+
+Single `--target-table` mode and the MongoDB adapter use only the `default` space
+and abort when a named one is given. In the config file, `ids:` takes either a list
+(the `default` space) or a mapping from ID space name to values, such as
+`ids: { default: [1, 2], org: [0b6f4c1e-0000-4000-8000-000000000001] }`; as with
+the other keys, it is used only when `--ids` is not passed at all.
+
+`scope_exempt`, `scope_column` and `id_space` are user-maintained and preserved
+across `schema:generate` regeneration (the generators never emit them).
 
 #### Deprecated: the `--scope-column` flag
 
@@ -322,6 +359,7 @@ output_format: insert        # insert | copy
 after_insert_hook: hooks/seed.rb
 log_level: info              # debug | info
 # target_table / ids / ids_field / scope_column may also be set here
+# (ids may map ID spaces to values; see "Per-table scope_column and ID spaces")
 # mongodb_query_timeout_ms: 30000   # global query timeout (mongodb only)
 ```
 
@@ -651,7 +689,8 @@ psql -d app_dev -f dump/insert-001-shops.sql
 
 **Ruby hook (`.rb`)**: provides a tiny DSL with these builtins:
 
-- `cli_options` — Hash of all parsed CLI options (e.g. `cli_options.fetch(:ids)` returns the `--ids` array).
+- `cli_options` — Hash of all parsed CLI options (e.g. `cli_options.fetch(:ids)` returns the `--ids` array of the `default` ID space)
+- `ids_for(id_space = "default")` — the values the run was scoped by for that ID space (e.g. `ids_for("org")` for `--ids=org=...`)
 - `insert_sql(template)` — appends an ERB-rendered string to a buffer. After the hook finishes, the buffer is concatenated and written to `insert-{N+1}-after_insert.{ext}` where `{N+1}` is one past the last per-table insert file. For the MongoDB adapter the equivalent alias `insert_jsonl(template)` is available; output goes to `insert-{N+1}-after_insert.jsonl`. Multiple `insert_sql` calls in a single hook are joined with `"\n"` into the same file. If no `insert_sql` call is made, no file is created.
 - `insert_jsonl(collection, template)` — **MongoDB adapter only**. SQL statements name their table in-band, but JSONL documents do not — the import convention derives the target collection from the filename — so the two-argument form writes the ERB-rendered extended-JSON lines to the named collection's own `insert-NNN-<collection>.jsonl` file, importable with the same `mongoimport --collection <collection>` convention as the per-collection dump files. Multiple calls targeting the same collection are appended (joined with `"\n"`) into that collection's file; distinct collections get one file each, numbered sequentially after the last per-collection dump file (the collection-less `after_insert` buffer, when also used, keeps `{N+1}` and the collection files follow it). Calling this form with a SQL adapter raises an error.
 
@@ -681,7 +720,8 @@ insert_jsonl 'posts', '{"title":"welcome"}'
 
 - `EXWIW_OUTPUT_DIR`, `EXWIW_SCHEMA_DIR`
 - `EXWIW_DATABASE_ADAPTER`, `EXWIW_DATABASE_HOST`, `EXWIW_DATABASE_PORT`, `EXWIW_DATABASE_USER`, `EXWIW_DATABASE_NAME`
-- `EXWIW_TARGET_TABLE`, `EXWIW_IDS` (comma-separated), `EXWIW_OUTPUT_FORMAT`
+- `EXWIW_TARGET_TABLE`, `EXWIW_IDS` (comma-separated, the `default` ID space), `EXWIW_OUTPUT_FORMAT`
+- `EXWIW_IDS_<ID_SPACE>` for each ID space given values, with the name uppercased (`--ids=org=...` becomes `EXWIW_IDS_ORG`). `EXWIW_IDS_DEFAULT` is set only when the `default` space is given, while `EXWIW_IDS` is always set
 
 A non-zero exit code from the shell hook aborts exwiw.
 

@@ -5,14 +5,24 @@ require 'tempfile'
 module Exwiw
   RSpec.describe AfterInsertHook do
     let(:logger) { ::Logger.new(nil) }
+    let(:dump_target) { DumpTarget.new(table_name: cli_options[:target_table], ids: cli_options[:ids]) }
 
     describe AfterInsertHook::Context do
       let(:cli_options) { { ids: ['1', '2', '3'], target_table: 'shops' } }
-      let(:ctx) { described_class.new(cli_options) }
+      let(:ctx) { described_class.new(cli_options, dump_target: dump_target) }
 
       it 'evaluates the template as ERB and exposes cli_options' do
         ctx.insert_sql("ids=<%= cli_options.fetch(:ids).join(',') %>")
         expect(ctx.collected).to eq(['ids=1,2,3'])
+      end
+
+      context 'with a named ID space' do
+        let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: { 'default' => ['1', '2', '3'], 'org' => ['a', 'b'] }) }
+
+        it 'exposes the values of each ID space via ids_for' do
+          ctx.insert_sql("<%= ids_for.join(',') %> <%= ids_for('org').join(',') %>")
+          expect(ctx.collected).to eq(['1,2,3 a,b'])
+        end
       end
 
       it 'concatenates multiple insert_sql calls' do
@@ -27,7 +37,7 @@ module Exwiw
       end
 
       context 'with a jsonl output extension' do
-        let(:ctx) { described_class.new(cli_options, output_extension: 'jsonl') }
+        let(:ctx) { described_class.new(cli_options, dump_target: dump_target, output_extension: 'jsonl') }
 
         it 'collects collection-targeted insert_jsonl output per collection' do
           ctx.insert_jsonl('users', '{"email":"u<%= cli_options.fetch(:ids).first %>@example.com"}')
@@ -79,6 +89,7 @@ module Exwiw
         AfterInsertHook.run(
           path: hook_path,
           cli_options: cli_options,
+          dump_target: dump_target,
           output_dir: output_dir,
           next_idx: 4,
           output_extension: 'sql',
@@ -99,6 +110,7 @@ module Exwiw
         AfterInsertHook.run(
           path: hook_path,
           cli_options: cli_options,
+          dump_target: dump_target,
           output_dir: output_dir,
           next_idx: 7,
           output_extension: 'sql',
@@ -123,6 +135,7 @@ module Exwiw
         AfterInsertHook.run(
           path: hook_path,
           cli_options: cli_options,
+          dump_target: dump_target,
           output_dir: output_dir,
           next_idx: next_idx,
           output_extension: 'jsonl',
@@ -178,9 +191,11 @@ module Exwiw
     describe '.run with a shell hook' do
       let(:output_dir) { 'tmp/after_insert_hook_spec_shell' }
       let(:hook_path) { File.join(output_dir, 'hook.sh') }
+      let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: { 'default' => ['1', '2'], 'org' => ['a', 'b'] }) }
       let(:cli_options) do
         {
-          ids: ['1', '2'], target_table: 'shops', schema_dir: '/cfg',
+          ids: ['1', '2'],
+          target_table: 'shops', schema_dir: '/cfg',
           database_adapter: 'sqlite', database_host: nil, database_port: nil,
           database_user: nil, database_name: 'db', output_format: 'insert',
         }
@@ -192,7 +207,7 @@ module Exwiw
         File.write(hook_path, <<~SH)
           #!/usr/bin/env bash
           set -eu
-          echo "ids=$EXWIW_IDS table=$EXWIW_TARGET_TABLE adapter=$EXWIW_DATABASE_ADAPTER" \\
+          echo "ids=$EXWIW_IDS default_ids=$EXWIW_IDS_DEFAULT org_ids=$EXWIW_IDS_ORG table=$EXWIW_TARGET_TABLE adapter=$EXWIW_DATABASE_ADAPTER" \\
             > "$EXWIW_OUTPUT_DIR/shell_out.txt"
         SH
         FileUtils.chmod(0o755, hook_path)
@@ -202,6 +217,7 @@ module Exwiw
         AfterInsertHook.run(
           path: hook_path,
           cli_options: cli_options,
+          dump_target: dump_target,
           output_dir: output_dir,
           next_idx: 5,
           output_extension: 'sql',
@@ -210,8 +226,30 @@ module Exwiw
 
         out = File.read(File.join(output_dir, 'shell_out.txt'))
         expect(out).to include('ids=1,2')
+        expect(out).to include('default_ids=1,2')
+        expect(out).to include('org_ids=a,b')
         expect(out).to include('table=shops')
         expect(out).to include('adapter=sqlite')
+      end
+
+      it 'always sets EXWIW_IDS but sets EXWIW_IDS_DEFAULT only when the default ID space is given' do
+        File.write(hook_path, <<~SH)
+          #!/usr/bin/env bash
+          set -eu
+          echo "ids=[$EXWIW_IDS] default_ids=${EXWIW_IDS_DEFAULT-unset} org_ids=$EXWIW_IDS_ORG" > "$EXWIW_OUTPUT_DIR/shell_out.txt"
+        SH
+
+        AfterInsertHook.run(
+          path: hook_path,
+          cli_options: cli_options,
+          dump_target: DumpTarget.new(table_name: 'shops', ids: { 'org' => ['a'] }),
+          output_dir: output_dir,
+          next_idx: 5,
+          output_extension: 'sql',
+          logger: logger,
+        )
+
+        expect(File.read(File.join(output_dir, 'shell_out.txt'))).to eq("ids=[] default_ids=unset org_ids=a\n")
       end
 
       it 'raises when the shell hook exits non-zero' do
@@ -222,6 +260,7 @@ module Exwiw
           AfterInsertHook.run(
             path: hook_path,
             cli_options: cli_options,
+            dump_target: dump_target,
             output_dir: output_dir,
             next_idx: 5,
             output_extension: 'sql',

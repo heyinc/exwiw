@@ -33,6 +33,9 @@ jobs:
       - name: Run exwiw (scope-column mode)
         run: e2e/test_with_sqlite_scope.sh
 
+      - name: Run exwiw (scope-column mode, two ID spaces)
+        run: e2e/test_with_sqlite_id_spaces.sh
+
       - name: Run exwiw (batch_scope, one query per scope-id slice)
         run: e2e/test_with_sqlite_batch_scope.sh
 

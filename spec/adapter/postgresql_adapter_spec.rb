@@ -991,6 +991,66 @@ module Exwiw
           expect(rows.map(&:last)).to eq(['on t1 post', 'on t1 page'])
         end
       end
+
+      # One integer and one UUID ID space in the same run.
+      describe "two ID spaces against a live database" do
+        let(:connection) { adapter.send(:connection) }
+        let(:org1) { '0b6f4c1e-0000-4000-8000-000000000001' }
+        let(:org2) { '0b6f4c1e-0000-4000-8000-000000000002' }
+        let(:dump_target) do
+          Exwiw::DumpTarget.new(table_name: 'ids_tenants', ids: { 'default' => ['1'], 'org' => [org1] })
+        end
+        let(:table_by_name) do
+          [
+            TableConfig.from_symbol_keys(
+              name: 'ids_tenants', primary_key: 'id', scope_column: 'id',
+              columns: [{ name: 'id' }]
+            ),
+            TableConfig.from_symbol_keys(
+              name: 'ids_projects', primary_key: 'id',
+              belongs_tos: [{ table_name: 'ids_tenants', foreign_key: 'tenant_id' }],
+              columns: [{ name: 'id' }, { name: 'tenant_id' }]
+            ),
+            TableConfig.from_symbol_keys(
+              name: 'ids_organizations', primary_key: 'id', scope_column: 'id', id_space: 'org',
+              columns: [{ name: 'id' }]
+            ),
+            TableConfig.from_symbol_keys(
+              name: 'ids_members', primary_key: 'id',
+              belongs_tos: [{ table_name: 'ids_organizations', foreign_key: 'organization_id' }],
+              columns: [{ name: 'id' }, { name: 'organization_id' }]
+            ),
+          ].each_with_object({}) { |t, h| h[t.name] = t }
+        end
+
+        def extract(table_name)
+          adapter.execute(QueryAstBuilder.run(table_name, table_by_name, dump_target, logger)).to_a
+        end
+
+        before do
+          connection.exec(<<~SQL)
+            CREATE TEMP TABLE ids_tenants (id int PRIMARY KEY);
+            CREATE TEMP TABLE ids_projects (id int PRIMARY KEY, tenant_id int);
+            CREATE TEMP TABLE ids_organizations (id uuid PRIMARY KEY);
+            CREATE TEMP TABLE ids_members (id int PRIMARY KEY, organization_id uuid);
+
+            INSERT INTO ids_tenants VALUES (1), (2);
+            INSERT INTO ids_projects VALUES (10, 1), (11, 2);
+            INSERT INTO ids_organizations VALUES ('#{org1}'), ('#{org2}');
+            INSERT INTO ids_members VALUES (20, '#{org1}'), (21, '#{org2}');
+          SQL
+        end
+
+        it "filters each table group by the values of its own ID space" do
+          expect(extract('ids_projects')).to eq([["10", "1"]])
+          expect(extract('ids_members')).to eq([["20", org1]])
+          expect(adapter.compile_ast(QueryAstBuilder.run('ids_members', table_by_name, dump_target, logger))).to eq(
+            "SELECT ids_members.id, ids_members.organization_id FROM ids_members " \
+            "JOIN ids_organizations ON ids_members.organization_id = ids_organizations.id " \
+            "AND ids_organizations.id = '#{org1}'"
+          )
+        end
+      end
     end
   end
 end

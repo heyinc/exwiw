@@ -30,7 +30,7 @@ module Exwiw
     end
 
     def self.ids_given?(dump_target)
-      dump_target.ids.any?
+      dump_target.ids.each_value.any?(&:any?)
     end
 
     # An ignore:true table is not extracted, so its declaration cannot anchor the
@@ -61,6 +61,7 @@ module Exwiw
     # dumpable configs (ignore:true tables are skipped — they are not extracted).
     def self.validate_scope!(tables, table_by_name, dump_target, logger)
       validate_ids_anchor!(table_by_name, dump_target)
+      validate_named_id_spaces_allowed!(tables, table_by_name, dump_target)
 
       # Unscopable is reported before a bad batch_scope shape — it is the more
       # fundamental problem.
@@ -88,6 +89,9 @@ module Exwiw
                 "add a belongs_to path to a table that carries the scope column, mark it " \
                 "`scope_exempt: true` to export it in full, or set `ignore: true` to skip it."
         end
+
+        validate_id_space_values!(tables, table_by_name, dump_target, logger)
+        validate_single_id_space_per_table!(tables, table_by_name, dump_target, logger)
       end
 
       tables.reject(&:ignore).each do |table|
@@ -95,6 +99,77 @@ module Exwiw
 
         new(table.name, table_by_name, dump_target, logger).batch_scope_terminus!
       end
+    end
+
+    # Only scope-column mode on the SQL adapters can filter by a named ID space.
+    def self.validate_named_id_spaces_allowed!(tables, table_by_name, dump_target)
+      named = dump_target.named_id_spaces
+      return if named.empty?
+
+      given = named.map { |space| "'#{space}'" }.join(', ')
+      # The CLI rejects this up front; this covers callers that build a Runner directly.
+      if tables.any? { |table| table.is_a?(MongodbCollectionConfig) }
+        raise ArgumentError,
+              "--ids were given for the ID space(s) #{given}, but the mongodb adapter supports " \
+              "only the default ID space (--ids without a `<id_space>=` prefix)."
+      end
+
+      return if scope_mode?(table_by_name, dump_target)
+
+      raise ArgumentError,
+            "--ids were given for the ID space(s) #{given}, but --target-table " \
+            "'#{dump_target.table_name}' declares no scope_column, so the run is single-target mode, " \
+            "which uses only the default ID space. Name a table that declares a scope_column as " \
+            "--target-table, or drop the named --ids."
+    end
+
+    # Every ID space a scope_column belongs to must be given values,
+    # and every ID space given values must be used by some table.
+    def self.validate_id_space_values!(tables, table_by_name, dump_target, logger)
+      tables_by_space =
+        tables.reject(&:ignore).each_with_object({}) do |table, hash|
+          space = new(table.name, table_by_name, dump_target, logger).declared_id_space
+          (hash[space] ||= []) << table.name if space
+        end
+
+      missing = tables_by_space.keys.select { |space| dump_target.ids_for(space).empty? }.sort
+      if missing.any?
+        details = missing.map do |space|
+          flag = space == DEFAULT_ID_SPACE ? "--ids=<ids>" : "--ids=#{space}=<ids>"
+          "'#{space}' (#{tables_by_space[space].sort.join(', ')}; pass #{flag})"
+        end
+        raise ArgumentError,
+              "scope-column mode: no ids were given for the ID space(s) that these tables are " \
+              "filtered by: #{details.join('; ')}."
+      end
+
+      unused = dump_target.ids.keys.reject { |space| tables_by_space.key?(space) }.sort
+      if unused.any?
+        raise ArgumentError,
+              "scope-column mode: ids were given for the ID space(s) #{unused.map { |space| "'#{space}'" }.join(', ')}, " \
+              "but no table declares a scope_column in them (a table without `id_space` is in " \
+              "'#{DEFAULT_ID_SPACE}'). Check the ID space name, or declare `id_space` on the tables it scopes."
+      end
+    end
+
+    # A table is filtered by the values of one ID space only. Without this check
+    # the belongs_to walk would silently settle on the nearest scoped table and
+    # ignore a route into another space.
+    def self.validate_single_id_space_per_table!(tables, table_by_name, dump_target, logger)
+      return if dump_target.ids.size < 2
+
+      mixed =
+        tables.reject(&:ignore).filter_map do |table|
+          spaces = new(table.name, table_by_name, dump_target, logger).reached_id_spaces
+          "#{table.name} (#{spaces.join(', ')})" if spaces.size > 1
+        end
+      return if mixed.empty?
+
+      raise ArgumentError,
+            "scope-column mode: #{mixed.size} table(s) reach more than one ID space: #{mixed.sort.join(', ')}. " \
+            "A table must be scoped by the values of a single ID space; set `ignore: true` on the " \
+            "belongs_to (or remove the reverse_scope arm) that leads into the other space, or declare " \
+            "`scope_column:` on the table to filter it directly."
     end
 
     attr_reader :table_name, :table_by_name, :dump_target
@@ -561,7 +636,7 @@ module Exwiw
         clauses.push Exwiw::QueryAst::WhereClause.new(
           column_name: dump_target.ids_field || table.primary_key,
           operator: :eq,
-          value: dump_target.ids
+          value: dump_target.default_ids
         )
 
         return clauses
@@ -603,7 +678,7 @@ module Exwiw
         return Exwiw::QueryAst::WhereClause.new(
           column_name: foreign_key,
           operator: :eq,
-          value: dump_target.ids
+          value: dump_target.default_ids
         )
       end
 
@@ -615,7 +690,7 @@ module Exwiw
           table_name: target.name,
           select_column: target.primary_key,
           where_column: dump_target.ids_field,
-          where_values: dump_target.ids
+          where_values: dump_target.default_ids
         )
       )
     end
@@ -718,6 +793,27 @@ module Exwiw
       return :via_scoped_parent if forward_scope_allowed?(table) && build_belongs_to_scoped_clause(table)
 
       :unscopable
+    end
+
+    # The ID space this table's scope column belongs to, or nil when it has none.
+    # A scope_exempt table is dumped in full, but tables reaching it through
+    # belongs_to are still filtered by its scope column, so its ID space counts.
+    def declared_id_space
+      table = table_by_name.fetch(table_name)
+      return nil unless directly_scoped?(table)
+
+      id_space_of(table)
+    end
+
+    # The ID spaces a table that is not directly scoped can be scoped through:
+    # those of the scoped tables its belongs_to walk can stop at, and those its
+    # built query filters by (polymorphic arms, reverse_scope, referenced-by and
+    # the parent cascade).
+    def reached_id_spaces
+      table = table_by_name.fetch(table_name)
+      return [] if scope_exempt?(table) || directly_scoped?(table)
+
+      (belongs_to_reachable_id_spaces(table) | QueryAst.id_spaces(run)).sort
     end
 
     # True when this table may still attempt the forward "scope via a scoped
@@ -824,15 +920,43 @@ module Exwiw
       table.columns.any? { |c| c.name == column }
     end
 
+    private def id_space_of(table)
+      table.id_space || DEFAULT_ID_SPACE
+    end
+
     private def scope_where_clause(table)
       batch_clause = batch_ids_clause(table)
       return batch_clause if batch_clause
 
-      Exwiw::QueryAst::WhereClause.new(
+      Exwiw::QueryAst::ScopeWhereClause.new(
         column_name: resolved_scope_column(table),
         operator: :eq,
-        value: dump_target.ids
-      )
+        value: dump_target.ids_for(id_space_of(table))
+      ).tap { |clause| clause.id_space = id_space_of(table) }
+    end
+
+    # The ID spaces of every directly scoped table the belongs_to walk of
+    # #find_path_to_scoped could stop at, not only the nearest one.
+    private def belongs_to_reachable_id_spaces(table)
+      visited = Set[table.name]
+      queue = [table]
+      spaces = Set.new
+
+      until queue.empty?
+        current = queue.shift
+        current.belongs_tos.each do |relation|
+          next_table = table_by_name[relation.table_name]
+          next if next_table.nil? || !visited.add?(next_table.name)
+
+          if directly_scoped?(next_table)
+            spaces << id_space_of(next_table)
+          else
+            queue.push(next_table)
+          end
+        end
+      end
+
+      spaces
     end
 
     # This batch's ids, in place of the batch table's scope filter. nil when the

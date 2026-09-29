@@ -957,6 +957,68 @@ module Exwiw
           expect(log_output.string).not_to include("Disabling scope id-set materialization")
         end
       end
+
+      # One integer and one UUID ID space in the same run.
+      describe "two ID spaces against a live database" do
+        let(:raw_connection) { adapter.send(:connection).send(:raw) }
+        let(:org1) { '0b6f4c1e-0000-4000-8000-000000000001' }
+        let(:org2) { '0b6f4c1e-0000-4000-8000-000000000002' }
+        let(:dump_target) do
+          Exwiw::DumpTarget.new(table_name: 'ids_tenants', ids: { 'default' => ['1'], 'org' => [org1] })
+        end
+        let(:table_by_name) do
+          [
+            TableConfig.from_symbol_keys(
+              name: 'ids_tenants', primary_key: 'id', scope_column: 'id',
+              columns: [{ name: 'id' }]
+            ),
+            TableConfig.from_symbol_keys(
+              name: 'ids_projects', primary_key: 'id',
+              belongs_tos: [{ table_name: 'ids_tenants', foreign_key: 'tenant_id' }],
+              columns: [{ name: 'id' }, { name: 'tenant_id' }]
+            ),
+            TableConfig.from_symbol_keys(
+              name: 'ids_organizations', primary_key: 'id', scope_column: 'id', id_space: 'org',
+              columns: [{ name: 'id' }]
+            ),
+            TableConfig.from_symbol_keys(
+              name: 'ids_members', primary_key: 'id',
+              belongs_tos: [{ table_name: 'ids_organizations', foreign_key: 'organization_id' }],
+              columns: [{ name: 'id' }, { name: 'organization_id' }]
+            ),
+          ].each_with_object({}) { |t, h| h[t.name] = t }
+        end
+
+        def extract(table_name)
+          adapter.execute(QueryAstBuilder.run(table_name, table_by_name, dump_target, logger)).to_a
+        end
+
+        before do
+          raw_connection.query("DROP TABLE IF EXISTS ids_members, ids_organizations, ids_projects, ids_tenants")
+          raw_connection.query("CREATE TABLE ids_tenants (id INT PRIMARY KEY)")
+          raw_connection.query("CREATE TABLE ids_projects (id INT PRIMARY KEY, tenant_id INT)")
+          raw_connection.query("CREATE TABLE ids_organizations (id CHAR(36) PRIMARY KEY)")
+          raw_connection.query("CREATE TABLE ids_members (id INT PRIMARY KEY, organization_id CHAR(36))")
+          raw_connection.query("INSERT INTO ids_tenants VALUES (1), (2)")
+          raw_connection.query("INSERT INTO ids_projects VALUES (10, 1), (11, 2)")
+          raw_connection.query("INSERT INTO ids_organizations VALUES ('#{org1}'), ('#{org2}')")
+          raw_connection.query("INSERT INTO ids_members VALUES (20, '#{org1}'), (21, '#{org2}')")
+        end
+
+        after do
+          raw_connection.query("DROP TABLE IF EXISTS ids_members, ids_organizations, ids_projects, ids_tenants")
+        end
+
+        it "filters each table group by the values of its own ID space" do
+          expect(extract('ids_projects')).to eq([["10", "1"]])
+          expect(extract('ids_members')).to eq([["20", org1]])
+          expect(adapter.compile_ast(QueryAstBuilder.run('ids_members', table_by_name, dump_target, logger))).to eq(
+            "SELECT ids_members.id, ids_members.organization_id FROM ids_members " \
+            "JOIN ids_organizations ON ids_members.organization_id = ids_organizations.id " \
+            "AND ids_organizations.id = '#{org1}'"
+          )
+        end
+      end
     end
   end
 end

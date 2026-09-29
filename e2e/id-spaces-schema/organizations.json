@@ -1,0 +1,12 @@
+{
+  "name": "organizations",
+  "primary_key": "id",
+  "scope_column": "id",
+  "id_space": "org",
+  "belongs_tos": [],
+  "columns": [{
+    "name": "id"
+  }, {
+    "name": "name"
+  }]
+}

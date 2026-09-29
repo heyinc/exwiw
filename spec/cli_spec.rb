@@ -243,6 +243,42 @@ module Exwiw
       end
     end
 
+    describe '--ids with ID spaces' do
+      let(:sqlite_argv) { ['--adapter=sqlite', '--database=tmp/test.sqlite3', '--schema-dir=e2e/sqlite-schema'] }
+
+      {
+        ['--ids=1,2'] => { 'default' => ['1', '2'] },
+        ['--ids=1,2', '--ids=org=a,b'] => { 'default' => ['1', '2'], 'org' => ['a', 'b'] },
+        ['--ids=default=a=b,c'] => { 'default' => ['a=b', 'c'] },
+        # Not shaped like an ID space name, so the whole value is the ids.
+        ['--ids=Tenant=1'] => { 'default' => ['Tenant=1'] },
+      }.each do |ids_argv, expected|
+        it "parses #{ids_argv.join(' ')} into #{expected}" do
+          cli = CLI.new(sqlite_argv + ['--target-table=users'] + ids_argv)
+          expect(cli.instance_variable_get(:@ids_by_id_space)).to eq(expected)
+          expect(cli.send(:build_cli_options_hash)[:ids]).to eq(expected['default'])
+        end
+      end
+
+      it 'rejects --ids given twice for the same ID space' do
+        cli = CLI.new(sqlite_argv + ['--target-table=users', '--ids=org=a', '--ids=org=b'])
+        expect { cli.send(:validate_options!) }.to raise_error(SystemExit)
+          .and output(/--ids was given more than once for the ID space 'org'/).to_stderr
+      end
+
+      it 'accepts named ids without --target-table' do
+        cli = CLI.new(sqlite_argv + ['--ids=org=a'])
+        expect { cli.send(:validate_options!) }.not_to raise_error
+      end
+
+      it 'rejects named ids for the mongodb adapter' do
+        cli = CLI.new(['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                       '--schema-dir=e2e/mongodb-schema', '--target-collection=users', '--ids=1', '--ids=org=a'])
+        expect { cli.send(:validate_options!) }.to raise_error(SystemExit)
+          .and output(/named ID space \('org'\) is not supported by the mongodb adapter/).to_stderr
+      end
+    end
+
     describe '--target-collection alias' do
       def run_cli(argv)
         CLI.new(argv).run
@@ -797,7 +833,28 @@ module Exwiw
         path = write_config("schema_dir: e2e/sqlite-schema\nids:\n  - 1\n  - 2\n")
         cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3', "--config=#{path}"])
         cli.send(:apply_config_file!)
-        expect(cli.instance_variable_get(:@ids)).to eq(['1', '2'])
+        expect(cli.send(:default_ids)).to eq(['1', '2'])
+      end
+
+      it 'parses ids given as a mapping of ID spaces' do
+        path = write_config("schema_dir: e2e/sqlite-schema\nids:\n  default: [1, 2]\n  org: a,b\n")
+        cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3', "--config=#{path}"])
+        cli.send(:apply_config_file!)
+        expect(cli.instance_variable_get(:@ids_by_id_space)).to eq('default' => ['1', '2'], 'org' => ['a', 'b'])
+      end
+
+      it 'ignores the config ids entirely when --ids is given on the CLI' do
+        path = write_config("schema_dir: e2e/sqlite-schema\nids:\n  default: [1]\n  org: [a]\n")
+        cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3', "--config=#{path}", '--ids=2'])
+        cli.send(:apply_config_file!)
+        expect(cli.instance_variable_get(:@ids_by_id_space)).to eq('default' => ['2'])
+      end
+
+      it 'rejects an ids key that is not shaped like an ID space name' do
+        path = write_config("schema_dir: e2e/sqlite-schema\nids:\n  Org: [a]\n")
+        cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3', "--config=#{path}"])
+        expect { cli.send(:apply_config_file!) }.to raise_error(SystemExit)
+          .and output(/config 'ids' keys must be ID space names/).to_stderr
       end
 
       it 'accepts the obsolete insert_only key with a warning instead of rejecting it' do

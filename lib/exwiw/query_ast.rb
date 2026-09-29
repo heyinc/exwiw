@@ -26,6 +26,25 @@ module Exwiw
       end
     end
 
+    # The ID spaces whose values `query` filters by, anywhere in it.
+    def self.id_spaces(query)
+      where_clauses = query.where_clauses +
+        query.join_clauses.flat_map { |j| j.where_clauses + j.base_where_clauses }
+
+      where_clauses.flat_map do |where_clause|
+        next [] unless where_clause.is_a?(WhereClause)
+
+        own = where_clause.is_a?(ScopeWhereClause) ? [where_clause.id_space] : []
+        nested =
+          case where_clause.value
+          when SelectSubquery then id_spaces(where_clause.value.query)
+          when UnionSubquery then where_clause.value.queries.flat_map { |q| id_spaces(q) }
+          else []
+          end
+        own + nested
+      end.uniq
+    end
+
     class JoinClause
       # `where_clauses` is compiled against this join's join_table_name (the
       # joined-to table). `base_where_clauses`, on the other hand, is compiled
@@ -68,6 +87,12 @@ module Exwiw
           value: value.is_a?(Subquery) || value.is_a?(SelectSubquery) || value.is_a?(UnionSubquery) ? value.to_h : value,
         }
       end
+    end
+
+    # A scope-column filter. It compiles like any WhereClause; `id_space` records
+    # which ID space its values come from, so a query mixing spaces can be found.
+    ScopeWhereClause = Class.new(WhereClause) do
+      attr_accessor :id_space
     end
 
     # Resolves a set of values on `where_column` to the rows' `select_column`

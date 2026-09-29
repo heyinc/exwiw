@@ -1021,6 +1021,164 @@ RSpec.describe Exwiw::QueryAstBuilder do
     end
   end
 
+  # Two groups of tables that no foreign key connects, each scoped by its own
+  # kind of id: tenants by integer ids (the default ID space) and organizations
+  # by uuids (the `org` ID space).
+  describe 'multiple ID spaces' do
+    let(:logger) { Logger.new(nil) }
+    let(:dump_target) do
+      Exwiw::DumpTarget.new(table_name: 'tenants', ids: { 'default' => ['1'], 'org' => ['u1'] })
+    end
+
+    let(:tenants) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'tenants', primary_key: 'id', scope_column: 'id', belongs_tos: [],
+        columns: [{ name: 'id' }, { name: 'name' }]
+      )
+    end
+    let(:projects) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'projects', primary_key: 'id',
+        belongs_tos: [{ table_name: 'tenants', foreign_key: 'tenant_id' }],
+        columns: [{ name: 'id' }, { name: 'tenant_id' }, { name: 'owner_id' }]
+      )
+    end
+    let(:organizations) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'organizations', primary_key: 'id', scope_column: 'id', id_space: 'org', belongs_tos: [],
+        columns: [{ name: 'id' }, { name: 'name' }]
+      )
+    end
+    let(:members) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'members', primary_key: 'id',
+        belongs_tos: [{ table_name: 'organizations', foreign_key: 'organization_id' }],
+        columns: [{ name: 'id' }, { name: 'organization_id' }, { name: 'user_id' }]
+      )
+    end
+
+    let(:all_tables) { [tenants, projects, organizations, members] }
+    let(:table_by_name) { all_tables.each_with_object({}) { |t, h| h[t.name] = t } }
+
+    def build(name)
+      described_class.run(name, table_by_name, dump_target, logger)
+    end
+
+    def validate(target = dump_target)
+      described_class.validate_scope!(all_tables, table_by_name, target, logger)
+    end
+
+    it 'filters each table by the values of the ID space it reaches' do
+      expect(build('tenants').where_clauses.map(&:to_h)).to eq([
+        { column_name: 'id', operator: :eq, value: ['1'] },
+      ])
+      expect(build('organizations').where_clauses.map(&:to_h)).to eq([
+        { column_name: 'id', operator: :eq, value: ['u1'] },
+      ])
+      expect(build('projects').join_clauses.map { |j| [j.join_table_name, j.where_clauses.map(&:to_h)] }).to eq([
+        ['tenants', [{ column_name: 'id', operator: :eq, value: ['1'] }]],
+      ])
+      expect(build('members').join_clauses.map { |j| [j.join_table_name, j.where_clauses.map(&:to_h)] }).to eq([
+        ['organizations', [{ column_name: 'id', operator: :eq, value: ['u1'] }]],
+      ])
+      expect { validate }.not_to raise_error
+    end
+
+    context 'when the table a group is scoped through is scope_exempt' do
+      let(:organizations) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'organizations', primary_key: 'id', scope_column: 'id', id_space: 'org', scope_exempt: true,
+          belongs_tos: [], columns: [{ name: 'id' }, { name: 'name' }]
+        )
+      end
+
+      it 'counts its ID space as used by the tables reaching it' do
+        expect { validate }.not_to raise_error
+        expect(build('members').join_clauses.map { |j| [j.join_table_name, j.where_clauses.map(&:to_h)] }).to eq([
+          ['organizations', [{ column_name: 'id', operator: :eq, value: ['u1'] }]],
+        ])
+      end
+
+      it 'aborts when its ID space is given no values' do
+        target = Exwiw::DumpTarget.new(table_name: 'tenants', ids: { 'default' => ['1'] })
+        expect { validate(target) }.to raise_error(ArgumentError, /no ids were given for the ID space\(s\).*'org'/)
+      end
+    end
+
+    it 'enters scope-column mode without --target-table whichever ID space the values are given for' do
+      expect(described_class.scope_mode?(table_by_name, Exwiw::DumpTarget.new(ids: { 'org' => ['u1'] }))).to eq(true)
+      expect(described_class.scope_mode?(table_by_name, Exwiw::DumpTarget.new(ids: ['1']))).to eq(true)
+    end
+
+    it 'aborts when an ID space a table is filtered by has no values' do
+      target = Exwiw::DumpTarget.new(table_name: 'tenants', ids: ['1'])
+      expect { validate(target) }.to raise_error(
+        ArgumentError, /no ids were given .*'org' \(organizations; pass --ids=org=<ids>\)/
+      )
+    end
+
+    it 'aborts when values are given for an ID space no table uses' do
+      target = Exwiw::DumpTarget.new(table_name: 'tenants', ids: { 'default' => ['1'], 'org' => ['u1'], 'orgs' => ['u2'] })
+      expect { validate(target) }.to raise_error(ArgumentError, /ids were given for the ID space\(s\) 'orgs'/)
+    end
+
+    it 'aborts when an ID space no table uses is given without values' do
+      target = Exwiw::DumpTarget.new(table_name: 'tenants', ids: { 'default' => ['1'], 'org' => ['u1'], 'orgs' => [] })
+      expect { validate(target) }.to raise_error(ArgumentError, /ids were given for the ID space\(s\) 'orgs'/)
+    end
+
+    it 'aborts in single-target mode, which uses only the default ID space' do
+      target = Exwiw::DumpTarget.new(table_name: 'projects', ids: { 'default' => ['1'], 'org' => ['u1'] })
+      expect { validate(target) }.to raise_error(ArgumentError, /'projects' declares no scope_column, so the run is single-target mode/)
+    end
+
+    it 'aborts in single-target mode when a named ID space is given without values' do
+      target = Exwiw::DumpTarget.new(table_name: 'projects', ids: { 'default' => ['1'], 'org' => [] })
+      expect { validate(target) }.to raise_error(ArgumentError, /'projects' declares no scope_column, so the run is single-target mode/)
+    end
+
+    context 'a table whose belongs_to reach scoped tables of both ID spaces' do
+      # The join walk would settle on the nearer tenants and drop the route to
+      # organizations without a word.
+      let(:assignments) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'assignments', primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'projects', foreign_key: 'project_id' },
+            { table_name: 'organizations', foreign_key: 'organization_id' },
+          ],
+          columns: [{ name: 'id' }, { name: 'project_id' }, { name: 'organization_id' }]
+        )
+      end
+      let(:all_tables) { [tenants, projects, organizations, members, assignments] }
+
+      it 'aborts naming the table and the ID spaces it reaches' do
+        expect { validate }.to raise_error(ArgumentError, /reach more than one ID space: assignments \(default, org\)/)
+      end
+
+      it 'passes when only one ID space is in use' do
+        organizations.id_space = nil
+        target = Exwiw::DumpTarget.new(table_name: 'tenants', ids: ['1'])
+        expect { validate(target) }.not_to raise_error
+      end
+    end
+
+    context 'a reverse_scope whose arms are scoped in different ID spaces' do
+      let(:users) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'users', primary_key: 'id', belongs_tos: [],
+          reverse_scope: { via: [{ table: 'projects', column: 'owner_id' }, { table: 'members', column: 'user_id' }] },
+          columns: [{ name: 'id' }, { name: 'email' }]
+        )
+      end
+      let(:all_tables) { [tenants, projects, organizations, members, users] }
+
+      it 'aborts naming the table and the ID spaces its query filters by' do
+        expect { validate }.to raise_error(ArgumentError, /reach more than one ID space: users \(default, org\)/)
+      end
+    end
+  end
+
   describe 'polymorphic multi-arm scoping' do
     # A polymorphic belongs_to is stored as one entry per concrete target table.
     # Joining a single one of them (what the plain BFS picks) extracts only the

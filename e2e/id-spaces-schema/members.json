@@ -1,0 +1,16 @@
+{
+  "name": "members",
+  "primary_key": "id",
+  "belongs_tos": [{
+    "table_name": "organizations",
+    "foreign_key": "organization_id"
+  }],
+  "columns": [{
+    "name": "id"
+  }, {
+    "name": "organization_id"
+  }, {
+    "name": "email",
+    "replace_with": "member{id}@example.com"
+  }]
+}
