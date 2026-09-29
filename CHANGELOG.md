@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.1.6] - 2026-09-29
+
 ### Added
 
 - **`--target-table` can be omitted in scope-column mode.** Scope-column mode starts from every table that declares a `scope_column`, so the target only had to name one of them and was otherwise unused. `--ids` alone now runs in scope-column mode when any table in the schema declares a `scope_column` (tables marked `ignore: true` do not count), for both `export` and `explain`. When none does, the run stops before any output with an error saying to either name the table the ids belong to with `--target-table` (single-target mode) or declare a `scope_column` (scope-column mode). This check moved from the CLI to the schema pre-flight (`QueryAstBuilder.validate_scope!`), since it needs the schema. Runs that pass `--target-table`, and the deprecated `--scope-column` flag, behave as before. The mongodb adapter has no scope-column mode, so `--ids` there still requires `--target-collection` and is rejected by the CLI without it.
