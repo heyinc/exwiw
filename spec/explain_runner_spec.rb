@@ -116,6 +116,30 @@ module Exwiw
 
         runner.run
       end
+
+      context 'without --target-table' do
+        let(:dump_target) { DumpTarget.new(ids: ['1']) }
+
+        it 'explains the scope-column mode queries' do
+          runner.run
+
+          out = io.string
+          expect(out).to include("FROM orders WHERE orders.shop_id = '1'")
+          expect(out).to include('-- batch_scope: extracted in batches of up to 4 orders.id value(s).')
+        end
+
+        it 'raises when no table declares scope_column' do
+          orders = JSON.parse(File.read(File.join(schema_dir, 'orders.json')))
+          orders.delete('scope_column')
+          File.write(File.join(schema_dir, 'orders.json'), JSON.dump(orders))
+          order_items = JSON.parse(File.read(File.join(schema_dir, 'order_items.json')))
+          order_items.delete('batch_scope')
+          File.write(File.join(schema_dir, 'order_items.json'), JSON.dump(order_items))
+
+          expect { runner.run }.to raise_error(ArgumentError, /no table in the schema declares `scope_column`/)
+          expect(io.string).to be_empty
+        end
+      end
     end
 
     describe '#run when --target-table is marked ignore:true' do

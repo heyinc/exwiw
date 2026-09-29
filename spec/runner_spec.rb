@@ -292,6 +292,32 @@ module Exwiw
         expect(log_io.string).to include('Generated INSERT statement for 6 records')
       end
 
+      context 'without --target-table' do
+        let(:dump_target) { DumpTarget.new(ids: ['1']) }
+
+        it 'runs in scope-column mode from the schema declarations' do
+          runner.run
+
+          expect(Dir[File.join(output_dir, 'insert-*-orders.sql')]).not_to be_empty
+          expect(Dir[File.join(output_dir, 'insert-*-order_items.sql')]).not_to be_empty
+          expect(log_io.string).to include('Extracting in 2 batch(es) of up to 4 orders.id value(s) (6 in scope)')
+          # orders (shop 1 owns six) and order_items (six lines on them)
+          expect(log_io.string.scan('Generated INSERT statement for 6 records').size).to eq(2)
+        end
+
+        it 'aborts before any output when no table declares scope_column' do
+          orders = JSON.parse(File.read(File.join(schema_dir, 'orders.json')))
+          orders.delete('scope_column')
+          File.write(File.join(schema_dir, 'orders.json'), JSON.dump(orders))
+          order_items = JSON.parse(File.read(File.join(schema_dir, 'order_items.json')))
+          order_items.delete('batch_scope')
+          File.write(File.join(schema_dir, 'order_items.json'), JSON.dump(order_items))
+
+          expect { runner.run }.to raise_error(ArgumentError, /no table in the schema declares `scope_column`/)
+          expect(Dir[File.join(output_dir, '*')]).to be_empty
+        end
+      end
+
       it 'aborts pre-flight, before any output, when the scope shape cannot be sliced' do
         order_items = JSON.parse(File.read(File.join(schema_dir, 'order_items.json')))
         order_items['batch_scope'] = { 'table' => 'ghosts' }

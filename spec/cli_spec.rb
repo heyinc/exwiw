@@ -228,6 +228,21 @@ module Exwiw
       end
     end
 
+    describe '--ids without --target-table' do
+      it 'leaves the check to the runner for the sql adapters' do
+        cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3',
+                       '--schema-dir=e2e/sqlite-schema', '--ids=1'])
+        expect { cli.send(:validate_options!) }.not_to raise_error
+      end
+
+      it 'rejects it for the mongodb adapter' do
+        argv = ['--adapter=mongodb', '--host=localhost', '--port=27017', '--database=app',
+                '--schema-dir=e2e/mongodb-schema', '--ids=1']
+        expect { CLI.new(argv).run }.to raise_error(SystemExit)
+          .and output(/--target-collection \(or --target-table\) is required when --ids is specified with the mongodb adapter/).to_stderr
+      end
+    end
+
     describe '--target-collection alias' do
       def run_cli(argv)
         CLI.new(argv).run

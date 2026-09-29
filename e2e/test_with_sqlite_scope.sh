@@ -2,11 +2,12 @@
 
 # Scope-column mode: filter every table by a shared `tenant_id` instead of
 # anchoring on one table's primary key. `accounts` and `orders` declare
-# `scope_column: tenant_id` in their config, so naming one of them as
-# --target-table runs in scope-column mode and --ids are tenant_id values (not
-# primary keys). `order_lines` is reached via belongs_to to `orders`, and
-# `regions` is a scope_exempt reference table exported in full. We seed two
-# tenants and assert only tenant 1's rows (plus all regions) come out.
+# `scope_column: tenant_id` in their config, so --ids are tenant_id values (not
+# primary keys), whether one of them is named as --target-table or no target is
+# given at all. Both invocations are run and must extract the same rows.
+# `order_lines` is reached via belongs_to to `orders`, and `regions` is a
+# scope_exempt reference table exported in full. We seed two tenants and assert
+# only tenant 1's rows (plus all regions) come out.
 
 set -e
 
@@ -15,9 +16,7 @@ NEW_DB_PATH="tmp/scenario-scope-new.sqlite3"
 OUTPUT_DIR="tmp/sqlite-scope"
 
 # Clean up
-rm -rf "$OUTPUT_DIR"
-mkdir -p "$OUTPUT_DIR"
-rm -f "$TARGET_DB_PATH" "$NEW_DB_PATH"
+rm -f "$TARGET_DB_PATH"
 
 SCHEMA_SQL="
 CREATE TABLE accounts (id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL, name TEXT NOT NULL);
@@ -58,28 +57,6 @@ INSERT INTO notes (id, notable_type, account_id, order_id, body) VALUES
   (5, 'Order', NULL, 2, 'order2-t1');
 "
 
-# Fresh DB: schema only.
-sqlite3 "$NEW_DB_PATH" "$SCHEMA_SQL"
-
-# Run exwiw in scope-column mode for tenant_id = 1. `accounts` declares
-# scope_column: tenant_id, so --ids are matched against tenant_id and accounts
-# is scoped like any other table rather than anchored by its primary key.
-bundle exec exe/exwiw \
-  --adapter=sqlite \
-  --database="${TARGET_DB_PATH}" \
-  --schema-dir=e2e/scope-schema \
-  --target-table=accounts \
-  --ids=1 \
-  --output-dir="$OUTPUT_DIR" \
-  --log-level=debug
-
-# Import into the fresh DB (schema file is CREATE TABLE IF NOT EXISTS, so it is
-# a no-op against the already-created schema).
-for f in $(ls "$OUTPUT_DIR"/insert-*.sql | sort); do
-  echo "Run $f"
-  sqlite3 "$NEW_DB_PATH" < "$f"
-done
-
 check_count() {
   local table="$1" expected="$2"
   local actual
@@ -102,24 +79,58 @@ check_ids() {
   echo "✓ $table ids: $actual"
 }
 
-echo "Verifying scope extraction..."
-# accounts/orders: only tenant 1.
-check_count accounts 1
-check_ids accounts "1"
-check_count orders 2
-check_ids orders "1,2"
-# order_lines: only lines whose order is tenant 1 (orders 1 and 2 -> lines 1,2).
-check_count order_lines 2
-check_ids order_lines "1,2"
-# regions: scope_exempt -> exported in full.
-check_count regions 2
-check_ids regions "1,2"
-# attachments: every polymorphic arm that reaches the scope, and only tenant 1
-# (1 = Account arm, 2/5 = Order arm; 3/4 are tenant 2 and 6 is a type mismatch).
-check_count attachments 3
-check_ids attachments "1,2,5"
-# notes: same, with a separate foreign key column per arm.
-check_count notes 3
-check_ids notes "1,2,5"
+# Export tenant_id = 1 with the given extra exwiw options, import it into a
+# fresh DB and verify the rows.
+export_and_verify() {
+  local label="$1"
+  shift
+
+  rm -rf "$OUTPUT_DIR"
+  mkdir -p "$OUTPUT_DIR"
+  rm -f "$NEW_DB_PATH"
+  sqlite3 "$NEW_DB_PATH" "$SCHEMA_SQL"
+
+  echo "Exporting in scope-column mode ($label)..."
+  bundle exec exe/exwiw \
+    --adapter=sqlite \
+    --database="${TARGET_DB_PATH}" \
+    --schema-dir=e2e/scope-schema \
+    "$@" \
+    --ids=1 \
+    --output-dir="$OUTPUT_DIR" \
+    --log-level=debug
+
+  # Import into the fresh DB (schema file is CREATE TABLE IF NOT EXISTS, so it is
+  # a no-op against the already-created schema).
+  for f in $(ls "$OUTPUT_DIR"/insert-*.sql | sort); do
+    echo "Run $f"
+    sqlite3 "$NEW_DB_PATH" < "$f"
+  done
+
+  echo "Verifying scope extraction ($label)..."
+  # accounts/orders: only tenant 1.
+  check_count accounts 1
+  check_ids accounts "1"
+  check_count orders 2
+  check_ids orders "1,2"
+  # order_lines: only lines whose order is tenant 1 (orders 1 and 2 -> lines 1,2).
+  check_count order_lines 2
+  check_ids order_lines "1,2"
+  # regions: scope_exempt -> exported in full.
+  check_count regions 2
+  check_ids regions "1,2"
+  # attachments: every polymorphic arm that reaches the scope, and only tenant 1
+  # (1 = Account arm, 2/5 = Order arm; 3/4 are tenant 2 and 6 is a type mismatch).
+  check_count attachments 3
+  check_ids attachments "1,2,5"
+  # notes: same, with a separate foreign key column per arm.
+  check_count notes 3
+  check_ids notes "1,2,5"
+}
+
+# `accounts` declares scope_column: tenant_id, so it is scoped like any other
+# table rather than anchored by its primary key.
+export_and_verify "--target-table=accounts" --target-table=accounts
+export_and_verify "no --target-table"
 
 echo "✓ scope-column mode extracted only the scoped rows (plus the exempt table)"

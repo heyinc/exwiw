@@ -80,7 +80,13 @@ exwiw \
   --log-level=info
 ```
 
-By default `--ids` are matched against the target table's primary key. If the target table declares a per-table `scope_column`, exwiw runs in [scope-column mode](#scope-column-mode) instead — `--ids` are then values of that shared column, and the table is scoped like any other rather than anchored by primary key.
+By default `--ids` are matched against the target table's primary key. If the target table declares a per-table `scope_column`, exwiw runs in [scope-column mode](#scope-column-mode) instead — `--ids` are then values of that shared column, and the table is scoped like any other rather than anchored by primary key. In scope-column mode `--target-table` can be omitted: passing only `--ids` runs in scope-column mode as long as some table in the schema declares a `scope_column`.
+
+| `--target-table` | `--ids` | Mode |
+|---|---|---|
+| given | given | Scope-column mode if the table declares a `scope_column`, single-target mode otherwise |
+| omitted | given | Scope-column mode if any table declares a `scope_column`, an error otherwise (SQL adapters only) |
+| omitted | omitted | Every table is dumped in full |
 
 When `--target-table` and `--ids` are omitted, exwiw dumps all tables defined in `--schema-dir`:
 
@@ -185,7 +191,7 @@ Declare that column per table in the schema config with `scope_column:`:
 }
 ```
 
-Then name any scoped table as `--target-table` and pass the scope values as `--ids`:
+Then pass the scope values as `--ids`, without `--target-table`:
 
 ```bash
 exwiw \
@@ -193,15 +199,22 @@ exwiw \
   --host=localhost --port=5432 --user=reader \
   --database=app_production \
   --schema-dir=exwiw/schema \
-  --target-table=shops --ids=42,43 \
+  --ids=42,43 \
   --output-dir=dump
 ```
 
-Because `shops` declares a `scope_column`, exwiw switches to scope-column mode: the
+Because the schema declares a `scope_column`, exwiw runs in scope-column mode: the
 `--ids` (`42,43`) are **`business_entity_id` values, not shop primary keys**, and
-`shops` itself is scoped by `business_entity_id IN (42,43)` like every other scoped
-table — it is *not* used as a primary-key anchor. (A table that declares a
-`scope_column` therefore can no longer be single-extracted by primary key.)
+`shops` is scoped by `business_entity_id IN (42,43)` like every other scoped table.
+Where extraction starts is decided by the schema, so `--target-table` is not
+needed. If no table declares a `scope_column`, `--ids` alone is an error: name the
+table the ids belong to with `--target-table` (single-target mode), or declare a
+`scope_column`. Tables marked `ignore: true` do not count.
+
+Naming a scoped table as `--target-table` (`--target-table=shops --ids=42,43`)
+selects the same mode and extracts the same rows; the target is *not* used as a
+primary-key anchor. (A table that declares a `scope_column` therefore can no longer
+be single-extracted by primary key.)
 
 Each table is resolved as follows:
 
@@ -236,7 +249,8 @@ Each table is resolved as follows:
 > the broader hub cascade, set `ignore: true` on the child's `belongs_to` edge that
 > points at this table.
 
-Scope-column mode is SQL-only (mysql / postgresql / sqlite). It works with `exwiw
+Scope-column mode is SQL-only (mysql / postgresql / sqlite); with the mongodb
+adapter, `--ids` still requires `--target-collection`. It works with `exwiw
 explain` too, which is the recommended way to preview the queries before exporting.
 
 #### Cross-database foreign keys
@@ -290,7 +304,7 @@ Before per-table declarations, scope-column mode was selected with a global
 `--scope-column=COLUMN` flag (every table filtered by that one column, `--ids` its
 values, no `--target-table`). The flag still works — SQL-only and mutually
 exclusive with `--target-table` — but is **deprecated** and emits a warning; prefer
-declaring a per-table `scope_column` and running with `--target-table`. A per-table
+declaring a per-table `scope_column` and dropping the flag. A per-table
 `scope_column` takes precedence over the flag for any table that sets both.
 
 ### Config file (`exwiw.yml`)

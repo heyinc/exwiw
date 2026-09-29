@@ -401,8 +401,12 @@ module Exwiw
         exit 1
       end
 
-      if !@target_table_name && !@scope_column && @ids.any?
-        $stderr.puts "--target-table or --scope-column is required when --ids is specified"
+      # For the SQL adapters, --ids without a target is scope-column mode; whether
+      # the schema supports it is checked once it is loaded
+      # (QueryAstBuilder.validate_scope!). MongoDB has no scope-column mode.
+      if @database_adapter == "mongodb" && !@target_table_name && @ids.any?
+        $stderr.puts "--target-collection (or --target-table) is required when --ids is specified " \
+                     "with the mongodb adapter"
         exit 1
       end
 
@@ -542,8 +546,8 @@ module Exwiw
 
     # `--scope-column` is **deprecated**: it selected scope-column mode with a
     # single global column for every table. The preferred way is to declare a
-    # per-table `scope_column:` in the schema config and pass `--target-table`
-    # (the target is then scoped like any other table). The flag still works as
+    # per-table `scope_column:` in the schema config (`--target-table` is then
+    # optional). The flag still works as
     # before — SQL-only and mutually exclusive with `--target-table` — but emits a
     # deprecation warning. Runs after resolve_target_collection_alias! so
     # --target-collection is already folded into @target_table_name.
@@ -567,7 +571,7 @@ module Exwiw
       end
 
       $stderr.puts "warning: --scope-column is deprecated; declare a per-table `scope_column:` " \
-                   "in the schema config and run with --target-table instead."
+                   "in the schema config and drop the flag instead."
     end
 
     # `--uri` supplies a full connection string (e.g. `mongodb+srv://...`) and is
@@ -849,11 +853,11 @@ module Exwiw
         opts.on("-a", "--adapter=ADAPTER", "Database adapter: mysql, sqlite, postgresql, mongodb (aliases: mysql2, sqlite3)") { |v| @database_adapter = v }
         opts.on("--uri=URI", "Full MongoDB connection URI (mongodb:// or mongodb+srv://). mongodb adapter only; takes precedence over --host/--port/--user. TLS, replicaSet, authSource and credentials are read from the URI.") { |v| @connection_uri = v }
         opts.on("--database=DATABASE", "Target database name") { |v| @database_name = v }
-        opts.on("--target-table=[TABLE]", "Target table for extraction. If omitted, dump all tables.") { |v| @target_table_name = v }
+        opts.on("--target-table=[TABLE]", "Target table for extraction. If omitted with --ids, run in scope-column mode (SQL adapters; the schema must declare `scope_column:`). If omitted without --ids, dump all tables.") { |v| @target_table_name = v }
         opts.on("--target-collection=[COLLECTION]", "Alias of --target-table for the mongodb adapter.") { |v| @target_collection_name = v }
         opts.on("--ids=[IDS]", "Comma-separated list of identifiers. Required when --target-table is given.") { |v| @ids = v.split(',') }
         opts.on("--ids-field=[FIELD]", "Field on the target collection that --ids is matched against. Defaults to the primary key. (mongodb adapter only)") { |v| @ids_field = v }
-        opts.on("--scope-column=[COLUMN]", "DEPRECATED. Filter every table by this shared global column (--ids are its values) instead of a single --target-table. SQL adapters only; mutually exclusive with --target-table. Prefer declaring a per-table `scope_column:` in the schema config and running with --target-table.") { |v| @scope_column = v }
+        opts.on("--scope-column=[COLUMN]", "DEPRECATED. Filter every table by this shared global column (--ids are its values) instead of a single --target-table. SQL adapters only; mutually exclusive with --target-table. Prefer declaring a per-table `scope_column:` in the schema config.") { |v| @scope_column = v }
         opts.on("--output-format=[FORMAT]", "Output format: insert (default) or copy (PostgreSQL only, export subcommand only)") { |v| @output_format = v }
         opts.on("--insert-only", "DEPRECATED: ignored. exwiw no longer generates delete-*.sql files, so every export is insert-only.") do
           $stderr.puts "warning: --insert-only is obsolete and ignored (exwiw no longer generates delete-*.sql files); remove the flag"

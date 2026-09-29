@@ -12,18 +12,47 @@ module Exwiw
       new(table_name, table_by_name, dump_target, logger).scope_category
     end
 
-    # Scope-column mode is active when EITHER the named `--target-table` declares a
-    # per-table `scope_column` (the preferred trigger: the target is then scoped
-    # like any other table — its `--ids` are scope-column values, not primary
-    # keys), OR the deprecated `--scope-column` flag is set (a global column with no
-    # target). In both cases every table is filtered by a shared column instead of
-    # being anchored on one named target's primary key.
+    # Scope-column mode is active when the named `--target-table` declares a
+    # per-table `scope_column` (the target is then scoped like any other table,
+    # and its `--ids` are scope-column values, not primary keys); when no target is
+    # named but `--ids` are given and some table declares a `scope_column`; or when
+    # the deprecated `--scope-column` flag is set (a global column with no target).
+    # In each case every table is filtered by a shared column instead of being
+    # anchored on one named target's primary key.
     def self.scope_mode?(table_by_name, dump_target)
       return true unless dump_target.scope_column.nil?
-      return false if dump_target.table_name.nil?
+      if dump_target.table_name.nil?
+        return ids_given?(dump_target) && scope_column_declared?(table_by_name)
+      end
 
       target = table_by_name[dump_target.table_name]
       !!(target && target.respond_to?(:scope_column) && target.scope_column)
+    end
+
+    def self.ids_given?(dump_target)
+      dump_target.ids.any?
+    end
+
+    # An ignore:true table is not extracted, so its declaration cannot anchor the
+    # scope.
+    def self.scope_column_declared?(table_by_name)
+      table_by_name.each_value.any? do |table|
+        !table.ignore && table.respond_to?(:scope_column) && !table.scope_column.nil?
+      end
+    end
+
+    # `--ids` without `--target-table` (and without the deprecated flag) selects
+    # scope-column mode, which needs a declared `scope_column` to start from.
+    def self.validate_ids_anchor!(table_by_name, dump_target)
+      return unless dump_target.table_name.nil? && dump_target.scope_column.nil?
+      return unless ids_given?(dump_target)
+      return if scope_column_declared?(table_by_name)
+
+      raise ArgumentError,
+            "--ids was given without --target-table, but no table in the schema declares " \
+            "`scope_column` (tables marked `ignore: true` are not counted). Either name the table " \
+            "the ids belong to with --target-table (single-target mode), or declare " \
+            "`scope_column: <column>` on the tables to filter by it (scope-column mode)."
     end
 
     # Strict pre-flight: abort if any extractable table cannot be scoped (scope
@@ -31,6 +60,8 @@ module Exwiw
     # (both modes) — before any output is written. `tables` is the set of
     # dumpable configs (ignore:true tables are skipped — they are not extracted).
     def self.validate_scope!(tables, table_by_name, dump_target, logger)
+      validate_ids_anchor!(table_by_name, dump_target)
+
       # Unscopable is reported before a bad batch_scope shape — it is the more
       # fundamental problem.
       if scope_mode?(table_by_name, dump_target)
@@ -672,7 +703,9 @@ module Exwiw
     # ------------------------------------------------------------------
 
     private def scope_mode?
-      self.class.scope_mode?(table_by_name, dump_target)
+      return @scope_mode if defined?(@scope_mode)
+
+      @scope_mode = self.class.scope_mode?(table_by_name, dump_target)
     end
 
     # Classifier used by validate_scope! and mirrored by build_scoped below.
