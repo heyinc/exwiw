@@ -1051,6 +1051,46 @@ module Exwiw
           )
         end
       end
+
+      describe "ancestors of a self-referencing table against a live database" do
+        let(:connection) { adapter.send(:connection) }
+
+        before do
+          SelfReferencingTree.setup_statements(id_type: 'int', text_type: 'varchar(32)').each { |sql| connection.exec(sql) }
+        end
+
+        after do
+          SelfReferencingTree::DROP_STATEMENTS.each { |sql| connection.exec(sql) }
+        end
+
+        it "keeps every ancestor once, stopping at a cycle, a NULL parent and a missing parent" do
+          rows = adapter.execute(SelfReferencingTree.extraction_ast('tree_categories', logger)).to_a
+
+          expect(rows.map { |row| row.first.to_i }.sort).to eq(SelfReferencingTree::KEPT_IDS)
+        end
+
+        context "when the parent id is stored as text and the primary key is a uuid" do
+          let(:root_id) { '00000000-0000-0000-0000-000000000001' }
+          let(:leaf_id) { '00000000-0000-0000-0000-000000000002' }
+
+          before do
+            connection.exec(<<~SQL)
+              DROP TABLE tree_products;
+              DROP TABLE tree_categories;
+              CREATE TABLE tree_categories (id uuid PRIMARY KEY, parent_id varchar(36), name varchar(32));
+              CREATE TABLE tree_products (id int PRIMARY KEY, tenant_id varchar(8), category_id uuid);
+              INSERT INTO tree_categories VALUES ('#{root_id}', NULL, 'root'), ('#{leaf_id}', '#{root_id}', 'leaf');
+              INSERT INTO tree_products VALUES (1, 't1', '#{leaf_id}');
+            SQL
+          end
+
+          it "casts both sides of the parent lookup to text" do
+            rows = adapter.execute(SelfReferencingTree.extraction_ast('tree_categories', logger)).to_a
+
+            expect(rows.map(&:first).sort).to eq([root_id, leaf_id])
+          end
+        end
+      end
     end
   end
 end

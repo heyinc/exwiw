@@ -1019,6 +1019,27 @@ module Exwiw
           )
         end
       end
+
+      describe "ancestors of a self-referencing table against a live database" do
+        let(:log_output) { StringIO.new }
+        let(:logger) { Logger.new(log_output) }
+        let(:raw_connection) { adapter.send(:connection).send(:raw) }
+
+        before do
+          SelfReferencingTree.setup_statements(id_type: 'INT', text_type: 'VARCHAR(32)').each { |sql| raw_connection.query(sql) }
+        end
+
+        after do
+          SelfReferencingTree::DROP_STATEMENTS.each { |sql| raw_connection.query(sql) }
+        end
+
+        it "keeps every ancestor once, with materialization intact" do
+          rows = adapter.execute(SelfReferencingTree.extraction_ast('tree_categories', logger)).to_a
+
+          expect(rows.map { |row| row.first.to_i }.sort).to eq(SelfReferencingTree::KEPT_IDS)
+          expect(log_output.string).not_to include("Disabling scope id-set materialization")
+        end
+      end
     end
   end
 end

@@ -20,6 +20,8 @@ module Exwiw
           reads_table?(where_clause.value.query, table_name)
         when UnionSubquery
           where_clause.value.queries.any? { |q| reads_table?(q, table_name) }
+        when RecursiveAncestorSubquery
+          where_clause.value.table_name == table_name || reads_table?(where_clause.value.base, table_name)
         else
           false
         end
@@ -39,6 +41,7 @@ module Exwiw
           case where_clause.value
           when SelectSubquery then id_spaces(where_clause.value.query)
           when UnionSubquery then where_clause.value.queries.flat_map { |q| id_spaces(q) }
+          when RecursiveAncestorSubquery then id_spaces(where_clause.value.base)
           else []
           end
         own + nested
@@ -84,7 +87,7 @@ module Exwiw
         {
           column_name: column_name,
           operator: operator,
-          value: value.is_a?(Subquery) || value.is_a?(SelectSubquery) || value.is_a?(UnionSubquery) ? value.to_h : value,
+          value: SUBQUERY_VALUE_TYPES.any? { |type| value.is_a?(type) } ? value.to_h : value,
         }
       end
     end
@@ -150,6 +153,36 @@ module Exwiw
         { union: queries.map(&:to_h) }
       end
     end
+
+    # The primary keys of the rows `base` keeps plus every ancestor reachable
+    # through the table's own self-referencing foreign keys (`links`), so a tree
+    # table never keeps a row whose parent was left out:
+    #
+    #   WITH RECURSIVE exwiw_ancestors (<pk>, <fk>...) AS (
+    #     <base projected to pk and every link's fk>
+    #     UNION
+    #     SELECT <table>.<pk>, <table>.<fk>... FROM <table>
+    #       JOIN exwiw_ancestors ON <table>.<ref> = exwiw_ancestors.<fk> OR ...
+    #   ) SELECT <pk> FROM exwiw_ancestors
+    #
+    # UNION (not UNION ALL) stops the walk on cyclic data.
+    RecursiveAncestorSubquery = Struct.new(:base, :table_name, :primary_key, :links, keyword_init: true) do
+      def to_h
+        {
+          ancestors_of: base.to_h,
+          table_name: table_name,
+          primary_key: primary_key,
+          links: links.map(&:to_h),
+        }
+      end
+    end
+
+    # One self-referencing foreign key of a RecursiveAncestorSubquery.
+    # `references` is the column the foreign key points at (the primary key
+    # unless the belongs_to says otherwise).
+    AncestorLink = Struct.new(:foreign_key, :references, keyword_init: true)
+
+    SUBQUERY_VALUE_TYPES = [Subquery, SelectSubquery, UnionSubquery, RecursiveAncestorSubquery].freeze
 
     module ColumnValue
       Base = Struct.new(:name, :value, keyword_init: true)

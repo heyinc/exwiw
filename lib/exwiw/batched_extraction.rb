@@ -60,6 +60,13 @@ module Exwiw
     # Resolve the id set and log the plan before extraction starts, so its cost
     # (and an empty id set) is reported where it happens rather than mid-stream.
     def prepare!
+      if QueryAstBuilder.self_ancestor_links(@table).any?
+        @logger.warn(
+          "  #{@table.name} references itself, but a batched table does not add the ancestors " \
+          "of its rows (every batch would repeat them); a kept row's parent may be missing."
+        )
+      end
+
       if key_ids.empty?
         @logger.info("  No in-scope #{@terminus.name} ids to batch by; extracting nothing.")
       else

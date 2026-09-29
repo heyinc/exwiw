@@ -71,6 +71,10 @@ Where the SQL adapters emit a `UNION` subquery, MongoDB has no cross-collection 
 
 Masking (`replace_with`) and `fields` behavior on a reverse-scoped collection are unchanged. Like the SQL key, `reverse_scope` is user-owned: `exwiw:mongoid:schema:generate` never emits it and regeneration preserves a hand-added value.
 
+## Self-referencing `belongs_to`
+
+Unlike the SQL adapters, which keep the ancestors of a narrowed [tree table](../README.md#self-referencing-belongs_to-tree-tables), the MongoDB adapter extracts each collection with a single `find` and does not walk a self-reference. A narrowed collection with a `belongs_to` to itself logs a warning, since a kept document's parent may be missing from the dump.
+
 ## Embedded documents
 
 MongoDB models often store one-to-many relationships as embedded subdocument arrays (e.g. `users` documents with a `posts: [...]` field). To mask fields inside embedded subdocuments, declare a separate config with `embedded_in`:

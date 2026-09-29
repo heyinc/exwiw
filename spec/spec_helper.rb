@@ -7,6 +7,7 @@ require 'exwiw'
 require_relative 'support/table_loader'
 require_relative 'support/bootstrap_databases'
 require_relative 'support/ast_factory'
+require_relative 'support/self_referencing_tree'
 
 RSpec.configure do |config|
   # Enable flags like --only-failures and --next-failure

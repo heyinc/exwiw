@@ -186,6 +186,26 @@ module Exwiw
           end
         end
 
+        context "for a narrowed collection that references itself" do
+          let(:log_output) { StringIO.new }
+          let(:logger) { Logger.new(log_output) }
+          let(:dump_target) { Exwiw::DumpTarget.new(table_name: "categories", ids: [3]) }
+          let(:categories) do
+            MongodbCollectionConfig.from(
+              "name" => "categories",
+              "primary_key" => "_id",
+              "belongs_tos" => [{ "table_name" => "categories", "foreign_key" => "parent_id" }],
+              "fields" => [{ "name" => "_id" }, { "name" => "parent_id" }],
+            )
+          end
+
+          it "warns that the ancestors are not added" do
+            adapter.build_query(categories, dump_target, { categories.name => categories })
+
+            expect(log_output.string).to include("categories references itself, but the mongodb adapter does not add the ancestors")
+          end
+        end
+
         context "for a related collection after upstream state is populated" do
           # Shop 1's seeded ObjectId (`_id`); see seed/mongodb.
           let(:shop1_oid) { BSON::ObjectId.from_string("a00100000000000000000001") }

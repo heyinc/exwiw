@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **A narrowed table with a `belongs_to` to itself also keeps the ancestors of its rows.** A self-reference was ignored on every scoping path, so narrowing a tree table such as `categories` (`parent_id → categories.id`) to the categories a tenant's products point at dropped their parent categories and left `parent_id` dangling in the dump. The SQL adapters now wrap such a table's scope in a `WITH RECURSIVE` walk up every non-polymorphic self-reference, whichever path narrowed it. The ancestors are added regardless of the table's `filter` and scope, so where a tree spans tenants the dump includes the other tenant's ancestors. Tables that `belongs_to` the tree follow the rows including the ancestors, so the ancestors' own child rows are kept too, and a table the tree points at includes the ancestors' references. A table dumped in full and a table extracted with `batch_scope` are unchanged (the latter with a warning); the MongoDB adapter adds no ancestors and warns instead. Tables without a self-reference emit the same SQL as before. Requires MySQL 8.0+ for `WITH RECURSIVE`.
+
 ## [1.1.6] - 2026-09-29
 
 ### Added

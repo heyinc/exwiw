@@ -141,6 +141,26 @@ RSpec.describe Exwiw::BatchedExtraction do
     expect(batched.size).to eq(6)
   end
 
+  context 'when the batch table and its terminus reference themselves' do
+    before do
+      customers.belongs_tos = [Exwiw::BelongsTo.from_symbol_keys(table_name: 'customers', foreign_key: 'referrer_id')]
+      activities.belongs_tos += [Exwiw::BelongsTo.from_symbol_keys(table_name: 'activities', foreign_key: 'parent_id')]
+    end
+
+    it 'batches by the terminus ids including its ancestors, adds none to the batch table, and warns about it' do
+      extraction = batched
+      extraction.prepare!
+      extraction.each { |_row| nil }
+
+      closures_by_table = adapter.executed.group_by(&:from_table_name).transform_values do |asts|
+        asts.flat_map { |ast| ast.where_clauses.map { |clause| clause.value.class } }
+          .count(Exwiw::QueryAst::RecursiveAncestorSubquery)
+      end
+      expect(closures_by_table).to eq('customers' => 1, 'activities' => 0)
+      expect(log_output.string).to include('activities references itself, but a batched table does not add the ancestors')
+    end
+  end
+
   context 'when the scope keeps no rows of the batch table' do
     let(:customer_ids) { [] }
 

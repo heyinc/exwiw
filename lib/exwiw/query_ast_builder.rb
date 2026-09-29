@@ -6,6 +6,20 @@ module Exwiw
       new(table_name, table_by_name, dump_target, logger, allow_reverse: allow_reverse, allow_declared_reverse: allow_declared_reverse, forward_path: forward_path, reverse_path: reverse_path, deep_chain_warned: deep_chain_warned, batch_ids: batch_ids).run
     end
 
+    # The self-referencing foreign keys whose ancestors a narrowed `table` also
+    # keeps. A polymorphic one is not supported: following it would also need its
+    # type column checked at every step.
+    def self.self_ancestor_links(table)
+      return [] if table.primary_key.nil?
+
+      table.belongs_tos.filter_map do |relation|
+        next unless relation.table_name == table.name
+        next if relation.polymorphic?
+
+        QueryAst::AncestorLink.new(foreign_key: relation.foreign_key, references: relation.references)
+      end.uniq
+    end
+
     # Scope-column mode classification for a single table. One of
     # :exempt / :direct / :via_path / :referenced_by / :via_scoped_parent / :unscopable.
     def self.scope_category(table_name, table_by_name, dump_target, logger)
@@ -216,9 +230,11 @@ module Exwiw
 
     def run
       table = table_by_name.fetch(table_name)
+      ast = scope_mode? ? build_scoped(table) : build_single_target(table)
+      with_self_ancestors(table, ast)
+    end
 
-      return build_scoped(table) if scope_mode?
-
+    private def build_single_target(table)
       arm_queries = target_polymorphic_arm_queries(table)
       if arm_queries
         where_clauses = [pk_union_clause(table, arm_queries)]
@@ -283,6 +299,13 @@ module Exwiw
         )
       end
 
+      new_extraction_query(table).tap do |ast|
+        join_clauses.each { |join_clause| ast.join(join_clause) }
+        where_clauses.each { |where_clause| ast.where(where_clause) }
+      end
+    end
+
+    private def new_extraction_query(table)
       QueryAst::Select.new.tap do |ast|
         ast.from(table.name)
         if table.rails_managed?
@@ -290,8 +313,28 @@ module Exwiw
         else
           ast.select(table.columns)
         end
-        join_clauses.each { |join_clause| ast.join(join_clause) }
-        where_clauses.each { |where_clause| ast.where(where_clause) }
+      end
+    end
+
+    # Keeps a narrowed tree table's parent ids from dangling. The ancestors are
+    # not held to the table's filter or scope, since valid foreign keys win. A
+    # batched table is left alone: every batch would repeat the ancestors.
+    private def with_self_ancestors(table, ast)
+      return ast unless @batch_ids.nil?
+      return ast if ast.where_clauses.empty? && ast.join_clauses.empty?
+
+      links = self.class.self_ancestor_links(table)
+      return ast if links.empty?
+
+      closure = QueryAst::RecursiveAncestorSubquery.new(
+        base: project_query_to(ast, [table.primary_key, *links.map(&:foreign_key)].uniq),
+        table_name: table.name,
+        primary_key: table.primary_key,
+        links: links
+      )
+
+      new_extraction_query(table).tap do |widened|
+        widened.where(QueryAst::WhereClause.new(column_name: table.primary_key, operator: :in_subquery, value: closure))
       end
     end
 
@@ -824,13 +867,7 @@ module Exwiw
     end
 
     private def build_scoped(table)
-      ast = QueryAst::Select.new
-      ast.from(table.name)
-      if table.rails_managed?
-        ast.select_all!
-      else
-        ast.select(table.columns)
-      end
+      ast = new_extraction_query(table)
 
       # Reference/master (or rails-managed) table: export every row.
       return ast if scope_exempt?(table)
@@ -1328,14 +1365,14 @@ module Exwiw
       )
     end
 
-    # Reduce an extraction query to a single-column id projection, keeping its
-    # joins and filters. The column is forced to a plain TableColumn so any
-    # masking (`replace_with` / `raw_sql`) configured on it cannot corrupt the id
+    # Reduce an extraction query to an id projection, keeping its joins and
+    # filters. The columns are forced to plain TableColumns so any masking
+    # (`replace_with` / `raw_sql`) configured on them cannot corrupt the id
     # comparison.
-    private def project_query_to(query, column_name)
+    private def project_query_to(query, column_names)
       projected = QueryAst::Select.new
       projected.from(query.from_table_name)
-      projected.select([TableColumn.from_symbol_keys(name: column_name)])
+      projected.select(Array(column_names).map { |name| TableColumn.from_symbol_keys(name: name) })
       query.join_clauses.each { |join_clause| projected.join(join_clause) }
       query.where_clauses.each { |where_clause| projected.where(where_clause) }
       projected

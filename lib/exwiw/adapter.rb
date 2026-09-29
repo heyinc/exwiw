@@ -307,7 +307,8 @@ module Exwiw
         where_clause.is_a?(Exwiw::QueryAst::WhereClause) &&
           where_clause.operator == :in_subquery &&
           (where_clause.value.is_a?(Exwiw::QueryAst::SelectSubquery) ||
-            where_clause.value.is_a?(Exwiw::QueryAst::UnionSubquery))
+            where_clause.value.is_a?(Exwiw::QueryAst::UnionSubquery) ||
+            where_clause.value.is_a?(Exwiw::QueryAst::RecursiveAncestorSubquery))
       end
 
       # The bare name of the single column a scope subquery projects, used to
@@ -319,7 +320,35 @@ module Exwiw
           subquery.query.columns.first.name
         when Exwiw::QueryAst::UnionSubquery
           subquery.queries.first.columns.first.name
+        when Exwiw::QueryAst::RecursiveAncestorSubquery
+          subquery.primary_key
         end
+      end
+
+      ANCESTOR_SET_NAME = "exwiw_ancestors"
+
+      # The WITH clause sits inside the subquery, so the id set stays valid wherever
+      # it is embedded: a derived-table JOIN, a MySQL temporary table, a UNION arm.
+      private def compile_ancestor_closure(subquery)
+        table = subquery.table_name
+        ancestor_columns = [subquery.primary_key, *subquery.links.map(&:foreign_key)].uniq
+        column_list = ancestor_columns.map { |c| quote_identifier(c) }.join(', ')
+        recursive_select = ancestor_columns.map { |c| qualified_name(table, c) }.join(', ')
+        link_conditions = subquery.links.map do |link|
+          ancestor_link_condition(table, link.references || subquery.primary_key, link.foreign_key)
+        end
+
+        "WITH RECURSIVE #{ANCESTOR_SET_NAME} (#{column_list}) AS (" \
+          "#{compile_ast(subquery.base)} " \
+          "UNION " \
+          "SELECT #{recursive_select} FROM #{quote_table_name(table)} " \
+          "JOIN #{ANCESTOR_SET_NAME} ON #{link_conditions.join(' OR ')}" \
+          ") SELECT #{ANCESTOR_SET_NAME}.#{quote_identifier(subquery.primary_key)} FROM #{ANCESTOR_SET_NAME}"
+      end
+
+      # Overridden where a dialect compares the two columns differently.
+      private def ancestor_link_condition(table, referenced_column, foreign_key)
+        "#{qualified_name(table, referenced_column)} = #{ANCESTOR_SET_NAME}.#{quote_identifier(foreign_key)}"
       end
     end
 

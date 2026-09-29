@@ -1176,6 +1176,12 @@ RSpec.describe Exwiw::QueryAstBuilder do
       it 'aborts naming the table and the ID spaces its query filters by' do
         expect { validate }.to raise_error(ArgumentError, /reach more than one ID space: users \(default, org\)/)
       end
+
+      it 'aborts the same way when the table also keeps the ancestors of a self-reference' do
+        users.belongs_tos = [Exwiw::BelongsTo.from_symbol_keys(table_name: 'users', foreign_key: 'invited_by_id')]
+
+        expect { validate }.to raise_error(ArgumentError, /reach more than one ID space: users \(default, org\)/)
+      end
     end
   end
 
@@ -2406,6 +2412,168 @@ RSpec.describe Exwiw::QueryAstBuilder do
 
       it 'stays :unscopable rather than picking an ambiguous parent' do
         expect(described_class.scope_category('child', table_by_name, dump_target, logger)).to eq(:unscopable)
+      end
+    end
+
+    def sqlite_adapter
+      Exwiw::Adapter::SqliteAdapter.new(
+        Exwiw::ConnectionConfig.new(
+          adapter: 'sqlite', database_name: 'tmp/test.sqlite3',
+          host: nil, port: nil, user: nil, password: nil
+        ),
+        logger,
+      )
+    end
+  end
+
+  describe 'self-referencing belongs_to (ancestors of a tree table)' do
+    # categories form a tree through parent_id and are narrowed by the tenant's products.
+    let(:logger) { Logger.new(nil) }
+    let(:dump_target) { Exwiw::DumpTarget.new(ids: ['t1'], scope_column: 'tenant_id') }
+
+    let(:categories) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'categories', primary_key: 'id',
+        belongs_tos: [
+          { table_name: 'categories', foreign_key: 'parent_id' },
+          { table_name: 'icons', foreign_key: 'icon_id' },
+        ],
+        reverse_scope: { via: [{ table: 'products', column: 'category_id' }] },
+        columns: [{ name: 'id' }, { name: 'parent_id' }, { name: 'icon_id' }, { name: 'name' }]
+      )
+    end
+    let(:products) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'products', primary_key: 'id',
+        belongs_tos: [{ table_name: 'categories', foreign_key: 'category_id' }],
+        columns: [{ name: 'id' }, { name: 'tenant_id' }, { name: 'category_id' }]
+      )
+    end
+    let(:category_notes) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'category_notes', primary_key: 'id',
+        belongs_tos: [{ table_name: 'categories', foreign_key: 'category_id' }],
+        columns: [{ name: 'id' }, { name: 'category_id' }, { name: 'body' }]
+      )
+    end
+    let(:icons) do
+      Exwiw::TableConfig.from_symbol_keys(
+        name: 'icons', primary_key: 'id', belongs_tos: [],
+        reverse_scope: { via: [{ table: 'categories', column: 'icon_id' }] },
+        columns: [{ name: 'id' }, { name: 'url' }]
+      )
+    end
+    let(:all_tables) { [categories, products, category_notes, icons] }
+    let(:table_by_name) { all_tables.each_with_object({}) { |t, h| h[t.name] = t } }
+
+    let(:products_ids_join) do
+      "JOIN (SELECT DISTINCT exwiw_scope_src_0.category_id AS exwiw_scope_id FROM (" \
+        "SELECT products.category_id FROM products WHERE products.tenant_id = 't1' AND products.category_id IS NOT NULL" \
+        ") AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON categories.id = exwiw_scope_ids_0.exwiw_scope_id"
+    end
+    let(:categories_with_ancestors_join) do
+      "JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (" \
+        "WITH RECURSIVE exwiw_ancestors (id, parent_id) AS (" \
+        "SELECT categories.id, categories.parent_id FROM categories #{products_ids_join} " \
+        "UNION SELECT categories.id, categories.parent_id FROM categories " \
+        "JOIN exwiw_ancestors ON categories.id = exwiw_ancestors.parent_id" \
+        ") SELECT exwiw_ancestors.id FROM exwiw_ancestors" \
+        ") AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON categories.id = exwiw_scope_ids_0.exwiw_scope_id"
+    end
+
+    def build(name)
+      described_class.run(name, table_by_name, dump_target, logger)
+    end
+
+    it 'widens the reverse-scoped categories to their ancestors (sqlite)' do
+      expect(sqlite_adapter.compile_ast(build('categories'))).to eq(
+        "SELECT categories.id, categories.parent_id, categories.icon_id, categories.name FROM categories " \
+          "#{categories_with_ancestors_join}"
+      )
+    end
+
+    it 'narrows a child by the categories including the ancestors (sqlite)' do
+      expect(sqlite_adapter.compile_ast(build('category_notes'))).to eq(
+        "SELECT category_notes.id, category_notes.category_id, category_notes.body FROM category_notes " \
+          "JOIN (SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id FROM (" \
+          "SELECT categories.id FROM categories #{categories_with_ancestors_join}" \
+          ") AS exwiw_scope_src_0) AS exwiw_scope_ids_0 ON category_notes.category_id = exwiw_scope_ids_0.exwiw_scope_id"
+      )
+    end
+
+    it 'narrows a table the categories point at by the categories including the ancestors' do
+      icons_arm = build('icons').where_clauses.first.value.queries.first
+
+      expect(icons_arm.from_table_name).to eq('categories')
+      expect(icons_arm.where_clauses.map { |clause| clause.value.class }).to eq([
+        Exwiw::QueryAst::RecursiveAncestorSubquery,
+        NilClass,
+      ])
+    end
+
+    context 'when the categories are the dump target itself' do
+      let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'categories', ids: [3]) }
+
+      it 'widens the requested categories to their ancestors' do
+        expect(build('categories').where_clauses.map(&:to_h)).to eq([
+          {
+            column_name: 'id',
+            operator: :in_subquery,
+            value: {
+              ancestors_of: {
+                from: 'categories',
+                columns: [{ name: 'id', value: 'id' }, { name: 'parent_id', value: 'parent_id' }],
+                joins: [],
+                where: [{ column_name: 'id', operator: :eq, value: [3] }],
+              },
+              table_name: 'categories',
+              primary_key: 'id',
+              links: [{ foreign_key: 'parent_id', references: nil }],
+            },
+          },
+        ])
+      end
+    end
+
+    context 'when the tree table is exported in full' do
+      let(:categories) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'categories', primary_key: 'id', scope_exempt: true,
+          belongs_tos: [{ table_name: 'categories', foreign_key: 'parent_id' }],
+          columns: [{ name: 'id' }, { name: 'parent_id' }]
+        )
+      end
+
+      it 'leaves the query unchanged' do
+        expect(sqlite_adapter.compile_ast(build('categories'))).to eq(
+          "SELECT categories.id, categories.parent_id FROM categories"
+        )
+      end
+    end
+
+    context 'when the table references itself several times' do
+      let(:categories) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'categories', primary_key: 'id',
+          belongs_tos: [
+            { table_name: 'categories', foreign_key: 'parent_id' },
+            { table_name: 'categories', foreign_key: 'merged_into_code', references: 'code' },
+            { table_name: 'categories', foreign_key: 'owner_id', foreign_type: 'owner_type', type_value: 'Category' },
+          ],
+          reverse_scope: { via: [{ table: 'products', column: 'category_id' }] },
+          columns: [
+            { name: 'id' }, { name: 'code' }, { name: 'parent_id' }, { name: 'merged_into_code' },
+            { name: 'owner_type' }, { name: 'owner_id' }
+          ]
+        )
+      end
+
+      it 'follows every non-polymorphic one through the column it references (sqlite)' do
+        expect(sqlite_adapter.compile_ast(build('categories'))).to include(
+          "WITH RECURSIVE exwiw_ancestors (id, parent_id, merged_into_code) AS (",
+          "JOIN exwiw_ancestors ON categories.id = exwiw_ancestors.parent_id " \
+            "OR categories.code = exwiw_ancestors.merged_into_code)"
+        )
       end
     end
 
