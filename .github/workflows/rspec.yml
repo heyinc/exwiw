@@ -67,7 +67,7 @@ jobs:
           --health-retries=10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Install postgresql-client-17
         # The insert-output snapshot spec shells out to pg_dump, which enforces
