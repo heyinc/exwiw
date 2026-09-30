@@ -14,7 +14,7 @@ jobs:
     name: Scenario with sqlite
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
@@ -65,7 +65,7 @@ jobs:
           --health-retries=3
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
@@ -112,7 +112,7 @@ jobs:
           --health-retries=3
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Install postgresql-client-17
         # exwiw shells out to pg_dump to generate insert-000-schema.sql, and
@@ -167,7 +167,7 @@ jobs:
           --health-retries=10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Install mongosh
         # The mongo:7 service container has mongosh inside it, but the
