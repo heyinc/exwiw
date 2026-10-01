@@ -1,25 +1,8 @@
 # Exwiw
 
-Export What I Want (Exwiw) is a Ruby gem that allows you to export records from a database to a dump file(to specifically, the full list of INSERT sql) on the specified conditions.
+Export What I Want (exwiw) exports part of a database as SQL `INSERT` files: the rows related to the records you name, with sensitive columns masked. It is meant for building a development database that looks like production, without copying all of production or maintaining hand-made seed data.
 
-## When to use
-
-Most of case in developing a software, There is no better choice than the same data in production.
-You might make well-crafted data, but it's very very hard to maintain.
-
-If you find the way to maintain the data for develoment env, then exwiw might be a solution for that.
-
-- Export the full database and mask data and import to another database.
-- Setup some system to replicate and mask data in real-time to another database.
-
-
-You want to export only the data you want to export.
-
-## Features
-
-- Export the full list of INSERT sql for the specified conditions.
-- Provide serveral masking options for sensitive columns.
-- Provide config generator for ActiveRecord, for Mongoid, and from a live database connection (any application, any language).
+Each table is described in a JSON schema config: its columns, how to mask them, and its `belongs_to` relations. Given a target table and ids, exwiw follows those relations to decide which rows of every other table to export. The schema config can be generated from ActiveRecord or Mongoid models, or from a live database.
 
 ## Installation
 
@@ -27,46 +10,29 @@ You want to export only the data you want to export.
 bundle add exwiw
 ```
 
-Most of cases, you want to add 'require: false' to the Gemfile.
+You usually want `require: false` on the Gemfile entry. Without bundler, run `gem install exwiw`.
 
-If bundler is not being used to manage dependencies, install the gem by executing:
+## Supported databases
 
-```bash
-gem install exwiw
-```
+- MySQL
+- PostgreSQL
+- SQLite
+- MongoDB (see [MongoDB support](docs/mongodb.md))
 
-## Supported Databases
-
-- mysql
-- postgresql
-- sqlite
-- mongodb (see [MongoDB support](docs/mongodb.md))
-
-For MySQL, exwiw connects through whichever of the `mysql2` or `trilogy` gem is
-available (preferring `mysql2`), so an app on either driver works without any
-extra setup. There is no separate `trilogy` adapter name — pass `--adapter=mysql`
-either way.
-
-Set `EXWIW_MYSQL_DRIVER=trilogy` (or `mysql2`) to force a specific driver. This
-is useful when the `mysql2` gem is linked against a `libmysqlclient` that can no
-longer load the server's auth plugin — e.g. a MySQL 9.x client drops the
-`mysql_native_password` plugin and raises `Authentication plugin
-'mysql_native_password' cannot be loaded` on connect. The pure-Ruby `trilogy`
-driver implements that auth handshake itself and sidesteps the issue.
+For MySQL, exwiw uses the `mysql2` gem if it is available and `trilogy` otherwise; pass `--adapter=mysql` either way. Set `EXWIW_MYSQL_DRIVER=trilogy` (or `mysql2`) to choose one. `trilogy` helps when `mysql2` is linked against a client library that cannot load the server's auth plugin, such as a MySQL 9.x client connecting to a server that uses `mysql_native_password`.
 
 ## Usage
 
 exwiw has three subcommands:
 
-- `export` (default) — generate INSERT/COPY SQL files. If the subcommand is omitted, `export` is assumed.
-- `explain` — print each query `export` would run together with its `EXPLAIN` output. SQL adapters compile the SELECT without executing it; mongodb runs the server's explain (defaulting to the execution-free `queryPlanner`).
-- `schema generate|check|tidy --from-db` — maintain the schema config by reading a live database, for applications that cannot be loaded to generate it from their models. See [Non-Rails applications](#non-rails-applications-exwiw-schema----from-db).
+- `export` (the default): write the dump files.
+- `explain`: print the queries `export` would run, with their `EXPLAIN` output.
+- `schema generate|check|tidy --from-db`: maintain the schema config from a live database. See [Non-Rails applications](#non-rails-applications-exwiw-schema----from-db).
 
 ### `exwiw export`
 
 ```bash
-# dump & masking all records from database to dump.sql based on schema.json
-# pass database password as an environment variable 'DATABASE_PASSWORD'
+# The database password is read from DATABASE_PASSWORD.
 exwiw \
   --adapter=mysql \
   --host=localhost \
@@ -75,62 +41,42 @@ exwiw \
   --database=app_production \
   --schema-dir=exwiw/schema \
   --target-table=shops \
-  --ids=1 \ # comma separated ids
-  --output-dir=dump \
-  --log-level=info
-```
-
-By default `--ids` are matched against the target table's primary key. If the target table declares a per-table `scope_column`, exwiw runs in [scope-column mode](#scope-column-mode) instead — `--ids` are then values of that shared column, and the table is scoped like any other rather than anchored by primary key. In scope-column mode `--target-table` can be omitted: passing only `--ids` runs in scope-column mode as long as some table in the schema declares a `scope_column`.
-
-| `--target-table` | `--ids` | Mode |
-|---|---|---|
-| given | given | Scope-column mode if the table declares a `scope_column`, single-target mode otherwise |
-| omitted | given | Scope-column mode if any table declares a `scope_column`, an error otherwise (SQL adapters only) |
-| omitted | omitted | Every table is dumped in full |
-
-When `--target-table` and `--ids` are omitted, exwiw dumps all tables defined in `--schema-dir`:
-
-```bash
-# dump all tables
-exwiw \
-  --adapter=postgresql \
-  --host=localhost \
-  --port=5432 \
-  --user=reader \
-  --database=app_production \
-  --schema-dir=exwiw/schema \
+  --ids=1,2 \
   --output-dir=dump
 ```
 
-This command will generate sql files in the `dump` directory.
+This exports the `shops` rows with id 1 and 2 and the rows of other tables related to them. `--schema-dir` reads every JSON file in the directory.
 
-The output dir is emptied before each export so it never mixes files from a previous run (defaulting to `dump/` when `--output-dir` is omitted). When run interactively (stdin is a tty) and the dir already contains files, exwiw asks for confirmation before removing them; in non-interactive contexts (CI, pipes) it proceeds without prompting.
+| `--target-table` | `--ids` | What is exported |
+|---|---|---|
+| given | given | The target rows by primary key, and their related rows. If the table declares a `scope_column`, [scope-column mode](#scope-column-mode) is used instead |
+| omitted | given | [Scope-column mode](#scope-column-mode). An error if no table declares a `scope_column` (SQL adapters only) |
+| omitted | omitted | Every table in full |
 
-- `dump/insert-000-schema.sql` — idempotent `CREATE TABLE IF NOT EXISTS ...` for every table in scope. Apply this first to provision an empty database.
-- `dump/insert-{idx}-{table_name}.sql`
+The output directory (`dump/` by default) is emptied before each run. When it already has files and stdin is a terminal, exwiw asks before removing them.
 
-idx means the order of the dump. bigger idx might depend on smaller idx,
-so you should import the dump in order.
+The output files are:
 
-exwiw generates INSERT statements only — it does not generate DELETE statements. Import into an empty database (`insert-000-schema.sql` provisions one), or clear the target's rows yourself before importing.
+- `insert-000-schema.sql`: `CREATE TABLE IF NOT EXISTS ...` for every table. Run it first to create an empty database.
+- `insert-{idx}-{table}.sql`: one per table. A file may depend on files with a smaller `idx`, so import them in order.
 
-`insert-000-schema.sql` is generated by shelling out to the database client tools (`mysqldump` for `mysql`, `pg_dump` for `postgresql`, and the sqlite3 driver for `sqlite`), so the corresponding client must be available on PATH when running exwiw. For `mysql`, set `EXWIW_MYSQLDUMP` to point at a specific `mysqldump` binary when the one on PATH is incompatible with the server (e.g. a MySQL 9.x `mysqldump` cannot load `mysql_native_password` against a server still using that auth plugin — `EXWIW_MYSQLDUMP=/path/to/mysql@8.0/bin/mysqldump`). The output is post-processed to make it idempotent: `CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS` (where the engine supports it), and PostgreSQL's `ALTER TABLE ... ADD CONSTRAINT` and `CREATE TRIGGER` statements are wrapped in `DO $$ ... EXCEPTION WHEN duplicate_object`. For `mysql`, the source server's `DEFINER=user@host` stamp on views and triggers is stripped too, so restoring into a managed MySQL instance (which usually can't grant the privilege to recreate someone else's `DEFINER`) does not fail.
+exwiw writes no `DELETE` statements. Import into an empty database, or clear the target's rows yourself.
 
-The schema file carries the source's triggers. They are suppressed while the target is loaded: each `insert-NNN-<table>.sql` opens with a block that sets `session_replication_role = 'replica'` for the connection, which turns off both user triggers and foreign-key enforcement for the statements that follow (the PostgreSQL counterpart of the `FOREIGN_KEY_CHECKS=0` `mysql` dumps already carry). Setting it requires superuser (`rds_superuser` on RDS); if the restoring role lacks the privilege the block reports a `WARNING` and the load proceeds with triggers firing. The setting applies to the connection and is not reset at the end of each file — every file re-arms it itself, so `psql -f` per file and `cat insert-*.sql | psql` both work, but a session that sources these files and then goes on to do other work stays in replica mode; reset it yourself (`SET session_replication_role = 'origin'`) in that case. `sqlite` has no equivalent and loads with its triggers active.
+### Restoring the dump
 
-For `postgresql`, the extensions a managed platform installs to run the source instance itself are treated as out of target and left out of the dump entirely — currently `google_vacuum_mgmt` (Cloud SQL / AlloyDB adaptive autovacuum), `google_columnar_engine` and `google_db_advisor` (AlloyDB). They serve the source instance's operation (vacuum tuning, the in-memory columnar cache, index advice), hold no application data, are referenced by nothing in the application's own schema, and ship only with the managed platform, so a restore target outside it can never create them. Their schemas are dropped via `pg_dump --exclude-schema` and their `CREATE EXTENSION` / `COMMENT ON EXTENSION` statements — which are not schema-qualified, so no `pg_dump` filter reaches them — are removed from the output; whatever was excluded is named in the run's log.
+`insert-000-schema.sql` is created with the database's own tools (`mysqldump`, `pg_dump`, or the sqlite3 driver), so `mysqldump` or `pg_dump` must be on `PATH`. Set `EXWIW_MYSQLDUMP` to use a specific `mysqldump`, for example an 8.0 one when a 9.x `mysqldump` cannot authenticate against the server.
 
-The list is exact names, not a `google_*` prefix match: those prefixes are not reserved, so a prefix rule would also drop a schema an application legitimately owns (`google_calendar` for a Google Calendar integration) together with its tables. Every other extension is kept and wrapped in the usual warn-and-skip `DO` block, including two kinds that are also managed-platform-only:
+The schema file is rewritten so that running it again is harmless (`IF NOT EXISTS`, and PostgreSQL constraints and triggers that are skipped if they already exist). For MySQL, `DEFINER` clauses are removed so that a managed MySQL instance accepts the views and triggers.
 
-- a third-party extension pulled in as a dependency of an excluded one (`google_db_advisor` requires `hypopg`), since that one *is* installable on a plain PostgreSQL, and
-- an application-facing platform extension (`google_ml_integration`, `alloydb_scann`, `alloydb_ai_nl`), which the application's own SQL and DDL can name (a ScaNN index is `USING scann`) — removing its `CREATE` would strand whatever refers to it, so it warns and skips instead.
+MySQL data files turn off foreign key checks (`FOREIGN_KEY_CHECKS=0`). PostgreSQL data files set `session_replication_role = 'replica'`, which turns off both foreign key checks and triggers. This setting needs superuser (`rds_superuser` on RDS); without it a `WARNING` is printed and triggers fire. The setting stays on for the rest of the connection, so run `SET session_replication_role = 'origin'` if you keep using that connection. SQLite loads with its triggers active.
+
+On PostgreSQL, extensions that only exist to run a managed instance (`google_vacuum_mgmt`, `google_columnar_engine`, `google_db_advisor`) are left out of the dump, because a database outside that platform cannot create them. Other extensions are kept, and are skipped with a warning when the target cannot create them.
 
 ### `exwiw explain`
 
-Print the query each `export` would run together with its `EXPLAIN` output, to stdout. For the SQL adapters (`mysql`, `postgresql`, `sqlite`) this is the compiled SELECT plus its `EXPLAIN` (estimate-only; `EXPLAIN QUERY PLAN` on SQLite) — no SELECT is executed. For `mongodb` it is the `find` description plus the server's explain document as JSON.
+Prints the query `export` would run for each table, with its `EXPLAIN` output. For the SQL adapters the SELECT is not executed. For MongoDB, see [`exwiw explain` verbosity](docs/mongodb.md#exwiw-explain-verbosity).
 
 ```bash
-# preview the queries exwiw would run, without executing the SELECTs
 exwiw explain \
   --adapter=postgresql \
   --host=localhost --port=5432 --user=reader \
@@ -139,233 +85,21 @@ exwiw explain \
   --target-table=shops --ids=1
 ```
 
-The `--output-dir`, `--output-format`, and `--after-insert-hook` options are dump-specific and rejected when used with `explain`.
-
-MongoDB-specific explain behavior — the configurable verbosity (`queryPlanner` / `executionStats` / `allPlansExecution`) and how scoped collections are shown — is described in [MongoDB support](docs/mongodb.md#exwiw-explain-verbosity).
-
-### How each table is narrowed — the six scoping paths
-
-Only the dump target itself is filtered by `--ids` directly. Every *other* table must be **scoped** — narrowed to just the rows related to the target — some other way, and a table that cannot be scoped at all is dumped in full (or, in scope-column mode, aborts the run). exwiw resolves each table through the **first** of these six paths that applies:
-
-| # | Path | When it applies | Resulting query shape |
-|---|------|-----------------|-----------------------|
-| 1 | **Direct filter** | The table is the `--target-table` itself; or, in [scope-column mode](#scope-column-mode), it declares a `scope_column` | `WHERE pk IN (ids)` / `WHERE scope_column IN (ids)` |
-| 2 | **`belongs_to` join walk** | The table reaches the target (or a scope-column table) by following its `belongs_to` edges | `WHERE fk IN (ids)` for a single hop; a chain of `JOIN`s for longer paths |
-| 3 | **Referenced-by (automatic reverse)** | No `belongs_to` path of its own, but **exactly one** already-constrained table points at it by foreign key | Constrained to the ids that referencer's own query selects |
-| 4 | **`reverse_scope` (declared reverse)** | Referenced by **many** scoped tables — typically a global-identity table like `users` — and the referencers are enumerated in its config | Constrained to the `UNION` of the enumerated referencers' ids |
-| 5 | **Scoped-parent cascade** | No path or referencer, but a `belongs_to` parent is itself scoped (by any path above) | Constrained to the parent's in-scope primary keys; cascades over multiple hops |
-| 6 | **Full dump** | Nothing relates the table to the target | All rows. In scope-column mode this **aborts** unless the table opts in with `scope_exempt: true` |
-
-How the paths behave and interact:
-
-1. **Direct filter.** In the default single-target mode the target is anchored on its primary key (or a custom field via the mongodb-only `--ids-field`). In [scope-column mode](#scope-column-mode) there is no single anchor: every table that declares a `scope_column` is filtered on that column directly.
-2. **`belongs_to` join walk** — the "normal join" path. exwiw BFS-walks `belongs_to` edges to the nearest terminus (the target table, or a directly scoped table in scope-column mode) and compiles the shortest path into `INNER JOIN`s. A [polymorphic `belongs_to`](#polymorphic-belongs_to) hop additionally pins the type column, and is resolved for **every** concrete arm with the arms `UNION`ed (see [Every arm is extracted](#every-arm-is-extracted)).
-3. **Referenced-by** handles a table with no outgoing path that is pointed *at* by a constrained child — `active_storage_blobs`, referenced by `active_storage_attachments.blob_id`, is the canonical case (see [ActiveStorage](#activestorage-has_one_attached--has_many_attached)). It is automatic but deliberately narrow: it requires a single, non-polymorphic referencer. With two or more referencers it steps aside to path 5, then 6, unless you declare `reverse_scope`.
-4. **[`reverse_scope`](#reverse-scope-for-multi-referencer-tables-reverse_scope)** is the declared, multi-referencer form of path 3: the config enumerates which referencers' (already scoped) queries feed the id set. Unscoped arms are skipped with a warning rather than widening the dump.
-5. **Scoped-parent cascade** rescues satellites: a table whose only link is a `belongs_to` toward a hub that is itself scoped (e.g. via referenced-by or `reverse_scope`) is constrained to that parent's in-scope ids. The cascade recurses hop by hop (each level requires a single unambiguous scopable parent) and stops on `belongs_to` cycles.
-6. **Full dump** is the fallback for a genuinely unrelated table — intended for reference/master data. Single-target mode dumps it in full (with a warning when an ambiguous cascade was the reason); scope-column mode refuses to run instead, unless the table is explicitly marked [`scope_exempt: true`](#scope_exempt-intentional-full-dump) (Rails-managed tables are exempt automatically).
-
-Paths 3–5 all materialize their id set once and probe it via a `JOIN` on a `SELECT DISTINCT` derived table rather than `IN (subquery)` — see [Why a JOIN, not `IN (subquery)`](#why-a-join-not-in-subquery). Scope-column mode classifies every table up front with these same paths (`:direct` / `:via_path` / `:referenced_by` / `:via_scoped_parent` / `:exempt` / `:unscopable` in `QueryAstBuilder#scope_category`) and aborts before extracting anything if any table lands on `:unscopable`. The MongoDB adapter follows the same model, except id sets are captured at runtime while parent collections stream instead of being expressed as SQL subqueries — see [MongoDB support](docs/mongodb.md).
-
-Whichever path narrows a table, a table with a `belongs_to` to itself (a tree such as `categories.parent_id`) then also keeps the ancestors of the rows it kept — see [Self-referencing `belongs_to`](#self-referencing-belongs_to-tree-tables).
-
-### Scope-column mode
-
-The default `--target-table` extraction assumes the schema converges on a single
-root: every table is reached by walking `belongs_to` toward that one table. Some
-schemas are not shaped that way — many independent top-level tables each carry the
-*same* scope/tenant column (e.g. `tenant_id`, `business_entity_id`), and a foreign
-key that **cannot be joined** (most importantly a cross-database `belongs_to`,
-whose join is impossible but whose FK column is still filterable) is not reached at
-all. Choosing one table as `--target-table` would leave the others unrelated to it,
-and an unrelated table is dumped in full — a problem if it holds personal data.
-
-Scope-column mode handles this shape: instead of anchoring on one table's primary
-key, **every table is filtered by a shared column** whose values are `--ids` (tables
-keyed by an unrelated kind of id can use their own [ID space](#per-table-scope_column-and-id-spaces)).
-Declare that column per table in the schema config with `scope_column:`:
-
-```json
-{
-  "name": "shops",
-  "primary_key": "id",
-  "scope_column": "business_entity_id",
-  "columns": [{ "name": "id" }, { "name": "name" }, { "name": "business_entity_id" }]
-}
-```
-
-Then pass the scope values as `--ids`, without `--target-table`:
-
-```bash
-exwiw \
-  --adapter=postgresql \
-  --host=localhost --port=5432 --user=reader \
-  --database=app_production \
-  --schema-dir=exwiw/schema \
-  --ids=42,43 \
-  --output-dir=dump
-```
-
-Because the schema declares a `scope_column`, exwiw runs in scope-column mode: the
-`--ids` (`42,43`) are **`business_entity_id` values, not shop primary keys**, and
-`shops` is scoped by `business_entity_id IN (42,43)` like every other scoped table.
-Where extraction starts is decided by the schema, so `--target-table` is not
-needed. If no table declares a `scope_column`, `--ids` alone is an error: name the
-table the ids belong to with `--target-table` (single-target mode), or declare a
-`scope_column`. Tables marked `ignore: true` do not count.
-
-Naming a scoped table as `--target-table` (`--target-table=shops --ids=42,43`)
-selects the same mode and extracts the same rows; the target is *not* used as a
-primary-key anchor. (A table that declares a `scope_column` therefore can no longer
-be single-extracted by primary key.)
-
-Each table is resolved as follows:
-
-- **Declares the scope column** (`scope_column:`, or carries the global column of
-  the deprecated `--scope-column` flag) → `WHERE scope_column IN (ids)`.
-- **Does not, but `belongs_to` reaches a table that does** → exwiw joins up to the
-  nearest such table and applies the scope filter there (the same join machinery
-  the single-target mode uses).
-- **`belongs_to` a parent that is itself scoped but carries no scope column of its
-  own** → exwiw constrains this table to the parent's in-scope ids by joining it to
-  the parent's scoped query, materialized as a derived table
-  (`JOIN (SELECT DISTINCT parent.pk … FROM <parent's scoped query>) … ON fk = …`).
-  This covers a *hub* table that has no scope column and is scoped only because an
-  extractable child references it (see referenced-by below): the hub's other
-  `belongs_to` children ride along to just the in-scope rows instead of being dumped
-  in full. The parent itself may be scoped the same way, so this **cascades across
-  multiple hops** (each a single unambiguous scopable parent) and the derived-table
-  JOINs nest correspondingly; the recursion terminates on a genuine `belongs_to`
-  cycle (a table already on the path is left `:unscopable` rather than looped on).
-  (See [Why a JOIN, not `IN (subquery)`](#why-a-join-not-in-subquery) for the
-  materialization rationale.)
-- **Cannot be scoped at all** (no scope column and no path to one) → exwiw
-  **aborts** and lists the offending tables, so an unscoped table is never silently
-  dumped in full. For each, either declare a `scope_column`, add a `belongs_to`
-  path, set `ignore: true` to skip it, or mark it `scope_exempt: true` (below) to
-  export it in full.
-
-> **Note — referenced-by is preferred over the hub cascade.** A table that is
-> *both* `belongs_to` a scoped hub *and* referenced-by a constrained child is
-> scoped to the (narrower) referenced-by id-set, not the hub cascade, so the hub's
-> other children the child does not reference are dropped (under-scoping). To force
-> the broader hub cascade, set `ignore: true` on the child's `belongs_to` edge that
-> points at this table.
-
-Scope-column mode is SQL-only (mysql / postgresql / sqlite); with the mongodb
-adapter, `--ids` still requires `--target-collection`. It works with `exwiw
-explain` too, which is the recommended way to preview the queries before exporting.
-
-#### Cross-database foreign keys
-
-The motivating case for declaring a `scope_column` is a foreign key that cannot be
-joined: when a `belongs_to` target lives in a different database (see the
-cross-database `belongs_to` note under the generator), that join is impossible, but
-the foreign-key *column* is still present and can be filtered directly. Declaring
-`scope_column: "<that foreign key>"` on the owning table scopes it by the column
-value, with no join — `schema:generate` points this out in the ignored relation's
-`comment`.
-
-#### `scope_exempt` (intentional full dump)
-
-A genuine reference/master table (no personal data) that has no scope linkage can
-opt out of the strict check and be exported in full:
-
-```json
-{
-  "name": "countries",
-  "primary_key": "id",
-  "scope_exempt": true,
-  "columns": [{ "name": "id" }, { "name": "code" }]
-}
-```
-
-Rails-managed tables (`schema_migrations`, `ar_internal_metadata`) are treated as
-exempt automatically.
-
-#### Per-table `scope_column` and ID spaces
-
-The values of every `scope_column` belong to an **ID space**, and `--ids` gives the
-values of each space. A table that does not declare `id_space` is in the `default`
-space, which a plain `--ids=1,2` fills, so without any `id_space` every scoped table
-is filtered by the same `--ids`. Each table names its own column, so a table that
-stores that same value under a differently named column simply declares that name:
-
-```json
-{
-  "name": "legacy_orders",
-  "primary_key": "id",
-  "scope_column": "legacy_tenant_id",
-  "columns": [{ "name": "id" }, { "name": "legacy_tenant_id" }]
-}
-```
-
-When one database holds two groups of tables that no foreign key connects, each
-keyed by a different kind of id, put one group in a named ID space. Here `tenants`
-are identified by integer ids and `organizations` by UUIDs (each object is its own
-schema file):
-
-```json
-{ "name": "tenants", "primary_key": "id", "scope_column": "id", "columns": [{ "name": "id" }] }
-{ "name": "organizations", "primary_key": "id", "scope_column": "id", "id_space": "org", "columns": [{ "name": "id" }] }
-```
-
-```bash
-exwiw ... --target-table=tenants \
-  --ids=1,2 \
-  --ids=org=0b6f4c1e-0000-4000-8000-000000000001
-```
-
-`--ids=1,2` is the same as `--ids=default=1,2`. The part before the first `=` is
-read as an ID space name only when it is shaped like one (a lowercase letter
-followed by lowercase letters, digits or underscores), so an id that contains `=`
-itself is passed with an explicit `default=`. Each ID space may be given once. A
-table without a scope column is filtered by the ID space of the table it is scoped
-through (a `belongs_to` join, `reverse_scope`, referenced-by or the parent cascade).
-
-The run aborts before extracting anything when a table is filtered by an ID space
-that was given no values, when values are given for an ID space no table uses, or
-when a table reaches scoped tables of more than one ID space (otherwise the
-`belongs_to` walk would silently settle on the nearest one).
-
-Single `--target-table` mode and the MongoDB adapter use only the `default` space
-and abort when a named one is given. In the config file, `ids:` takes either a list
-(the `default` space) or a mapping from ID space name to values, such as
-`ids: { default: [1, 2], org: [0b6f4c1e-0000-4000-8000-000000000001] }`; as with
-the other keys, it is used only when `--ids` is not passed at all.
-
-`scope_exempt`, `scope_column` and `id_space` are user-maintained and preserved
-across `schema:generate` regeneration (the generators never emit them).
-
-#### Deprecated: the `--scope-column` flag
-
-Before per-table declarations, scope-column mode was selected with a global
-`--scope-column=COLUMN` flag (every table filtered by that one column, `--ids` its
-values, no `--target-table`). The flag still works — SQL-only and mutually
-exclusive with `--target-table` — but is **deprecated** and emits a warning; prefer
-declaring a per-table `scope_column` and dropping the flag. A per-table
-`scope_column` takes precedence over the flag for any table that sets both.
+`--output-dir`, `--output-format` and `--after-insert-hook` cannot be used with `explain`.
 
 ### Config file (`exwiw.yml`)
 
-Options you would otherwise repeat on every run can be kept in a YAML config file. Pass it with `--config=PATH`; when `--config` is omitted, exwiw automatically loads `exwiw.yml` (or `exwiw.yaml`) from the current directory if present.
-
-**Options passed on the CLI always take precedence over the config file** — the config only fills in options you did not pass. This lets you commit the stable settings (which schema to read, output format, ...) while still varying the environment-specific connection details per invocation.
+Options can be kept in a YAML file passed with `--config=PATH`. Without `--config`, `exwiw.yml` (or `exwiw.yaml`) in the current directory is used if it exists. Options passed on the command line take precedence.
 
 ```yaml
-# exwiw.yml — keep at the project root, alongside exwiw/schema/
 adapter: postgresql
 schema_dir: exwiw/schema
 output_dir: dump
 output_format: insert        # insert | copy
 after_insert_hook: hooks/seed.rb
 log_level: info              # debug | info
-# target_table / ids / ids_field / scope_column may also be set here
-# (ids may map ID spaces to values; see "Per-table scope_column and ID spaces")
-# mongodb_query_timeout_ms: 30000   # global query timeout (mongodb only)
+# target_table, ids, ids_field and scope_column can also be set here.
 ```
-
-With the file above, only the connection details need to be supplied on the CLI:
 
 ```bash
 DATABASE_PASSWORD=... exwiw \
@@ -373,283 +107,23 @@ DATABASE_PASSWORD=... exwiw \
   --target-table=shops --ids=1
 ```
 
-Notes:
+- Connection settings (`host`, `port`, `user`, `database`, `uri`, `password`) are rejected, so they stay out of a committed file. `adapter` is allowed.
+- Relative paths are resolved from the config file's directory, not the current directory.
+- Unknown keys are rejected. Keys that only apply to `export` are ignored by `explain` and `schema`, so all subcommands can share one file.
+- MongoDB-only keys (`explain_verbosity`, `mongodb_query_timeout_ms`, `parallel_workers`) are described in [MongoDB support](docs/mongodb.md).
 
-- **Database connection settings stay on the CLI/environment.** `host`, `port`, `user`, `database`, `uri`, and `password` are **rejected** in the config file (exwiw exits with an error). `adapter` is the one connection-related key that *is* allowed in the file.
-- **Relative paths in the config (`schema_dir`, `output_dir`, `after_insert_hook`) are resolved relative to the config file's own directory**, not the current working directory. So with the config at the project root, `schema_dir: exwiw/schema` reads naturally, and an absolute `--config=/path/to/exwiw.yml` works no matter where you run from. (CLI path flags remain relative to the current directory — each source resolves relative to where it is written.) Absolute paths are used as-is.
-- Unknown keys are rejected so a typo surfaces immediately. (`insert_only`, whose behavior was removed, is the one grandfathered key: accepted and ignored with a warning.)
-- Export-only keys (`output_dir`, `output_format`, `after_insert_hook`) are ignored when running `explain` or `schema`, so a single config file can be shared by every subcommand.
-- `explain_verbosity` sets the mongodb `explain` verbosity (`queryPlanner` | `executionStats` | `allPlansExecution`, default `queryPlanner`); the `EXWIW_MONGODB_EXPLAIN_VERBOSITY` env var overrides it. Ignored by the SQL adapters and by `export`. See [MongoDB support](docs/mongodb.md#exwiw-explain-verbosity).
-- `mongodb_query_timeout_ms` sets the global, server-enforced query timeout (mongodb only); the `--mongodb-query-timeout-ms` CLI flag overrides it. Ignored by the SQL adapters. See [MongoDB support](docs/mongodb.md).
+### Output format
 
-### Generator
+For PostgreSQL, `--output-format=copy` writes `COPY ... FROM stdin` instead of `INSERT`, which loads much faster. Import it with `psql -d app_dev -f dump/insert-001-shops.sql`.
 
-The config generator is provided as a Rake task.
+## Schema config
 
-```bash
-# generate table schema under exwiw/schema/
-bundle exec rake exwiw:schema:generate
-```
-
-The output directory is resolved in this order:
-
-1. the `EXWIW_SCHEMA_DIR_PATH` environment variable, if set;
-2. otherwise `schema_dir` from the config file (`exwiw.yml` / `exwiw.yaml` in the current directory), so the generator and the `exwiw` CLI share one location without repeating the path;
-3. otherwise the `exwiw/schema` default.
-
-```sh
-EXWIW_SCHEMA_DIR_PATH=custom_directory bundle exec rake exwiw:schema:generate
-```
-
-As with the CLI, a relative `schema_dir` in the config file is resolved relative to the config file's own directory.
-
-An application with more than one schema source — ActiveRecord models and Mongoid documents, say —
-should give each source its own directory (`EXWIW_SCHEMA_DIR_PATH`), because every task judges the
-whole directory against the one source it reads. Left sharing a directory, `tidy` / `check` see the
-other source's configs as belonging to tables and collections that no longer exist, and report or
-remove them.
-
-#### Safe mode (masking new columns by default)
-
-A migration that adds a column would otherwise leave `schema:generate` emitting it unmasked, so
-it starts being exported the moment the config is regenerated — before anyone has judged whether
-it holds personal data. So `schema:generate` runs in **safe mode by default**: every column the
-config does not have yet is emitted **masked** and flagged
-[`needs_mask_decision: true`](#needs_mask_decision).
-
-Columns already in the config keep whatever they say — the merge that preserves `replace_with` /
-`comment` / `ignore` preserves a resolved decision too — so in practice this marks exactly the
-columns a migration just added.
-
-```bash
-bundle exec rake exwiw:schema:generate           # safe mode
-EXWIW_NEW_COLUMNS=plain bundle exec rake exwiw:schema:generate   # opt out
-```
-
-Opting out is for the **first-time bootstrap** of a config, where every column of every table is
-new and safe mode would flag the whole thing at once. Use it nowhere else: a column committed
-under `plain` carries no flag, so nothing afterwards can tell it apart from one whose masking was
-decided.
-
-A column that has a **default of its own** is masked with that default: it is a value the column
-provably holds, and it is what the application treats as neutral, so masking a `default: true`
-flag does not quietly turn the feature off for every row in the dump. A default the database
-computes (`now()`) is not a constant and does not count, and neither does a JSON object — `{...}`
-in a mask is a column placeholder, so those fall back to `{}`. Otherwise the mask depends on the column
-type: `masked-{primary key}` for text (with `@example.com` appended when the column name mentions
-mail, so it stays a valid address), `0` for numbers, `false` for booleans, a fixed date/timestamp,
-and `{}` for JSON. Text always takes the template rather than its default, since the mask has to
-vary per row. Three kinds of
-column are flagged but deliberately **not** masked:
-
-- **The primary key, and the foreign keys/types the `belongs_tos` join on.** Masking them
-  would break the joins and leave the dump referencing rows that were never exported.
-- **Types no constant safely fits** — `uuid`, `binary`, enums, array columns (which report their
-  member type, so a scalar default would not fit), and text columns too short to hold the masked
-  value. An invalid default would fail the restore the dump feeds, which is worse than exporting
-  the column while the flag keeps the change from being merged.
-- **Columns covered by a unique index**, unless the mask varies per row (the text masks do, via
-  the primary key). A constant would collapse every row onto one value and break the restore with
-  a duplicate key.
-
-`schema:generate_mongoid` runs in safe mode too, on the same `EXWIW_NEW_COLUMNS=plain` opt-out. The
-masks come from the Mongoid field type (`String`, `Integer`, `Float`, `BigDecimal`,
-`Mongoid::Boolean`, `Date`, `Time` / `DateTime` / `ActiveSupport::TimeWithZone`); a field of any
-other type — `Hash`, `Array`, a typeless field, a BSON type — is flagged but not masked, as is a
-field covered by a unique index unless its mask varies per document. The structural fields are the
-`_id` primary key, the STI discriminator (`_type`) and every `belongs_to` foreign key of the
-collection: flagged, never masked. The foreign keys are read from the models, so the ones the
-config itself drops (a polymorphic `belongs_to`, a `belongs_to` on an embedded document) are
-covered too.
-
-#### Tidying stale config (`schema:tidy`)
-
-`schema:generate` adds and updates config files for the tables it finds, but it never deletes the config file of a table that has been dropped from the application. To reconcile the existing config against the current schema, run:
-
-```bash
-bundle exec rake exwiw:schema:tidy
-```
-
-`schema:tidy` compares the config files already on disk with the **live database** (read through the database connection, not the models) and removes only what no longer exists there:
-
-- a config file whose table has been dropped from the database is **deleted**, and
-- columns recorded in a surviving table's config that the table no longer has are **dropped** from that file.
-
-Because it reads the database directly, a table that still exists in the database but has lost (or never had) an ActiveRecord model is **kept** — only a table that is genuinely gone is removed. (This is the deliberate counterpart to `generate`, which is model-driven and only ever adds what the models know about.)
-
-It respects `EXWIW_SCHEMA_DIR_PATH` and the per-database subdirectory layout in the same way as `schema:generate`. Unlike `generate`, `tidy` never adds or regenerates entries — every surviving table/column (including hand-edited `comment` / `ignore` / `replace_with`) is left untouched, so it is safe to run on a customized config. The task prints which tables and columns it removed (or that the config was already tidy). Stale `belongs_tos` are not pruned by `tidy`; rerun `schema:generate` to refresh those.
-
-#### Checking the config against the schema
-
-`schema:check` reports how the committed config differs from what the application would
-generate now — without writing anything, so it can run on a working tree it must not modify:
-
-```bash
-bundle exec rake exwiw:schema:check
-```
-
-It regenerates into a throwaway copy of the config directory (safe mode + `tidy`) and prints
-the comparison as JSON, then exits non-zero when anything needs attention:
-
-```json
-{
-  "added_tables": [],
-  "added_columns": ["users.contact_email"],
-  "removed_tables": [],
-  "removed_columns": ["orders.legacy_flag"],
-  "changed_tables": ["orders", "users"],
-  "needs_mask_decision": ["orders.memo"],
-  "stale_tables": [],
-  "stale_columns": ["orders.legacy_flag"]
-}
-```
-
-`added_*` / `removed_*` / `changed_tables` mean the config no longer matches the schema — run
-`schema:generate` and `schema:tidy` to reconcile it. `needs_mask_decision` lists the columns
-whose masking nobody has decided on yet (see [the flag](#needs_mask_decision)). `stale_tables` /
-`stale_columns` are the subset of the removals an extraction would actually trip over — a
-non-ignored config still naming a table or column the schema no longer has, so the export's
-SELECT would fail; removals of `ignore: true` entries (and of a rails-managed table's columns,
-which are dumped as `SELECT *`) stay out of them. They drive the exit code only under
-[`--fail-on=stale`](#non-rails-applications-exwiw-schema----from-db). The exit code
-makes it usable as a CI check that keeps a schema change from being merged until both are
-resolved; the JSON is stable and sorted, so it can be posted as-is. In a multi-database app each
-entry is prefixed with its database (`primary/users.email`), so the same table name in two
-databases stays distinct.
-
-Set `EXWIW_SCHEMA_CHECK_OUTPUT=<path>` to have the same JSON written to a file, which spares a
-caller from assuming stdout carries nothing else (application boot is free to print).
-
-A Mongoid config directory has its own task, `schema:check_mongoid`, with the same output,
-the same `EXWIW_SCHEMA_CHECK_OUTPUT` file and the same exit code — it just regenerates through
-`MongoidSchemaGenerator` (safe mode + `tidy_mongoid`) instead. Collections and fields are
-reported under the same keys as tables and columns. An application that cannot be loaded to
-generate from its models at all can run the same check against its database instead: see
-[Non-Rails applications](#non-rails-applications-exwiw-schema----from-db).
-
-#### Multiple databases
-
-If the application uses Rails' multiple-database support (`connects_to`), `schema:generate` buckets models by the database they connect to and writes each database's config files into its own subdirectory of the output directory, named after the database config name (`primary`, `analytics`, ...):
-
-```
-exwiw/schema/
-  primary/
-    shops.json
-    users.json
-    schema_migrations.json
-  analytics/
-    analytics_events.json
-```
-
-Each database keeps its own Rails migration history, so a `schema_migrations` (and `ar_internal_metadata`) entry is emitted under every database that contains one — the example above shows `primary/schema_migrations.json` and would also produce `analytics/schema_migrations.json` when the analytics database has its own migration table. Single-database applications are unaffected and continue to write files flat into the output directory.
-
-A `belongs_to` whose target model lives in a *different* database (e.g. a `primary` model referencing an `analytics` one) cannot be joined: each database is exported on its own connection and into its own subdirectory, so the target table is absent from the directory this config is loaded with. `schema:generate` detects such a relation (by comparing the owning and target models' database config names) and emits it with `ignore: true` and `ignore_type: "cross_database"`, recording why in the `comment`; the relation is then dropped from extraction at load time, while the foreign-key column itself is still exported as a plain column. Polymorphic associations are handled per target, so only the targets that cross a database boundary are ignored. The task also prints a summary of every cross-database `belongs_to` it ignored. **To extract across such a boundary, declare `scope_column: "<foreign_key>"` on the owning table (see [scope-column mode](#scope-column-mode)) so its rows are filtered by the foreign-key value directly** — there is no join, so the cross-database boundary is not a problem there.
-
-**Limitations**
-
-- The rails-managed table *names* are resolved from the global `ActiveRecord::Base.schema_migrations_table_name` / `internal_metadata_table_name` accessors, which are shared across all connections. A per-database override of these names is not detected, so such a table will be missing from that database's generated configs.
-
-#### Mongoid applications
-
-For MongoDB applications backed by [Mongoid](https://www.mongodb.com/docs/mongoid/), a separate rake task introspects Mongoid document models and emits `MongodbCollectionConfig` files:
-
-```bash
-bundle exec rake exwiw:schema:generate_mongoid
-bundle exec rake exwiw:schema:tidy_mongoid   # delete the config of a collection no model stores into
-bundle exec rake exwiw:schema:check_mongoid  # report the difference without changing anything
-```
-
-What it derives from each model (fields, `belongs_tos`, `embedded_in`, STI handling), how to annotate constructs exwiw cannot represent with `ignore` / `ignore_type`, and the `EXWIW_SKIP_UNSUPPORTED=1` bootstrap flag are all documented in [MongoDB support](docs/mongodb.md#generating-config-from-mongoid-models).
-
-`tidy_mongoid` reconciles against the *models* rather than a live connection (MongoDB has no schema to read, and a collection exists only once something is written to it): a config file whose collection no model stores into any more is deleted, and nothing else is touched — fields already track the models through `generate_mongoid`. `check_mongoid` runs both into a throwaway copy, so it never writes to the working tree.
-
-#### Non-Rails applications (`exwiw schema ... --from-db`)
-
-The rake tasks above read the application's models, which requires loading the application — so
-they are only available where that is possible. For an application written in any other language
-(or a Ruby one exwiw cannot boot), the same three operations are available on the CLI, reading
-the **database** instead of the models:
-
-```bash
-# generate / refresh the config from the live schema
-exwiw schema generate --from-db -a postgresql -h db.example.com -p 5432 -u app --database=app --schema-dir=exwiw/schema
-
-# report how the committed config differs from the database (exits 1 when it needs work)
-exwiw schema check --from-db -a postgresql -h db.example.com -p 5432 -u app --database=app --schema-dir=exwiw/schema
-
-# remove tables/columns/relations the database no longer has
-exwiw schema tidy --from-db -a postgresql -h db.example.com -p 5432 -u app --database=app --schema-dir=exwiw/schema
-```
-
-- `--from-db` is **required**: the schema source is always stated explicitly rather than inferred.
-- mysql and postgresql only. sqlite is not supported, and a MongoDB schema lives in the
-  application rather than the database (use `schema:generate_mongoid`).
-- The usual connection flags and `DATABASE_PASSWORD` apply, and `adapter` / `schema_dir` may come
-  from [the config file](#config-file-exwiwyml) instead (`--schema-dir` wins). Unlike `export`,
-  an empty or absent `DATABASE_PASSWORD` is accepted, since these commands are commonly pointed
-  at a CI database that runs with trust authentication.
-- `generate` creates the schema directory if it does not exist; `check` and `tidy` require it.
-- Everything else behaves as the rake tasks do: [safe mode](#safe-mode-masking-new-columns-by-default)
-  is on unless `EXWIW_NEW_COLUMNS=plain`, `check` prints the same JSON report, honours
-  `EXWIW_SCHEMA_CHECK_OUTPUT`, and exits 1 when the config needs attention. A check that could
-  not *run* (an unreachable database, a malformed config) exits with a different status, so CI
-  can tell the two apart.
-- `check` also accepts `--fail-on=stale` for use as a pre-extraction gate: the exit code then
-  tracks only the report's `stale_tables` / `stale_columns` — a non-ignored config still naming
-  a table or column the schema no longer has, which is exactly the drift that would fail the
-  export's SELECT. Additions and unresolved `needs_mask_decision` flags stay visible in the
-  report but do not stop the run, so a schema migration that merely *adds* a column does not
-  block extraction. The default (`--fail-on=any`) is the CI behavior above, unchanged.
-  `--fail-on` is command-line only (not a config-file key — a gate flag belongs to the
-  invocation, not the committed config) and is meaningful only on `schema check`: the other
-  schema verbs reject it, and `export` ignores it like the other schema-only flags.
-- One run covers one database — the connection addresses one — so the files are written flat into
-  the schema directory. There is no per-database subdirectory layout here; a second database is a
-  second run against a second connection.
-
-The database is read through its catalog only: tables, columns and their types/defaults, primary
-keys, unique indexes and foreign keys. Views are skipped, since they hold no rows of their own,
-and a table with no primary key is emitted with `ignore: true` and a comment saying what to add
-to export it (exwiw identifies and joins rows by primary key). Following that advice sticks: a
-`primary_key` written by hand — on a table the database reports none for, or one column of a
-composite key that identifies a row on its own — is kept by later runs, which then treat the table
-as an ordinary one rather than re-imposing the signpost `type` / `comment`.
-
-**`belongs_tos` are only ever added, never rewritten.** A foreign-key constraint is weaker
-evidence than an application model: plenty of schemas express a relation only in application code,
-and a `belongs_to` is the path extraction follows to reach a table, so silently dropping one
-narrows the dump. Regeneration therefore keeps every relation the config already declares —
-in its existing order, with its `comment` / `ignore` / `ignore_type` — and appends only the
-foreign-key-backed relations that are not there yet. A hand-written relation's foreign-key column
-is treated as structural too, so safe mode never masks it. Removing a relation is `tidy`'s job:
-it drops a `belongs_to` whose target table no longer exists in the database (an `ignore: true`
-entry is kept, since it records a decision), alongside the tables and columns that are gone.
-
-So a relation the database does not know about is declared once, by hand, and survives from then
-on:
-
-```json
-{
-    "name": "orders",
-    "primary_key": "id",
-    "belongs_tos": [{
-        "table_name": "buyers",
-        "foreign_key": "buyer_id",
-        "comment": "enforced in the application; no foreign key in the database"
-    }]
-}
-```
-
-### Configuration
-
-This is an example of the one table schema:
+Each table has one JSON file:
 
 ```json
 {
     "name": "users",
     "primary_key": "id",
-    "filter": "users.id > 0",
-    "bulk_insert_chunk_size": 1000,
     "belongs_tos": [{
         "table_name": "companies",
         "foreign_key": "company_id"
@@ -665,97 +139,26 @@ This is an example of the one table schema:
 }
 ```
 
-`--schema-dir` will use all json files in the specified directory.
+`belongs_tos` decides which rows are exported (see [How each table is narrowed](#how-each-table-is-narrowed)), and each column can be masked (see [Masking](#masking)). The other table-level keys are:
 
-#### Unknown keys are rejected
+- `filter`: an SQL condition added to the table's query, such as `"access_logs.created_at > '2025-01-01'"`. It is added to every query that joins this table, so it also narrows the tables that depend on it, which can leave their foreign keys pointing at rows that were not exported. Qualify column names with the table name. A filter reduces the rows returned, not necessarily the rows read; see [Batched extraction](#batched-extraction-batch_scope) for that.
+- `bulk_insert_chunk_size`: the maximum rows per `INSERT` statement (10,000 by default), to stay under limits such as MySQL's `max_allowed_packet`.
+- `ignore`, `comment`: see below.
 
-Loading a table/collection config with a key that no declared attribute accepts is an **error** (`Exwiw::UnknownConfigKeyError`, an `ArgumentError` subclass) naming the key, the table/collection, the offending file, and the allowed keys. This also applies to the nested `belongs_tos` / `columns` / `fields` / `reverse_scope` / `embedded_in` / `replace_with_fake_data` entries. Previously such keys were silently dropped, which turned a typo (`reverse_scop`) — or a key another adapter supports but this one does not (e.g. `raw_sql` on a MongoDB field) — into a silent no-op: the config loaded, the dump ran, and the requested masking/scoping simply never happened.
+### Unknown keys are rejected
 
-For free-form annotations, use the `comment` key — it is a declared, documentation-only attribute on table/collection configs and on their `belongs_tos` / `columns` / `fields` entries, so it always passes (see [Ignore / annotate a column or `belongs_to`](#ignore--annotate-a-column-or-belongs_to)).
-
-### Output format
-
-By default, exwiw generates `INSERT` statements. For PostgreSQL, you can pass `--output-format=copy` to generate `COPY FROM stdin` format instead, which is significantly faster for bulk loading.
-
-The generated file uses tab-separated values with PostgreSQL's text-format escaping (`\N` for NULL, `\\` for backslash, etc.). Import with `psql`:
-
-```bash
-psql -d app_dev -f dump/insert-001-shops.sql
-```
-
-`--output-format=copy` is only supported with the `postgresql` adapter.
-
-### After-insert hook
-
-`--after-insert-hook=PATH` runs a post-processing hook **after** all per-table insert files have been written. The hook can be either a Ruby file (`.rb`) or any executable script (e.g. `.sh`).
-
-**Ruby hook (`.rb`)**: provides a tiny DSL with these builtins:
-
-- `cli_options` — Hash of all parsed CLI options (e.g. `cli_options.fetch(:ids)` returns the `--ids` array of the `default` ID space)
-- `ids_for(id_space = "default")` — the values the run was scoped by for that ID space (e.g. `ids_for("org")` for `--ids=org=...`)
-- `insert_sql(template)` — appends an ERB-rendered string to a buffer. After the hook finishes, the buffer is concatenated and written to `insert-{N+1}-after_insert.{ext}` where `{N+1}` is one past the last per-table insert file. For the MongoDB adapter the equivalent alias `insert_jsonl(template)` is available; output goes to `insert-{N+1}-after_insert.jsonl`. Multiple `insert_sql` calls in a single hook are joined with `"\n"` into the same file. If no `insert_sql` call is made, no file is created.
-- `insert_jsonl(collection, template)` — **MongoDB adapter only**. SQL statements name their table in-band, but JSONL documents do not — the import convention derives the target collection from the filename — so the two-argument form writes the ERB-rendered extended-JSON lines to the named collection's own `insert-NNN-<collection>.jsonl` file, importable with the same `mongoimport --collection <collection>` convention as the per-collection dump files. Multiple calls targeting the same collection are appended (joined with `"\n"`) into that collection's file; distinct collections get one file each, numbered sequentially after the last per-collection dump file (the collection-less `after_insert` buffer, when also used, keeps `{N+1}` and the collection files follow it). Calling this form with a SQL adapter raises an error.
-
-Example `hooks/seed_default_users.rb`:
-
-```ruby
-insert_sql <<~SQL
-  -- seed default users for tenants <%= cli_options.fetch(:ids).join(',') %>
-  <%- cli_options.fetch(:ids).each do |tenant_id| -%>
-  INSERT INTO users (tenant_id, email) VALUES (<%= tenant_id %>, 'default@example.com');
-  <%- end -%>
-SQL
-```
-
-MongoDB example seeding two collections (`insert-{N+1}-users.jsonl` and `insert-{N+2}-posts.jsonl`):
-
-```ruby
-insert_jsonl 'users', <<~JSONL
-  <%- cli_options.fetch(:ids).each do |shop_id| -%>
-  {"shop_id":{"$oid":"<%= shop_id %>"},"email":"default@example.com"}
-  <%- end -%>
-JSONL
-insert_jsonl 'posts', '{"title":"welcome"}'
-```
-
-**Shell hook**: anything other than `.rb` is exec'd as a child process. It is a pure side-effect hook — exwiw does not capture its stdout. The hook receives these env vars and inherits `DATABASE_PASSWORD` from the parent:
-
-- `EXWIW_OUTPUT_DIR`, `EXWIW_SCHEMA_DIR`
-- `EXWIW_DATABASE_ADAPTER`, `EXWIW_DATABASE_HOST`, `EXWIW_DATABASE_PORT`, `EXWIW_DATABASE_USER`, `EXWIW_DATABASE_NAME`
-- `EXWIW_TARGET_TABLE`, `EXWIW_IDS` (comma-separated, the `default` ID space), `EXWIW_OUTPUT_FORMAT`
-- `EXWIW_IDS_<ID_SPACE>` for each ID space given values, with the name uppercased (`--ids=org=...` becomes `EXWIW_IDS_ORG`). `EXWIW_IDS_DEFAULT` is set only when the `default` space is given, while `EXWIW_IDS` is always set
-
-A non-zero exit code from the shell hook aborts exwiw.
-
-Note: Ruby hooks are evaluated via `instance_eval` inside the exwiw process — only pass paths you trust.
+A config with a key exwiw does not know fails to load, with an error naming the key and the file. A typo such as `reverse_scop` would otherwise silently disable what it was meant to do. Use `comment` for notes.
 
 ### Ignore a table
 
-Set `"ignore": true` on a table's config JSON to exclude it from data extraction. The table's DDL is still emitted into `insert-000-schema.{sql,js}` so the schema stays consistent, but no `insert-*` files are generated for it and the table is never queried.
+`"ignore": true` on a table stops its data from being exported. Its `CREATE TABLE` is still written to `insert-000-schema.sql`.
 
-```json
-{
-  "name": "audit_logs",
-  "primary_key": "id",
-  "ignore": true,
-  "belongs_tos": [],
-  "columns": [{ "name": "id" }]
-}
-```
-
-Constraints:
-
-- If another non-ignored table has a `belongs_to` entry pointing at an ignored table, exwiw raises `ArgumentError` on load. Remove the `belongs_to` entry on the referencing table, or unset `ignore` on the referenced table.
-- Specifying an ignored table as `--target-table` raises `ArgumentError`.
-- `ignore: true` is preserved by `exwiw:schema:generate` regenerations (the receiver value wins over the auto-generated config).
-- On a MongoDB [embedded config](docs/mongodb.md#excluding-an-embedded-path-ignore-true), which is masked through its parent rather than dumped on its own, `ignore: true` excludes the embedded path from the parent's projection — the subdocument is left out of the dump entirely.
+- A table that has a `belongs_to` to an ignored table fails to load. Remove that `belongs_to`, or ignore it too.
+- An ignored table cannot be the `--target-table`.
 
 ### Ignore / annotate a column or `belongs_to`
 
-Individual `columns` (SQL) / `fields` (MongoDB) and `belongs_tos` entries accept two optional, **user-owned** keys:
-
-- `comment` — a free-form note. Purely informational; exwiw never reads it.
-- `ignore: true` — drops that entry from extraction. An ignored column/field is excluded from the `SELECT` and the generated `INSERT` (the column still exists in the target schema, since the DDL comes from the source database — exwiw just does not copy its data). An ignored `belongs_to` is removed from dependency ordering and query building, so the relation is not traversed.
+Entries in `columns` and `belongs_tos` accept `comment` (a note exwiw never reads) and `ignore: true`. An ignored column is left out of the `SELECT` and the `INSERT`, so the restored rows get the column's database default, or `NULL` if it has none. On a `NOT NULL` column without a default, the `INSERT` can fail. An ignored `belongs_to` is not followed.
 
 ```json
 {
@@ -763,7 +166,7 @@ Individual `columns` (SQL) / `fields` (MongoDB) and `belongs_tos` entries accept
   "primary_key": "id",
   "belongs_tos": [
     { "table_name": "companies", "foreign_key": "company_id" },
-    { "table_name": "audit_logs", "foreign_key": "log_id", "ignore": true, "comment": "huge table, not needed for this export" }
+    { "table_name": "audit_logs", "foreign_key": "log_id", "ignore": true, "comment": "not needed in development" }
   ],
   "columns": [
     { "name": "id" },
@@ -772,153 +175,70 @@ Individual `columns` (SQL) / `fields` (MongoDB) and `belongs_tos` entries accept
 }
 ```
 
-On a MongoDB [embedded config](docs/mongodb.md#embedded-documents) an ignored field cannot be left out of the query — the subdocuments arrive as part of whatever the parent collection fetched — so it is removed from each subdocument during masking instead. The result is the same: the field is absent from the dump. A MongoDB config marking its primary key `ignore: true` is rejected on load — the dump has to keep the identifier, or a restore would assign fresh ids and break every reference pointing at the documents.
+### Hand-edited keys survive regeneration
 
-The ignored entries are removed only at runtime, right after the config is loaded from file; the JSON on disk keeps them. Both `comment` and `ignore` are **preserved across `exwiw:schema:generate` / `exwiw:mongoid:schema:generate` regenerations** (the hand-edited value wins over the auto-generated config), just like `replace_with`. This applies to the MongoDB `MongodbCollectionConfig` (`fields` / `belongs_tos`) as well.
+Regenerating the config (see [Generating the schema config](#generating-the-schema-config)) keeps what you wrote by hand. A column already in the config is kept as it is, `comment` and `ignore` on a table or `belongs_to` are kept, and so are the keys the generators never write (`filter`, `bulk_insert_chunk_size`, `scope_column`, `id_space`, `scope_exempt`, `reverse_scope`, `batch_scope`).
 
-### `needs_mask_decision`
+## How each table is narrowed
 
-A column/field may also carry `needs_mask_decision: true`, marking a column whose masking
-nobody has decided on yet:
+Only the target table is filtered by `--ids` directly. exwiw narrows every other table to the rows related to the target, using the first of these rules that applies:
 
-```json
-{ "name": "contact_email", "replace_with": "masked-{id}@example.com", "needs_mask_decision": true }
-```
+| # | Rule | When it applies | Result |
+|---|------|-----------------|--------|
+| 1 | Direct filter | The table is the `--target-table`, or declares a `scope_column` in [scope-column mode](#scope-column-mode) | `WHERE pk IN (ids)` or `WHERE scope_column IN (ids)` |
+| 2 | `belongs_to` path | Following `belongs_to` reaches a table of rule 1 | Joined along the shortest path |
+| 3 | Referenced by one table | No path, but exactly one narrowed table has a foreign key to it | Only the rows that table points at |
+| 4 | [`reverse_scope`](#reverse-scope-for-multi-referencer-tables-reverse_scope) | Several narrowed tables point at it, and the config lists them | Only the rows the listed tables point at |
+| 5 | Narrowed parent | No path, but a `belongs_to` parent is narrowed by a rule above | Only the rows belonging to the parent's exported rows, over any number of hops |
+| 6 | Full dump | Nothing relates the table to the target | All rows, meant for master data. Scope-column mode stops with an error instead, unless the table has [`scope_exempt: true`](#scope_exempt-intentional-full-dump) |
 
-Extraction ignores the key entirely — what the column exports is whatever `replace_with` /
-`ignore` say. It exists so the decision can be tracked and required:
-[safe mode](#safe-mode-masking-new-columns-by-default) attaches it to every newly discovered
-column/field together with a default mask, and
-[`schema:check`](#checking-the-config-against-the-schema) — `schema:check_mongoid` for a Mongoid
-config — reports the ones that still carry it, so CI can keep a pull request red until each is
-resolved. Resolving it means removing the key — after keeping the mask (ideally recording why
-in `comment`), replacing it with a real masking rule, dropping `replace_with` to export the
-raw value, or setting `ignore: true`.
+- Rule 3 covers tables like `active_storage_blobs`, which nothing in the table itself links to the target. It applies only when the referencing `belongs_to` is not polymorphic.
+- Rule 5 applies only when exactly one parent is narrowed, and stops at a `belongs_to` cycle.
+- If a table matches both rule 3 and rule 5, rule 3 wins and the result can miss rows that rule 5 would have kept; set `ignore: true` on the referencing `belongs_to` to use rule 5.
+- Whichever rule narrows a table with a `belongs_to` to itself, the ancestors of its rows are added (see [Self-referencing `belongs_to`](#self-referencing-belongs_to-tree-tables)).
+- MongoDB follows the same rules, collecting the ids while it reads the parent collections instead of using SQL subqueries. It does not add ancestors.
 
-Like `comment` / `ignore`, the on-disk state wins over regeneration: once removed,
-`schema:generate` does not bring it back.
+When a rule picks the full dump because the relation was ambiguous, exwiw logs a warning. `exwiw explain` is the easiest way to see what each table resolved to. Rules 3 to 5 appear in it as a `JOIN` on a `SELECT DISTINCT` subquery; [`docs/scope-id-set-join-notes.md`](docs/scope-id-set-join-notes.md) explains why.
 
 ### Polymorphic `belongs_to`
 
-A Rails polymorphic association (`belongs_to :reviewable, polymorphic: true`) does not point at a single table — the target row is selected at runtime by a type column. exwiw models this as **one `belongs_to` entry per concrete target table**, each carrying two extra fields:
-
-- `foreign_type` — the type column on *this* table (e.g. `reviewable_type`).
-- `type_value` — the value stored in that column for this target (e.g. `"Product"`), i.e. the target model's `polymorphic_name`.
+A polymorphic association (`belongs_to :reviewable, polymorphic: true`) is written as one `belongs_to` per target table, each with the type column (`foreign_type`) and the value it holds for that target (`type_value`):
 
 ```json
 {
   "name": "reviews",
   "primary_key": "id",
   "belongs_tos": [
-    {
-      "table_name": "products",
-      "foreign_key": "reviewable_id",
-      "foreign_type": "reviewable_type",
-      "type_value": "Product"
-    },
-    {
-      "table_name": "shops",
-      "foreign_key": "reviewable_id",
-      "foreign_type": "reviewable_type",
-      "type_value": "Shop"
-    }
+    { "table_name": "products", "foreign_key": "reviewable_id", "foreign_type": "reviewable_type", "type_value": "Product" },
+    { "table_name": "shops", "foreign_key": "reviewable_id", "foreign_type": "reviewable_type", "type_value": "Shop" }
   ],
   "columns": [{ "name": "id" }, { "name": "reviewable_type" }, { "name": "reviewable_id" }]
 }
 ```
 
-`exwiw:schema:generate` expands a polymorphic `belongs_to` automatically: it finds every model that registers the association as a target via `has_many` / `has_one ..., as: :reviewable` and emits one entry per target table (ordered by table name so the output is stable across Ruby versions). A plain (non-polymorphic) `belongs_to` simply omits `foreign_type` / `type_value`.
+`exwiw:schema:generate` writes these entries from the models' `has_many ..., as:` declarations. A non-polymorphic `belongs_to` leaves out `foreign_type` and `type_value`.
 
-At dump time, when a polymorphic `belongs_to` lies on the path to the dump target, exwiw constrains **both** the foreign key and the type column, so only rows of the matching type are extracted. For example, dumping `products` pulls only reviews whose `reviewable_type = 'Product'`:
-
-```sql
-SELECT reviews.* FROM reviews
-WHERE reviews.reviewable_id IN (/* products subquery */)
-  AND reviews.reviewable_type = 'Product'
-```
-
-The same type filter is applied on the join path when the polymorphic table is an intermediate hop rather than the directly-dumped table.
+Following such a `belongs_to` also checks the type column, so dumping `products` exports only the reviews with `reviewable_type = 'Product'`.
 
 #### Every arm is extracted
 
-A polymorphic `belongs_to` is several `belongs_to` entries — one per concrete target — that a row selects between via its type column. A single JOIN can only follow **one** of them, so a join table reached through such a hop would come out holding only the rows of that one `type_value`. exwiw therefore resolves **every** arm of the group and constrains the table to the union of the ids the arms keep. In [scope-column mode](#scope-column-mode):
+When a table's path to the target goes through a polymorphic `belongs_to`, exwiw follows every entry with the same `foreign_type` and exports the union of their rows. Dumping `shops` exports the shop's own reviews and the reviews of its products.
 
-```sql
-SELECT comments.* FROM comments
-JOIN (
-  SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id
-  FROM (
-    SELECT comments.id FROM comments
-      JOIN posts ON comments.commentable_id = posts.id AND comments.commentable_type = 'Post'
-      JOIN shops ON posts.shop_id = shops.id AND shops.tenant_id = 't1'
-    UNION
-    SELECT comments.id FROM comments
-      JOIN pages ON comments.commentable_id = pages.id AND comments.commentable_type = 'Page'
-      JOIN shops ON pages.shop_id = shops.id AND shops.tenant_id = 't1'
-  ) AS exwiw_scope_src_0
-) AS exwiw_scope_ids_0
-  ON comments.id = exwiw_scope_ids_0.exwiw_scope_id
-```
-
-`UNION`, not `OR`, because each arm joins a *different* table: OR-ing them in one `WHERE` would need outer joins, whereas each arm is a self-contained query of exactly the shape a single-arm table already produces. It rides on the existing scope id-set machinery, so the id set is materialized once (see [Why a JOIN, not `IN (subquery)`](#why-a-join-not-in-subquery)) and, on mysql, into a session `TEMPORARY TABLE`.
-
-Notes:
-
-- **Only arms that reach the scope are included.** An arm whose target has no scope of its own is dropped, never widened — an unscoped arm would pull in every tenant's rows. An arm marked `"ignore": true` is dropped as usual, before any of this.
-- An arm's target does not need a `belongs_to` path to a scoped table: if it is scoped by other means (referenced-by, [`reverse_scope`](#reverse-scope-for-multi-referencer-tables-reverse_scope), or the parent cascade) the arm probes that query's ids instead, still pinned by the type column.
-- An arm whose target is scoped **through this same table** (e.g. `active_storage_blobs`, narrowed by referenced-by from `active_storage_attachments`, appearing as an `ActiveStorage::Blob` arm of those same attachments) is dropped: adopting it would make the two tables scope each other and leave the referenced table short of rows the join table kept — a dangling foreign key on import.
-- **Arms are grouped by the type column (`foreign_type`), not by the foreign key.** Rails keeps every arm's id in one `<name>_id` column, which is what the generators emit, but a hand-written config may give each arm its own foreign key while one type column still selects between them — e.g. `owner_type` choosing between `user_id` and `team_id`. Those are arms of the same discriminator, so each is resolved and joined on its own key. Two *independent* polymorphic associations on one table have distinct type columns and therefore stay in distinct groups.
-- **The route the walk picks decides whether the arms are unioned.** The route is the shortest one; in single-target mode a `belongs_to` pointing at the dump target itself is taken first. When the route leaves through a polymorphic arm, every arm of that type column is unioned. When it leaves through a non-polymorphic `belongs_to`, the table is joined along that route alone and the polymorphic arms are not unioned in, so a row reachable only through an arm is not extracted. A plain `belongs_to` is not preferred over a shorter polymorphic route. A single arm is emitted as a plain JOIN.
-- A table with no route of its own falls back to the parent cascade, which does prefer plain parents. A scopable plain parent is used when there is exactly one. Only when there is none are the polymorphic `belongs_to`s consulted: the arms of one type column that point at tables scoped by other means (referenced-by, `reverse_scope`, or the cascade) are unioned, each pinned by the type column. Multiple independent polymorphic associations that are all scopable are as ambiguous as multiple plain parents, so the table is left unscopable (dumped in full with a warning in single-target mode). A table scoped this way also counts as a constrained child in the [referenced-by](#how-each-table-is-narrowed--the-six-scoping-paths) detection of the tables it points at, so a parent that had a single constrained referencer may now have two and be narrowed by the next path instead.
-
-In single `--target-table` mode the same union is built. An arm that points at the dump target itself compares its foreign key with `--ids`, and the other arms join or probe their way to the target as above. One difference: an arm target that is constrained **only** by the automatic referenced-by detection does not count. Such a parent is extracted just to keep a child's foreign key valid; it does not own the rows that point at it. So dumping `products` still pulls only `reviewable_type = 'Product'` reviews, even though the product's shop is extracted too, while dumping `shops` pulls the shop's own reviews **and** the reviews of its products:
-
-```sql
-SELECT reviews.* FROM reviews
-JOIN (
-  SELECT DISTINCT exwiw_scope_src_0.id AS exwiw_scope_id
-  FROM (
-    SELECT reviews.id FROM reviews
-      JOIN products ON reviews.reviewable_id = products.id
-        AND products.shop_id = 1 AND reviews.reviewable_type = 'Product'
-    UNION
-    SELECT reviews.id FROM reviews
-    WHERE reviews.reviewable_id = 1 AND reviews.reviewable_type = 'Shop'
-  ) AS exwiw_scope_src_0
-) AS exwiw_scope_ids_0
-  ON reviews.id = exwiw_scope_ids_0.exwiw_scope_id
-```
-
-A declared [`reverse_scope`](#reverse-scope-for-multi-referencer-tables-reverse_scope) does count, since declaring it states that the referencers own the rows.
+- An entry whose target table is not narrowed is skipped, so a polymorphic `belongs_to` never widens the dump.
+- If the shortest path leaves through a non-polymorphic `belongs_to`, only that path is used.
+- In single-target mode, an entry is skipped when its table is narrowed only by rule 3. Those rows are exported to keep foreign keys valid, not because they own the rows that point at them. So dumping `products` still exports only the `Product` reviews, even though the product's shop is exported too. An entry whose table has a `reverse_scope` is followed.
 
 ### ActiveStorage (`has_one_attached` / `has_many_attached`)
 
-ActiveStorage is handled automatically — no ActiveStorage-specific configuration is required. The `has_one_attached` / `has_many_attached` macros don't add a column to the owning model; they generate ordinary associations that exwiw already understands:
+ActiveStorage needs no configuration:
 
-- **`active_storage_attachments`** is the polymorphic join row (`belongs_to :record, polymorphic: true` + `belongs_to :blob`). `exwiw:schema:generate` expands the polymorphic `record` into one `belongs_to` per model that declared `has_*_attached` (found via the generated `has_* ..., as: :record` reflections), exactly like any other [polymorphic `belongs_to`](#polymorphic-belongs_to). So only the attachments whose owner is among the dumped rows are extracted. Every owner type that reaches the scope is extracted (see [Every arm is extracted](#every-arm-is-extracted)); before that, only the single owner type the walk happened to settle on came out.
-- **`active_storage_blobs`** has no `belongs_to` of its own (attachments point *at* it), so it has no path to the dump target. exwiw narrows it via **reverse / "referenced_by" extraction**: a parent table referenced by exactly one constrained, non-polymorphic child is constrained to just the referenced ids instead of dumping every row. The id set is materialized once and joined back (see [Why a JOIN, not `IN (subquery)`](#why-a-join-not-in-subquery)):
-
-  ```sql
-  SELECT active_storage_blobs.* FROM active_storage_blobs
-  JOIN (
-    SELECT DISTINCT exwiw_scope_src_0.blob_id AS exwiw_scope_id
-    FROM (
-      SELECT active_storage_attachments.blob_id FROM active_storage_attachments
-      WHERE active_storage_attachments.record_id IN (/* owner subquery */)
-        AND active_storage_attachments.record_type = '...'
-    ) AS exwiw_scope_src_0
-  ) AS exwiw_scope_ids_0
-    ON active_storage_blobs.id = exwiw_scope_ids_0.exwiw_scope_id
-  ```
-
-  `active_storage_variant_records` also references blobs, but since it has no path of its own to the dump target it doesn't constrain anything and is ignored as a referencer — blobs stays narrowed to the attachment-referenced ids. (A parent referenced by *multiple* constrained children currently falls back to dumping all of its rows.)
-- **`active_storage_variant_records`** holds derivative variant-tracking rows that ActiveStorage regenerates lazily, and it too has no path to the dump target — left alone it would land in the "no relation → dump all" branch and, worse, its `blob_id` could point at blobs outside the narrowed set above (a foreign-key violation on import). `exwiw:schema:generate` therefore emits it with **`ignore: true`** (and drops it from the attachments `record` polymorphic expansion so nothing carries a dangling reference to it), so its data is skipped while the DDL is still written. Remove `ignore` from the generated config if you really need to export it.
+- `active_storage_attachments` is a polymorphic `belongs_to :record`, so only the attachments of exported records are exported.
+- `active_storage_blobs` is narrowed by rule 3 to the blobs those attachments point at.
+- `active_storage_variant_records` is generated with `ignore: true`, because ActiveStorage recreates its rows when needed and its `blob_id` could point at blobs that were not exported. Remove `ignore` if you need it.
 
 ### Reverse scope for multi-referencer tables (`reverse_scope`)
 
-The automatic reverse extraction above narrows a table referenced by **exactly one** constrained child. A table referenced by **two or more** constrained children falls back to dumping every row — fine for `active_storage_blobs`, but a problem for a **global-identity table** such as `users`: it carries no scope/tenant column and has no `belongs_to` of its own, yet dozens of scoped tables point *at* it. Dumping it (and everything that hangs off it) in full pulls in every tenant's identities.
-
-`reverse_scope` opts such a table into **multi-referencer** reverse scoping: you enumerate the referencers whose own (already scoped) extraction queries should be `UNION`'d into the id set the table is constrained to. It is a user-owned key (never emitted by `schema:generate`, preserved across regeneration like `scope_exempt`/`scope_column`):
+A table such as `users` often has no `belongs_to` toward the target, while many narrowed tables point at it. Rule 3 does not apply when there is more than one, so it would be dumped in full, with every tenant's users. `reverse_scope` lists the tables and columns that point at it, and the table is narrowed to the values those tables export:
 
 ```json
 {
@@ -928,144 +248,100 @@ The automatic reverse extraction above narrows a table referenced by **exactly o
     "via": [
       { "table": "customers", "column": "user_id" },
       { "table": "staff", "column": "user_id" },
-      { "table": "business_entity_customers", "column": "kantan_yoyaku_user_id" }
+      { "table": "members", "column": "legacy_user_id" }
     ]
   },
   "columns": [{ "name": "id" }, { "name": "name" }]
 }
 ```
 
-produces (each arm reuses that referencer's own scope, so a per-tenant run keeps only that tenant's ids; the `UNION` id set is materialized once and joined back — see [Why a JOIN, not `IN (subquery)`](#why-a-join-not-in-subquery)):
-
-```sql
-SELECT users.* FROM users
-JOIN (
-  SELECT DISTINCT exwiw_scope_src_0.user_id AS exwiw_scope_id
-  FROM (
-    SELECT customers.user_id FROM customers WHERE <customers' scope> AND customers.user_id IS NOT NULL
-    UNION
-    SELECT staff.user_id FROM staff WHERE <staff' scope> AND staff.user_id IS NOT NULL
-    UNION
-    SELECT business_entity_customers.kantan_yoyaku_user_id FROM business_entity_customers
-      WHERE <…' scope> AND business_entity_customers.kantan_yoyaku_user_id IS NOT NULL
-  ) AS exwiw_scope_src_0
-) AS exwiw_scope_ids_0
-  ON users.id = exwiw_scope_ids_0.exwiw_scope_id
-```
-
-Notes:
-
-- **`column` is explicit**, so a *non-default* foreign key (e.g. `kantan_yoyaku_user_id`, or `organization_admins.id` which itself references `users.id`) is honored, and even a column with no declared `belongs_to` edge can be enumerated.
-- **Only scoped referencers belong in `via`.** Each arm's query must come out constrained; an unconstrained referencer (e.g. a `scope_exempt` table, or one with no path to a scope) would project *every* id and union the whole table back — so such an arm is **skipped with a warning** rather than silently widening the dump. An unknown table is likewise skipped with a warning. If no arm survives, the table stays unscopable and (in [scope-column mode](#scope-column-mode)) the run aborts via `validate_scope!`.
-- **Declarations chain.** A referencer that is itself scoped only by its *own* `reverse_scope` counts as scoped: the arm nests that declaration's `UNION` inside its query, so a normalized side table referenced by a document-style hub that is in turn reverse-scoped through a join table resolves end to end (`attachments <- documents <- join rows <- the target`). A cycle of declarations is cut — the repeated table's arm comes out unconstrained and is dropped with the warning above. The chaining is deliberately limited to `reverse_scope` arms: the *automatic* single-referencer detection still treats a child scoped solely by its own declaration as unconstrained, so such a child never rescues (or, by widening the candidate set past one, costs) a parent that relies on the automatic detection — declare `reverse_scope` on the parent if you need that shape. Chains deeper than three declarations are flagged with a warning, since each level re-embeds its referencers' subqueries and the generated SQL grows exponentially with depth.
-- **NULLs are excluded** per arm (`IS NOT NULL`).
-- **`column` picks the key the union is matched against.** By default the arms' projected values are compared with this table's `primary_key`. When the referencers point at another key of the table — say `rate_cards` are looked up by a `code` that `contracts.rate_code` carries, not by `rate_cards.id` — set `"reverse_scope": { "column": "code", "via": [{ "table": "contracts", "column": "rate_code" }] }` and the clause becomes `ON rate_cards.code = …`. The column must be declared in `columns`.
-- **Satellites need no config.** A table that `belongs_to` the reverse-scoped table (e.g. `end_users.id → users.id`, or `identities.user_id → users.id`) tightens to the kept ids automatically through the normal cascade — only the reverse-scoped table itself declares `reverse_scope`. The cascade is **multi-hop**, so a table several `belongs_to` hops below the reverse-scoped table (e.g. `end_user_profiles → end_users → users`) also tightens automatically, with no config of its own.
-- Works in both single-target and scope-column mode. In single-target mode there is no scope-column pre-flight (`validate_scope!`), so a satellite the cascade cannot resolve to a single scopable parent (e.g. it `belongs_to` two scopable hubs) is dumped in full with a warning rather than aborting. Polymorphic foreign keys are not eligible as anchors (the named `column` is always a concrete column).
-- **The MongoDB adapter supports `reverse_scope` too** — same config shape and semantics, but the id set is captured at runtime instead of being emitted as a `UNION` subquery. See [`reverse_scope` on collections](docs/mongodb.md#reverse_scope-on-collections) under MongoDB support.
+- `column` is given explicitly, so a column with a non-standard name, or one without a `belongs_to`, works.
+- List only narrowed tables. A table in `via` that is not narrowed would add every value, so it is skipped with a warning.
+- A table in `via` may itself be narrowed by its own `reverse_scope`.
+- By default the values are matched against the primary key. Set `reverse_scope.column` to match another column, such as `{ "column": "code", "via": [{ "table": "contracts", "column": "rate_code" }] }`.
+- Tables that `belongs_to` the reverse-scoped table are narrowed by rule 5 and need no config.
 
 ### Self-referencing `belongs_to` (tree tables)
 
-A table whose `belongs_to` points at itself — `categories.parent_id → categories.id` — forms a tree. Narrowing it keeps only the rows some other table points at, so a kept row's parent would be missing from the dump. exwiw therefore keeps every **ancestor** of the kept rows as well, following the self-reference up to the root. Nothing needs to be configured; declaring the `belongs_to` is enough.
+When a table has a `belongs_to` to itself, such as `categories.parent_id`, narrowing it would drop the parents of the rows it keeps. exwiw also keeps every ancestor of those rows, up to the root. Declaring the `belongs_to` is enough.
 
-```sql
-… JOIN (SELECT DISTINCT src.id AS exwiw_scope_id FROM (
-  WITH RECURSIVE exwiw_ancestors (id, parent_id) AS (
-    SELECT categories.id, categories.parent_id FROM categories <the table's own scope>
-    UNION
-    SELECT categories.id, categories.parent_id FROM categories
-      JOIN exwiw_ancestors ON categories.id = exwiw_ancestors.parent_id
-  ) SELECT exwiw_ancestors.id FROM exwiw_ancestors
-) AS src) AS ids ON categories.id = ids.exwiw_scope_id
-```
+- Ancestors are kept regardless of the table's `filter` and scope, so foreign keys stay valid. If a tree spans tenants, the dump can include another tenant's ancestors.
+- Tables below the tree (`category_notes`) also keep the rows of the ancestors, and tables the tree points at keep what the ancestors point at. An ancestor with many rows hanging off it brings them all; set `ignore: true` on that `belongs_to` to leave them out.
+- The walk stops at a `NULL` or missing parent and at cycles in the data. Polymorphic self-references are not supported.
+- On MySQL this needs 8.0 or later, and a tree deeper than `cte_max_recursion_depth` (1000 by default) fails.
+- [Batched](#batched-extraction-batch_scope) tables do not get ancestors added; exwiw warns about this. MongoDB does not add ancestors either.
 
-- **Ancestors are not scoped.** They are added regardless of the table's `filter` and scope, so the kept rows' foreign keys stay valid; where a tree spans tenants, the dump includes the other tenant's ancestors.
-- **Tables around the tree follow the rows including the ancestors.** A table below the tree (e.g. `category_notes`) also keeps the ancestors' own rows, so a page listing an ancestor finds what hangs off it. A table whose route to the scope (or the dump target) passes through a tree table is therefore narrowed by that route's first table's extraction query rather than joined along the route, since a JOIN would apply the tree table's own conditions, which its ancestors are exempt from. A table the tree *points at* (e.g. an `icons` table reverse-scoped through `categories.icon_id`) includes the ancestors' references. Only the ancestors' direct rows are added — the tree is not walked back down — but an ancestor that a large cascaded table hangs off brings all of those rows along; set `ignore: true` on that `belongs_to` to keep them out.
-- Every self-referencing `belongs_to` is followed, through the column its `references` names (the primary key by default). A polymorphic one is not supported: following it would also need its type column checked at every step.
-- The walk stops at a `NULL` or missing parent and on cyclic data.
-- A table dumped in full is left as it is. A table extracted in [batches](#batched-extraction-batch_scope) keeps its JOIN route and adds no ancestors of its own, so it misses the rows of a tree table's ancestors; exwiw warns about this before extracting.
-- Requires `WITH RECURSIVE` (MySQL 8.0+). On MySQL a tree deeper than `cte_max_recursion_depth` (1000 by default) fails the query.
-- The MongoDB adapter does not add ancestors; it warns when it narrows a self-referencing collection.
+### Scope-column mode
 
-### Why a JOIN, not `IN (subquery)`
+Single-target mode assumes every table reaches one target table through `belongs_to`. In many multi-tenant schemas, tables instead each carry a tenant column (`tenant_id`) and are not all connected to one root. Picking one table as the target would dump the unrelated tables in full.
 
-Every scope id-set above — the multi-referencer `reverse_scope` `UNION`, the single-referencer reverse extraction, and the multi-hop forward cascade — is emitted as a `JOIN` to a `SELECT DISTINCT` derived table rather than `<col> IN (<subquery>)`:
-
-```sql
-… JOIN (SELECT DISTINCT src.<id> AS exwiw_scope_id FROM (<id-set subquery>) AS src) AS ids
-    ON <table>.<col> = ids.exwiw_scope_id
-```
-
-Both forms select the **same rows** — the `DISTINCT` dedups, so the join never fans out — but the query plans differ sharply on a large table. As `<col> IN (… UNION …)`, MySQL cannot turn a `UNION` subquery into a materialized semi-join and falls back to its IN-to-`EXISTS` rewrite: a **correlated `DEPENDENT SUBQUERY`** re-evaluated for every outer row, i.e. a full scan of the (potentially huge) outer table multiplied by the cost of the union. The derived-table form forces the engine to evaluate the id set **once** (the `DISTINCT` makes the derived table non-mergeable, hence materialized) and then probe the outer table by its primary key. On a global-identity table such as `users` this is the difference between a full table scan and an index lookup; the cascade nests the same way, so each level is materialized once instead of being re-evaluated by the level above.
-
-All three SQL adapters (mysql / postgresql / sqlite) emit this shape. PostgreSQL additionally reconciles a `uuid`/`varchar` type mismatch by casting the join key and the projected id to `text`, exactly as the old `IN` form did.
-
-### Rails-managed tables (special `type` values)
-
-Some tables are owned by Rails itself rather than the application — they have no ActiveRecord model and Rails reserves the right to evolve their column shape between versions (e.g. `schema_migrations`, `ar_internal_metadata`). exwiw treats them as a distinct category via the `type` field on a table config:
-
-- `type: "rails_managed_schema_migrations"` — Rails' migration history table (`ActiveRecord::Base.schema_migrations_table_name`).
-- `type: "rails_managed_internal_metadata"` — Rails' internal metadata table (`ActiveRecord::Base.internal_metadata_table_name`).
-
-`exwiw:schema:generate` emits these entries automatically when the corresponding tables exist on the connection — they are NOT pulled from `ActiveRecord::Base.descendants` because they have no model class.
-
-A rails-managed entry has a minimal shape (no `primary_key`, no `belongs_tos`, no `columns`):
+In scope-column mode, each table names the column that holds the tenant id, and `--ids` are values of that column:
 
 ```json
 {
-  "name": "schema_migrations",
-  "type": "rails_managed_schema_migrations",
-  "comment": "Managed internally by Rails. Tracks applied schema migrations."
+  "name": "shops",
+  "primary_key": "id",
+  "scope_column": "tenant_id",
+  "columns": [{ "name": "id" }, { "name": "name" }, { "name": "tenant_id" }]
 }
 ```
 
-Behavior at dump time:
+```bash
+exwiw \
+  --adapter=postgresql \
+  --host=localhost --port=5432 --user=reader \
+  --database=app_production \
+  --schema-dir=exwiw/schema \
+  --ids=42,43 \
+  --output-dir=dump
+```
 
-- Extraction uses `SELECT *` so the dump is robust against Rails-side column additions.
-- `INSERT` statements omit the column list (`INSERT INTO schema_migrations VALUES (...)`). For PostgreSQL `--output-format=copy`, the `COPY` header similarly omits the column list (`COPY schema_migrations FROM stdin;`).
+Here `42,43` are `tenant_id` values, not shop ids. Passing `--target-table=shops` gives the same result.
 
-Constraints:
+Tables without a `scope_column` are narrowed by the rules above. A table that none of them can narrow stops the run before anything is exported, and the error lists those tables. For each, declare a `scope_column`, add a `belongs_to`, set `ignore: true`, or set `scope_exempt: true`.
 
-- Defining `primary_key`, `columns`, or `belongs_tos` on a rails-managed entry is rejected with `ArgumentError` on load.
-- A rails-managed table cannot be used as `--target-table`.
-- In multi-database setups, the rails-managed entry is emitted under whichever database's connection actually contains the table (see [Multiple databases](#multiple-databases)). The table name itself is still derived from the global `ActiveRecord::Base.schema_migrations_table_name` / `internal_metadata_table_name` (prefix/suffix) accessors.
+Scope-column mode is for the SQL adapters only. Use `exwiw explain` to check the queries first.
 
-### Composite primary keys (unsupported)
+#### Cross-database foreign keys
 
-exwiw does not yet support tables with a composite primary key. When `exwiw:schema:generate` encounters a model whose `primary_key` is an array, it still emits a config entry so the table is not silently dropped, but marks it `ignore: true`, tags it `type: "unsupported_composite_primary_key"`, and records the key columns in a `comment`:
+A `belongs_to` to a table in another database cannot be joined, so `schema:generate` writes it with `ignore: true`. The foreign key column is still there, so declaring `scope_column: "<that foreign key>"` on the table narrows it without a join.
+
+#### `scope_exempt` (intentional full dump)
+
+A master table with no personal data and no relation to the tenant can be exported in full:
 
 ```json
-{
-  "name": "composite_pk_records",
-  "type": "unsupported_composite_primary_key",
-  "ignore": true,
-  "comment": "exwiw does not support composite primary keys (organization_id, location_id); data extraction is skipped.",
-  "belongs_tos": [],
-  "columns": [{ "name": "organization_id" }, { "name": "location_id" }, { "name": "name" }]
-}
+{ "name": "countries", "primary_key": "id", "scope_exempt": true, "columns": [{ "name": "id" }, { "name": "code" }] }
 ```
 
-Unlike rails-managed entries, `columns` and `belongs_tos` are retained so the entry is ready to wire up once composite-key support lands. The `type` is purely a marker — `ignore: true` is what actually excludes the table from extraction, so removing `ignore` (and supplying a workable `primary_key`) lets you opt the table back in manually.
+`schema_migrations` and `ar_internal_metadata` are exempt automatically.
 
-### Bulk insert chunk size
+#### Per-table `scope_column` and ID spaces
 
-`bulk_insert_chunk_size` splits the generated `INSERT` statement into multiple statements, each containing at most the specified number of rows. This is useful when the number of records per table is large enough to hit limits like MySQL's `max_allowed_packet`.
+Each table names its own column, so tables that store the tenant id under different names work together. When one database has two groups of tables keyed by different kinds of id, give one group an `id_space` and pass its values separately:
 
-If omitted, the adapter default applies: 10,000 rows per statement for the SQL adapters (1,000 documents per chunk for MongoDB). Tables at or below the chunk size still produce a single `INSERT` statement. To force a single statement regardless of table size, set a value larger than the table's row count.
+```json
+{ "name": "tenants", "primary_key": "id", "scope_column": "id", "columns": [{ "name": "id" }] }
+{ "name": "organizations", "primary_key": "id", "scope_column": "id", "id_space": "org", "columns": [{ "name": "id" }] }
+```
+
+```bash
+exwiw ... --ids=1,2 --ids=org=0b6f4c1e-0000-4000-8000-000000000001
+```
+
+- Tables without `id_space`, and `--ids` without a prefix, use the `default` ID space. Write `--ids=default=...` when an id itself contains `=`.
+- A table without a scope column uses the ID space of the table it is narrowed through.
+- The run stops before exporting when an ID space a table needs has no values, when values are given for an unused ID space, or when a table reaches tables of more than one ID space.
+- Single-target mode and MongoDB support only the `default` ID space.
+- In the config file, `ids:` takes a list, or a mapping such as `ids: { default: [1, 2], org: [...] }`.
+
+The older global `--scope-column=COLUMN` flag still works but is deprecated; declare `scope_column` per table instead.
 
 ### Batched extraction (`batch_scope`)
 
-A scoped table is normally extracted with one query, whose scope filter sits on the table it joins up to:
+A table with hundreds of millions of rows can be slow to export even when few of its rows are kept. Once the scope covers many parent rows, the database may decide that scanning the whole table is cheaper than using the foreign key index, and the query runs for hours or hits `statement_timeout`.
 
-```sql
-SELECT activities.* FROM activities
-  JOIN customers ON activities.customer_id = customers.id
-                AND customers.tenant_id IN ('t1')
-```
-
-That is index-driven while the scope keeps few `customers`. Past some number of them the planner's estimate of "probe the foreign-key index once per customer" exceeds its estimate of "scan the table once", and it switches to a **sequential scan of the whole table** — for a result set that is a small fraction of it. On a table of hundreds of millions of rows the scan then exceeds the server's `statement_timeout`, or simply runs for hours. Note that no `filter` on the extracted table fixes this: a predicate that reduces the *output* does not reduce the *work* once the plan is a scan (it may not even change the plan).
-
-`batch_scope` removes the choice instead of arguing with the estimate. It names the scoped table this one reaches — the **batch table** — and exwiw resolves that table's in-scope primary keys once, then extracts one `size`-sized slice of those ids at a time:
+`batch_scope` avoids this by exporting the table in batches. exwiw first fetches the ids of a narrowed table on the path (the batch table), then runs one query per `size` ids, with the ids written into the query:
 
 ```json
 {
@@ -1077,225 +353,222 @@ That is index-driven while the scope keeps few `customers`. Past some number of 
 }
 ```
 
-Each batch runs with that slice's ids in place of the scope filter:
-
 ```sql
 SELECT activities.* FROM activities
   JOIN customers ON activities.customer_id = customers.id
                 AND customers.id IN (/* 1000 ids */)
 ```
 
-An explicit id list of that size is exactly estimated and selective, so the foreign-key index is unambiguously the cheapest plan for every batch, and total work is proportional to the rows the table actually keeps rather than to the table's size.
+- The exported rows are the same as without batching. The batch table's ids are sorted, so the output is the same on every run.
+- `size` defaults to 1000.
+- The batch table can be several hops up the path.
+- A table with its own `scope_column` can name itself. This only helps when the scope column is indexed.
+- `batch_scope` requires scope-column mode, and a table narrowed by rule 1 or rule 2. Other cases are rejected before anything is written.
+- With `--output-format=copy`, all batches are held in memory at once. Use the default `INSERT` format for very large results.
+- `exwiw explain` also shows the query that fetches the batch table's ids.
 
-- **The dumped rows are the same as the unbatched query's** (in batch-by-batch order). The slices partition the id set — every id is in exactly one batch — so no row is dropped or emitted twice. The ids are sorted (in exwiw, not with `ORDER BY` — the id-set query stays cheap on the source DB) before slicing, so batch composition, and the dump, is reproducible run to run.
-- **`size` defaults to 1000** ids per batch.
-- The batch table's ids come from **its own extraction query**, so it is narrowed by exactly the filter it would carry in the unbatched query. They are held in memory for the extraction: one scope's worth of primary keys, orders of magnitude smaller than the table being batched.
-- The batch table may be **any number of hops up** the path — a table two hops below it (`activity_orders → activities → customers`) names `customers` too, and the batch ids are applied where the path meets the scope, bounding the whole join chain.
-- A table that **carries the scope column itself** batches by naming itself; each batch then filters `WHERE <pk> IN (<ids>)` directly. Note that the id-set query is then the same scope predicate over the same table, so this shape only avoids the scan when the scope column is indexed (ideally index-only) — the join shape above is the one that genuinely removes the planner's choice.
-- `bulk_insert_chunk_size` is independent: batches are query boundaries, chunks are `INSERT` statement boundaries.
-- A batched table does not keep the ancestors of a [self-referencing `belongs_to`](#self-referencing-belongs_to-tree-tables), its own (every batch would repeat them) or those of a tree table on its join path (the batches slice that join); exwiw warns about either before extracting.
-- With `--output-format=copy`, batching bounds each query's cost but not memory: COPY builds the whole table's body in memory, so all batches' rows are resident at once. Use the default INSERT format (which streams) when the kept rows themselves are huge.
+## Masking
 
-**Supported shapes.** A batch key only splits an extraction correctly when *every* row the table keeps is selected through the batch table's scope filter — otherwise a route the batch key does not constrain would keep the same rows in every batch, and the dump would repeat them (a primary-key conflict on import). So `batch_scope` requires [scope-column mode](#scope-column-mode) and one of:
+Each column can be masked with one of the following keys.
 
-- the table is **directly scoped** (`scope_column`) and names itself, or
-- the table reaches the scope through a **single `belongs_to` join path** (path 2 in [the six scoping paths](#how-each-table-is-narrowed--the-six-scoping-paths)) whose scoped terminus is the named table.
+### `replace_with`
 
-Every other shape — polymorphic arm `UNION`s, `reverse_scope`, referenced-by, the parent cascade, `scope_exempt` (on the batched table *or* the batch table, whose id set would then not be scoped), and single `--target-table` mode — is **rejected with an explanation** rather than silently mis-sliced, before any output is written. (In single-target mode the extraction is already anchored on a caller-supplied id list, so batching it means running exwiw once per slice of `--ids`.)
+Replaces the value with a string. `{column}` is replaced with that column's value, so for a row with `id` 1, `"user{id}@example.com"` becomes `user1@example.com`. `{}` is kept as is, so `"replace_with": "{}"` gives an empty JSON object.
 
-`exwiw explain` prints the id-set query and its `EXPLAIN` after a batched table's own query, since that query is the part of a batched export the table's query does not show. It cannot show a batch's literal id list — `explain` resolves no ids, because it executes no extraction SELECT.
-
-Like `scope_column` / `scope_exempt` / `reverse_scope`, `batch_scope` is user-maintained: never emitted by `schema:generate`, and preserved across regeneration.
-
-### Filter
-
-Some case, you don't need full records related to target. e.g. dump user access logs only for the last year.
-`filter` is here for that. Be careful to use this option, as it will be:
-
-- injected as it is in table condition(e.g. WHERE on mysql), so you are recommended to clearify table name of column to avoid ambiguity.
-- injected to every where / join clause, so it affects to all tables depends on filterted target-table. it results to data inconsistency.
-- a way to reduce the rows returned, which is **not** necessarily a way to reduce the work: on a large table the engine may keep (or switch to) a full scan and evaluate the filter per row. See [batched extraction](#batched-extraction-batch_scope) when the goal is to bound how much of the table is read.
-
-### Masking
-
-`exwiw` provides several options for masking value.
-
-#### `replace_with`
-
-It will replace the value with the specified string,
-and you can use the column name with `{}` to replace the value with the column value.
-
-For example, Let assume we have the record which id is 1,
-then "user{id}@example.com" will be replaced with "user1@example.com".
-
-`replace_with` **preserves NULL**: a source value that is `NULL` (or, for MongoDB, an
-absent field) is left as-is instead of being replaced by the masked literal, so the
-"not set" signal survives into the dump. Only true `NULL`/absent is preserved — an empty
-string is a real value and is still masked. Because of this you do not need to hand-write a
-`raw_sql` `CASE WHEN ... IS NOT NULL ...` to keep NULLs.
-
-A **non-String** value (number or boolean) is used verbatim instead of being rendered as a
-template, so a column that is not text keeps its type:
+A number or boolean is used as it is, so non-text columns keep their type:
 
 ```jsonc
-{ "name": "score",  "replace_with": 0 }      // integer column -> SELECT emits the literal 0
-{ "name": "active", "replace_with": false }  // boolean column
-{ "name": "email",  "replace_with": "masked-{id}@example.com" }  // template, as above
+{ "name": "score",  "replace_with": 0 }
+{ "name": "active", "replace_with": false }
 ```
 
-The SQL adapters emit it as a typed literal (not concatenated into text) and the MongoDB
-adapter assigns it as-is, so the field keeps its BSON type. NULL preservation applies to both
-forms.
+`NULL` stays `NULL` (an empty string is still replaced).
 
-In the String form, a `{...}` placeholder must name a column: an empty brace pair (`{}`) names
-nothing, so it is emitted literally — which is what makes `"replace_with": "{}"` a usable
-empty-JSON mask, on every adapter.
+### `raw_sql`
 
-#### `raw_sql`
+An SQL expression used in place of the column, such as `"CONCAT('user', shops.id, '@example.com')"`. Use it when a database function is needed. Qualify column names with the table name. `replace_with` is ignored when both are set. SQL adapters only.
 
-It will used instead of the original value.
+### `map`
 
-For example, `"raw_sql": "CONCAT('user', shops.id, '@example.com')"` is equivalent to
-`"replace_with": "user{id}@example.com"`.
-This is useful when you want to transform with functions provided by the database.
-
-Notice that you are recommended to clearify table name of column to avoid ambiguity.
-
-If it used with `replace_with`, `replace_with` will be ignored.
-
-#### `map`
-
-The value is evaluated as Ruby code once (per table, at dump time), must yield a
-`Proc`, and the proc is called for every fetched row. Its return value replaces
-the column value in the dump:
+Ruby code that returns a `Proc`. The proc is called with each row, and its return value (a `String`, a number or `nil`) replaces the column:
 
 ```jsonc
 { "name": "email", "map": "proc { |r| 'user' + r['id'].to_s + '@example.com' }" }
 ```
 
-which is equivalent to `"replace_with": "user{id}@example.com"`.
+- `r['column']` reads any column of the row, after the database-side masking of other columns.
+- `NULL` is not kept automatically; the proc receives `nil` and decides.
+- It runs in the exwiw process, so `explain` does not show it. SQL adapters only.
+- Because the config runs arbitrary Ruby, only load configs you trust.
 
-- `r['column_name']` reads any column of the current row — the value as fetched
-  from the database (i.e. after SQL-side masking such as another column's
-  `replace_with`, before Ruby-side transforms). `r` is only valid inside the
-  call; do not retain it.
-- Return a `String`, `Numeric`, or `nil`. Unlike `replace_with` there is **no
-  automatic NULL preservation** — the proc receives `nil` and decides.
-- `map` is exclusive with the other masking keys on the same column
-  (`raw_sql` / `replace_with` / `replace_with_fake_data`).
-- SQL adapters only. On the MongoDB adapter the key is rejected on load, like
-  `raw_sql` (see [Unknown keys are rejected](#unknown-keys-are-rejected)).
-  Because the transform runs in the exwiw process, it is invisible to
-  `explain`.
+Prefer `replace_with` or `raw_sql` when they can do the job.
 
-**Security note**: `map` executes arbitrary Ruby from the schema config. Treat
-config files with the same trust as your Gemfile — only load trusted configs.
+### `replace_with_fake_data`
 
-This is the most powerful option, but it runs per row in the exwiw process
-rather than in the database. The measured dispatch cost is small, though
-(~0.6–0.8µs/row plus whatever the proc body does — see
-[`docs/row-transform-masking-notes.md`](docs/row-transform-masking-notes.md)).
-Prefer `replace_with`/`raw_sql` when they can express the transform; reach for
-`map` when they cannot.
-
-#### `replace_with_fake_data`
-
-Replaces the value with realistic-looking fake data generated by the
-[faker](https://github.com/faker-ruby/faker) gem, picked **deterministically**
-from the value of a seed column — the same seed value always maps to the same
-fake value, across tables, runs, and adapters:
+Replaces the value with realistic fake data from the [faker](https://github.com/faker-ruby/faker) gem. The value is chosen from a seed column, so the same seed always gives the same value, across tables, runs and adapters:
 
 ```jsonc
+{ "name": "name", "replace_with_fake_data": { "seed": "users.id", "type": "human_name", "locale": "ja" } }
+```
+
+| type | example (en) | example (`locale: ja`) |
+|------|--------------|------------------------|
+| `human_name` | `Adrianna Kilback` | `山田 太郎` |
+| `first_name` | `Adrianna` | `太郎` |
+| `last_name` | `Kilback` | `山田` |
+| `human_name_kana` | (ja only) | `ヤマダ タロウ` |
+| `first_name_kana` | (ja only) | `タロウ` |
+| `last_name_kana` | (ja only) | `ヤマダ` |
+| `phone_number` | `(555) 123-4567` | |
+| `address` | `282 Kevin Brook, Imogeneborough, CA 58517` | |
+| `company_name` | `Hirthe-Ritchie` | |
+| `email` | `cliff.fay.9d6b804eff5a3f57@example.com` | |
+| `username` | `cliff.fay_9d6b804eff5a3f57` | |
+
+- `seed` is a column of the same table, with or without the table name. Use a stable id such as the primary key.
+- For one seed, the name types describe the same person: `human_name` is `last_name` + `first_name`, and the kana matches the kanji.
+- Different seeds can get the same name. `email` and `username` include a token from the seed, so they stay unique.
+- Values change when `locale`, the faker version, or exwiw's bundled Japanese name list changes.
+- `NULL` stays `NULL`.
+- Add `gem "faker"` to your Gemfile. A config that uses only `ja` name types does not need it.
+- It runs in the exwiw process, so `explain` does not show it. The cost is small; see [`docs/row-transform-masking-notes.md`](docs/row-transform-masking-notes.md).
+
+Only one masking key can be set on a column.
+
+## Generating the schema config
+
+In a Rails application, a rake task writes the schema config from the models:
+
+```bash
+bundle exec rake exwiw:schema:generate
+```
+
+The files go to `EXWIW_SCHEMA_DIR_PATH` if set, otherwise `schema_dir` from `exwiw.yml`, otherwise `exwiw/schema`. If the application has more than one source of models, such as ActiveRecord and Mongoid, give each its own directory; `check` and `tidy` treat files they do not recognize as stale.
+
+### Safe mode (masking new columns by default)
+
+A new column could hold personal data, so `schema:generate` writes every column that is not yet in the config as masked, and marks it with [`needs_mask_decision: true`](#needs_mask_decision). Columns already in the config are left as they are.
+
+The mask is the column's default value if it has a constant one, otherwise a value by type: `masked-{primary key}` for text (with `@example.com` when the name mentions mail), `0`, `false`, a fixed date, or `{}` for JSON. Some columns are marked but left unmasked, because masking them would break the dump or the restore:
+
+- the primary key and the columns `belongs_to` joins on
+- types no constant fits, such as `uuid`, binary, enums, arrays, and text too short for the mask
+- columns under a unique index, unless the mask differs per row
+
+For the first config of an application, where every column is new, run with `EXWIW_NEW_COLUMNS=plain` to turn safe mode off. Do not use it afterwards: those columns get no mark, so nothing tells them apart from reviewed ones.
+
+### `needs_mask_decision`
+
+`needs_mask_decision: true` marks a column whose masking nobody has decided yet. Export ignores it. [`schema:check`](#checking-the-config-against-the-schema) reports these columns, so CI can block a pull request until each is decided. To decide, keep the mask (ideally with a `comment` saying why), change it, remove `replace_with` to export the real value, or set `ignore: true`, and then remove the key.
+
+### Tidying stale config (`schema:tidy`)
+
+`schema:generate` never deletes anything. `schema:tidy` removes the config files of tables that no longer exist in the database, and the columns those tables no longer have. It reads the database, not the models, so a table without a model is kept. It does not touch anything else, and does not remove stale `belongs_tos`; run `schema:generate` for those.
+
+```bash
+bundle exec rake exwiw:schema:tidy
+```
+
+### Checking the config against the schema
+
+`schema:check` reports how the config differs from what `generate` and `tidy` would produce, without writing anything. It exits non-zero when something needs attention, so it can run in CI:
+
+```bash
+bundle exec rake exwiw:schema:check
+```
+
+```json
 {
-  "name": "name",
-  "replace_with_fake_data": { "seed": "users.id", "type": "human_name" }
+  "added_tables": [],
+  "added_columns": ["users.contact_email"],
+  "removed_tables": [],
+  "removed_columns": ["orders.legacy_flag"],
+  "changed_tables": ["orders", "users"],
+  "needs_mask_decision": ["orders.memo"],
+  "stale_tables": [],
+  "stale_columns": ["orders.legacy_flag"]
 }
 ```
 
-- `seed` names a column of the same table, bare (`"id"`) or table-qualified
-  (`"users.id"`). The seed value is hashed (SHA-256, after `to_s`
-  normalization, so sqlite's integer `123` and postgres/mysql's string `"123"`
-  agree) and the hash picks the fake value. Use a stable identifier (integer or
-  string primary key) as the seed; float/decimal/binary columns are discouraged
-  because their text forms differ per adapter. A `NULL` seed value hashes `""`
-  (still deterministic).
-- Like `replace_with`, it **preserves NULL** in the target column.
-- `locale` (optional) sets the locale used to build the candidate values, e.g.
-  `{ "seed": "id", "type": "human_name", "locale": "ja" }` produces Japanese
-  names.
-- Supported `type`s:
+- `added_*`, `removed_*` and `changed_tables`: run `schema:generate` and `schema:tidy`.
+- `needs_mask_decision`: columns still waiting for a decision.
+- `stale_*`: removed tables and columns that the config still exports, which would make the export fail. Used by `--fail-on=stale` (see [below](#non-rails-applications-exwiw-schema----from-db)).
 
-  | type | example output (en) | example output (`locale: ja`) |
-  |------|----------------|----------------|
-  | `human_name` | `Adrianna Kilback` | `山田 太郎` |
-  | `first_name` | `Adrianna` | `太郎` |
-  | `last_name` | `Kilback` | `山田` |
-  | `human_name_kana` | — (ja only) | `ヤマダ タロウ` |
-  | `first_name_kana` | — (ja only) | `タロウ` |
-  | `last_name_kana` | — (ja only) | `ヤマダ` |
-  | `phone_number` | `(555) 123-4567` | |
-  | `address` | `282 Kevin Brook, Imogeneborough, CA 58517` | |
-  | `company_name` | `Hirthe-Ritchie` | |
-  | `email` | `cliff.fay.9d6b804eff5a3f57@example.com` | |
-  | `username` | `cliff.fay_9d6b804eff5a3f57` | |
+With multiple databases each entry starts with the database name (`primary/users.email`). Set `EXWIW_SCHEMA_CHECK_OUTPUT=<path>` to also write the JSON to a file.
 
-- **Coherent identity across the name family.** The person-family types
-  (`human_name`, `first_name`, `last_name` and their `*_kana` counterparts) all
-  draw from a single shared pool of people per locale, keyed by the same seed —
-  so for one seed value the last name, first name, full name, and every kana
-  reading belong to the **same person**: `human_name` always equals
-  `last_name` + `first_name`, and `human_name_kana` matches `human_name`. Full
-  names are ordered per locale (`姓 名` for `ja`, `First Last` otherwise).
-- **Kana (`*_kana`) types require `locale: ja`.** faker's `ja` locale ships
-  kanji names with no reading, so exwiw bundles its own paired (kanji, katakana)
-  dataset for `ja`; this is what lets a fake person carry a kana reading that
-  actually matches its kanji. Requesting a `*_kana` type with any other locale
-  raises a clear error at build time.
-- Values are drawn from a pre-generated pool per (type, locale), so distinct
-  seeds can share a fake value. The name family uses one shared **person** pool
-  of 20,000 identities — for `ja` these are 20,000 *distinct* people enumerated
-  from the bundled (kanji, kana) dataset (142 surnames × 142 given names); the
-  other types use an independent 10,000-candidate pool. The
-  uniqueness-sensitive types (`email`, `username`) additionally embed a 64-bit
-  hex token derived from the seed hash, so they stay collision-free under a
-  unique index even at millions of rows (collision probability at 5M distinct
-  seeds ≈ 7e-7) and always use the `example.com` domain.
-- **Determinism caveat**: values are stable for a given locale plus the version
-  of the value source — the faker gem for the non-`ja` name family and the
-  independent types, and exwiw's bundled dataset for the `ja` name family.
-  Upgrading that source (or changing `locale`) regenerates the pool and maps
-  seeds to different values. The seed→value mapping itself never changes within
-  one version.
-- The faker gem is **not** a runtime dependency of exwiw — add `gem "faker"` to
-  your Gemfile to use this mode (exwiw raises a clear error otherwise). A config
-  that uses **only** `ja` person types needs no faker (that pool is built
-  entirely from the bundled dataset); faker is required for every other type
-  and locale.
-- Exclusive with the other masking keys on the same column, and invisible to
-  `explain`. Also supported by the MongoDB adapter on a `MongodbField` (seed
-  names a field of the collection, or `_id`), where it is applied document-side
-  after `replace_with` — see [MongoDB support](docs/mongodb.md#masking).
+### Multiple databases
 
-**Performance**: this is a per-row Ruby transform, measured at ~1.5–1.6µs/row
-per fake column (so ≈ +8s per 5M rows per column; ~+40% against a local sqlite
-fetch — the worst case — and proportionally less against a network database,
-where the fetch dominates). Values are drawn from a pool pre-generated once,
-not by calling faker per row (which would be ~20× slower). Memory is
-unaffected: the transform streams with the dump. See
-[`docs/row-transform-masking-notes.md`](docs/row-transform-masking-notes.md)
-for the benchmark, and `script/bench_row_transform.rb` to measure on your data.
+With Rails' multiple databases, `schema:generate` writes each database's files into a subdirectory named after it (`exwiw/schema/primary/`, `exwiw/schema/analytics/`). Each database is exported by a separate run.
 
-### MongoDB
+A `belongs_to` to a model in another database is written with `ignore: true` and `ignore_type: "cross_database"`; see [Cross-database foreign keys](#cross-database-foreign-keys).
 
-exwiw can export MongoDB databases too (`--adapter=mongodb`): JSONL output importable with `mongoimport`, schema/index DDL for `mongosh`, masking inside embedded documents, `reverse_scope` on collections, Mongoid-based config generation, a server-enforced query timeout, and parallel dump workers. Everything MongoDB-specific is documented in [docs/mongodb.md](docs/mongodb.md).
+### Rails-managed tables and composite primary keys
 
-## How it works
+`schema_migrations` and `ar_internal_metadata` get a config with a `type` such as `rails_managed_schema_migrations` and no columns. They are exported with `SELECT *` and `INSERT` without a column list, so new Rails versions do not break them. They cannot be the `--target-table`.
 
-- Load the table information from the specified config file.
-- Calculate the dependency between tables.
-- Generate the full list of INSERT sql based on the specified conditions.
-  - If the processing table has no relation with target tables, then dump all records.
-  - If the processing table has relation with target tables, then dump the records which are related to the target tables.
+Composite primary keys are not supported. Such a table is generated with `ignore: true` and `type: "unsupported_composite_primary_key"`.
+
+### Mongoid applications
+
+```bash
+bundle exec rake exwiw:schema:generate_mongoid
+bundle exec rake exwiw:schema:tidy_mongoid
+bundle exec rake exwiw:schema:check_mongoid
+```
+
+These work like the ActiveRecord tasks. See [Generating config from Mongoid models](docs/mongodb.md#generating-config-from-mongoid-models).
+
+### Non-Rails applications (`exwiw schema ... --from-db`)
+
+For applications exwiw cannot load, the same three operations read the database instead of the models:
+
+```bash
+exwiw schema generate --from-db -a postgresql -h db.example.com -p 5432 -u app --database=app --schema-dir=exwiw/schema
+exwiw schema check    --from-db -a postgresql -h db.example.com -p 5432 -u app --database=app --schema-dir=exwiw/schema
+exwiw schema tidy     --from-db -a postgresql -h db.example.com -p 5432 -u app --database=app --schema-dir=exwiw/schema
+```
+
+- MySQL and PostgreSQL only.
+- `DATABASE_PASSWORD` may be empty, for CI databases without a password.
+- Safe mode and the `check` report work as above. `check` exits 1 when the config needs attention, and with another status when it could not run.
+- `check --fail-on=stale` fails only on `stale_*`, so it can run before an export without blocking on newly added columns.
+- One run covers one database, and the files are written directly into the schema directory.
+
+Foreign keys in the database become `belongs_tos`. A table without a primary key is generated with `ignore: true` and a comment; once you add a `primary_key` by hand, it is kept.
+
+Regeneration only adds `belongs_tos`, because many relations exist only in application code. Add those by hand; they are kept from then on, and their foreign key columns are never masked. `tidy` removes a `belongs_to` whose table no longer exists.
+
+## After-insert hook
+
+`--after-insert-hook=PATH` runs a script after all data files are written, to add rows of your own.
+
+A Ruby hook (`.rb`) can use:
+
+- `cli_options`: the parsed options, such as `cli_options.fetch(:ids)`.
+- `ids_for(id_space = "default")`: the ids of an [ID space](#per-table-scope_column-and-id-spaces).
+- `insert_sql(template)`: renders an ERB template and writes it to `insert-{N+1}-after_insert.sql`, after the last data file. Multiple calls go into the same file.
+- `insert_jsonl(collection, template)`: MongoDB only; see [MongoDB support](docs/mongodb.md).
+
+```ruby
+insert_sql <<~SQL
+  <%- cli_options.fetch(:ids).each do |tenant_id| -%>
+  INSERT INTO users (tenant_id, email) VALUES (<%= tenant_id %>, 'default@example.com');
+  <%- end -%>
+SQL
+```
+
+Ruby hooks run inside the exwiw process, so only use hooks you trust.
+
+Any other file is run as a command. Its output is not captured, and a non-zero exit stops exwiw. It gets `DATABASE_PASSWORD` and these environment variables:
+
+- `EXWIW_OUTPUT_DIR`, `EXWIW_SCHEMA_DIR`
+- `EXWIW_DATABASE_ADAPTER`, `EXWIW_DATABASE_HOST`, `EXWIW_DATABASE_PORT`, `EXWIW_DATABASE_USER`, `EXWIW_DATABASE_NAME`
+- `EXWIW_TARGET_TABLE`, `EXWIW_IDS` (comma-separated, the `default` ID space), `EXWIW_OUTPUT_FORMAT`
+- `EXWIW_IDS_<ID_SPACE>` for each ID space given values (`--ids=org=...` becomes `EXWIW_IDS_ORG`)
+
+## MongoDB
+
+`--adapter=mongodb` exports JSON Lines for `mongoimport`. Setup, options and the differences from the SQL adapters are in [docs/mongodb.md](docs/mongodb.md).
 
 ## Development
 
