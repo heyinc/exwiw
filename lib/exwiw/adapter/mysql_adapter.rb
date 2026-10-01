@@ -353,24 +353,27 @@ module Exwiw
       end
 
       private def compile_subquery(subquery)
-        # A SelectSubquery wraps a full Select (the referencing table's
-        # extraction query, projected to a foreign key); compile it as-is.
-        return compile_ast(subquery.query) if subquery.is_a?(Exwiw::QueryAst::SelectSubquery)
-
-        # A UnionSubquery wraps several such Selects; UNION their compiled forms
-        # into a single id set. Sibling arms can carry the same nested scope
-        # id-set, and MySQL cannot reference one TEMPORARY table twice in a
-        # statement (ER_CANT_REOPEN_TABLE), so nested scopes compile inline here.
-        if subquery.is_a?(Exwiw::QueryAst::UnionSubquery)
-          return without_scope_materialization do
+        case subquery
+        in Exwiw::QueryAst::RecursiveAncestorSubquery
+          compile_ancestor_closure(subquery)
+        in Exwiw::QueryAst::SelectSubquery
+          # A SelectSubquery wraps a full Select (the referencing table's
+          # extraction query, projected to a foreign key); compile it as-is.
+          compile_ast(subquery.query)
+        in Exwiw::QueryAst::UnionSubquery
+          # A UnionSubquery wraps several such Selects; UNION their compiled forms
+          # into a single id set. Sibling arms can carry the same nested scope
+          # id-set, and MySQL cannot reference one TEMPORARY table twice in a
+          # statement (ER_CANT_REOPEN_TABLE), so nested scopes compile inline here.
+          without_scope_materialization do
             subquery.queries.map { |q| compile_ast(q) }.join(' UNION ')
           end
+        in Exwiw::QueryAst::Subquery
+          inner_values = subquery.where_values.map { |v| escape_value(v) }
+          "SELECT #{qualified_name(subquery.table_name, subquery.select_column)} " \
+            "FROM #{quote_table_name(subquery.table_name)} " \
+            "WHERE #{qualified_name(subquery.table_name, subquery.where_column)} IN (#{inner_values.join(', ')})"
         end
-
-        inner_values = subquery.where_values.map { |v| escape_value(v) }
-        "SELECT #{qualified_name(subquery.table_name, subquery.select_column)} " \
-          "FROM #{quote_table_name(subquery.table_name)} " \
-          "WHERE #{qualified_name(subquery.table_name, subquery.where_column)} IN (#{inner_values.join(', ')})"
       end
 
       # Backslash and control-character escapes, matching mysqldump. Escaping

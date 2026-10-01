@@ -378,6 +378,29 @@ module Exwiw
         end
       end
 
+      describe "ancestors of a self-referencing table" do
+        let(:db_path) { Tempfile.new(["tree", ".sqlite3"]).path }
+        let(:tree_adapter) do
+          described_class.new(
+            ConnectionConfig.new(adapter: adapter_name, database_name: db_path, host: nil, port: nil, user: nil, password: nil),
+            logger
+          )
+        end
+        before do
+          db = ::SQLite3::Database.new(db_path)
+          SelfReferencingTree.setup_statements(id_type: 'INTEGER', text_type: 'TEXT').each { |sql| db.execute(sql) }
+          db.close
+        end
+
+        it "keeps every ancestor once, stopping at a cycle, a NULL parent and a missing parent, and the ancestors' children" do
+          categories = tree_adapter.execute(SelfReferencingTree.extraction_ast('tree_categories', logger)).to_a
+          notes = tree_adapter.execute(SelfReferencingTree.extraction_ast('tree_category_notes', logger)).to_a
+
+          expect(categories.map(&:first).sort).to eq(SelfReferencingTree::KEPT_IDS)
+          expect(notes.map(&:first).sort).to eq(SelfReferencingTree::KEPT_NOTE_IDS)
+        end
+      end
+
       describe "scalar (non-String) replace_with" do
         let(:db_file) { Tempfile.new(["scalar_mask", ".sqlite3"]) }
         let(:scalar_connection_config) do

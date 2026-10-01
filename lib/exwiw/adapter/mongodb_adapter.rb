@@ -171,6 +171,7 @@ module Exwiw
           else
             related_collection_filter(config, config_by_name, dump_target)
           end
+        warn_missing_self_ancestors(config) unless filter.empty?
 
         Exwiw::MongoQuery::Find.new(
           collection: config.name,
@@ -178,6 +179,17 @@ module Exwiw
           filter: filter,
           projection: build_projection(config, @propagation_keys),
           timeout_ms: config.query_timeout_ms,
+        )
+      end
+
+      # The SQL adapters add the ancestors of a narrowed self-referencing table;
+      # this adapter extracts each collection with a single find, so it cannot.
+      private def warn_missing_self_ancestors(config)
+        return unless config.belongs_tos.any? { |relation| relation.table_name == config.name && !relation.polymorphic? }
+
+        @logger.warn(
+          "  #{config.name} references itself, but the mongodb adapter does not add the ancestors " \
+          "of the documents it keeps; a kept document's parent may be missing."
         )
       end
 

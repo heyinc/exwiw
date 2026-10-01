@@ -167,6 +167,8 @@ How the paths behave and interact:
 
 Paths 3–5 all materialize their id set once and probe it via a `JOIN` on a `SELECT DISTINCT` derived table rather than `IN (subquery)` — see [Why a JOIN, not `IN (subquery)`](#why-a-join-not-in-subquery). Scope-column mode classifies every table up front with these same paths (`:direct` / `:via_path` / `:referenced_by` / `:via_scoped_parent` / `:exempt` / `:unscopable` in `QueryAstBuilder#scope_category`) and aborts before extracting anything if any table lands on `:unscopable`. The MongoDB adapter follows the same model, except id sets are captured at runtime while parent collections stream instead of being expressed as SQL subqueries — see [MongoDB support](docs/mongodb.md).
 
+Whichever path narrows a table, a table with a `belongs_to` to itself (a tree such as `categories.parent_id`) then also keeps the ancestors of the rows it kept — see [Self-referencing `belongs_to`](#self-referencing-belongs_to-tree-tables).
+
 ### Scope-column mode
 
 The default `--target-table` extraction assumes the schema converges on a single
@@ -962,6 +964,29 @@ Notes:
 - Works in both single-target and scope-column mode. In single-target mode there is no scope-column pre-flight (`validate_scope!`), so a satellite the cascade cannot resolve to a single scopable parent (e.g. it `belongs_to` two scopable hubs) is dumped in full with a warning rather than aborting. Polymorphic foreign keys are not eligible as anchors (the named `column` is always a concrete column).
 - **The MongoDB adapter supports `reverse_scope` too** — same config shape and semantics, but the id set is captured at runtime instead of being emitted as a `UNION` subquery. See [`reverse_scope` on collections](docs/mongodb.md#reverse_scope-on-collections) under MongoDB support.
 
+### Self-referencing `belongs_to` (tree tables)
+
+A table whose `belongs_to` points at itself — `categories.parent_id → categories.id` — forms a tree. Narrowing it keeps only the rows some other table points at, so a kept row's parent would be missing from the dump. exwiw therefore keeps every **ancestor** of the kept rows as well, following the self-reference up to the root. Nothing needs to be configured; declaring the `belongs_to` is enough.
+
+```sql
+… JOIN (SELECT DISTINCT src.id AS exwiw_scope_id FROM (
+  WITH RECURSIVE exwiw_ancestors (id, parent_id) AS (
+    SELECT categories.id, categories.parent_id FROM categories <the table's own scope>
+    UNION
+    SELECT categories.id, categories.parent_id FROM categories
+      JOIN exwiw_ancestors ON categories.id = exwiw_ancestors.parent_id
+  ) SELECT exwiw_ancestors.id FROM exwiw_ancestors
+) AS src) AS ids ON categories.id = ids.exwiw_scope_id
+```
+
+- **Ancestors are not scoped.** They are added regardless of the table's `filter` and scope, so the kept rows' foreign keys stay valid; where a tree spans tenants, the dump includes the other tenant's ancestors.
+- **Tables around the tree follow the rows including the ancestors.** A table below the tree (e.g. `category_notes`) also keeps the ancestors' own rows, so a page listing an ancestor finds what hangs off it. A table whose route to the scope (or the dump target) passes through a tree table is therefore narrowed by that route's first table's extraction query rather than joined along the route, since a JOIN would apply the tree table's own conditions, which its ancestors are exempt from. A table the tree *points at* (e.g. an `icons` table reverse-scoped through `categories.icon_id`) includes the ancestors' references. Only the ancestors' direct rows are added — the tree is not walked back down — but an ancestor that a large cascaded table hangs off brings all of those rows along; set `ignore: true` on that `belongs_to` to keep them out.
+- Every self-referencing `belongs_to` is followed, through the column its `references` names (the primary key by default). A polymorphic one is not supported: following it would also need its type column checked at every step.
+- The walk stops at a `NULL` or missing parent and on cyclic data.
+- A table dumped in full is left as it is. A table extracted in [batches](#batched-extraction-batch_scope) keeps its JOIN route and adds no ancestors of its own, so it misses the rows of a tree table's ancestors; exwiw warns about this before extracting.
+- Requires `WITH RECURSIVE` (MySQL 8.0+). On MySQL a tree deeper than `cte_max_recursion_depth` (1000 by default) fails the query.
+- The MongoDB adapter does not add ancestors; it warns when it narrows a self-referencing collection.
+
 ### Why a JOIN, not `IN (subquery)`
 
 Every scope id-set above — the multi-referencer `reverse_scope` `UNION`, the single-referencer reverse extraction, and the multi-hop forward cascade — is emitted as a `JOIN` to a `SELECT DISTINCT` derived table rather than `<col> IN (<subquery>)`:
@@ -1068,6 +1093,7 @@ An explicit id list of that size is exactly estimated and selective, so the fore
 - The batch table may be **any number of hops up** the path — a table two hops below it (`activity_orders → activities → customers`) names `customers` too, and the batch ids are applied where the path meets the scope, bounding the whole join chain.
 - A table that **carries the scope column itself** batches by naming itself; each batch then filters `WHERE <pk> IN (<ids>)` directly. Note that the id-set query is then the same scope predicate over the same table, so this shape only avoids the scan when the scope column is indexed (ideally index-only) — the join shape above is the one that genuinely removes the planner's choice.
 - `bulk_insert_chunk_size` is independent: batches are query boundaries, chunks are `INSERT` statement boundaries.
+- A batched table does not keep the ancestors of a [self-referencing `belongs_to`](#self-referencing-belongs_to-tree-tables), its own (every batch would repeat them) or those of a tree table on its join path (the batches slice that join); exwiw warns about either before extracting.
 - With `--output-format=copy`, batching bounds each query's cost but not memory: COPY builds the whole table's body in memory, so all batches' rows are resident at once. Use the default INSERT format (which streams) when the kept rows themselves are huge.
 
 **Supported shapes.** A batch key only splits an extraction correctly when *every* row the table keeps is selected through the batch table's scope filter — otherwise a route the batch key does not constrain would keep the same rows in every batch, and the dump would repeat them (a primary-key conflict on import). So `batch_scope` requires [scope-column mode](#scope-column-mode) and one of:

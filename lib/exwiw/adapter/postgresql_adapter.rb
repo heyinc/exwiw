@@ -461,25 +461,35 @@ module Exwiw
       private def compile_subquery(subquery, outer_table: nil, outer_column: nil)
         cast_to = subquery_cast_to(subquery, outer_table, outer_column)
 
-        if subquery.is_a?(Exwiw::QueryAst::SelectSubquery)
-          return compile_ast(subquery.query, select_cast_to: cast_to)
+        case subquery
+        in Exwiw::QueryAst::RecursiveAncestorSubquery
+          # The outer key is compared with this table's own primary keys, so it needs no cast.
+          compile_ancestor_closure(subquery)
+        in Exwiw::QueryAst::SelectSubquery
+          compile_ast(subquery.query, select_cast_to: cast_to)
+        in Exwiw::QueryAst::UnionSubquery
+          # A UnionSubquery wraps several projected Selects; UNION their compiled
+          # forms. cast_to is the union-wide decision (see union_cast_to): when any
+          # arm's column type would clash with the outer column or another arm,
+          # every arm's projected column and the outer key are cast to text so the
+          # UNION and the enclosing IN comparison resolve to one type.
+          subquery.queries.map { |q| compile_ast(q, select_cast_to: cast_to) }.join(' UNION ')
+        in Exwiw::QueryAst::Subquery
+          inner_values = subquery.where_values.map { |v| escape_value(v) }
+          select_expr = qualified_name(subquery.table_name, subquery.select_column)
+          select_expr = "#{select_expr}::#{cast_to}" if cast_to
+          "SELECT #{select_expr} " \
+            "FROM #{quote_table_name(subquery.table_name)} " \
+            "WHERE #{qualified_name(subquery.table_name, subquery.where_column)} IN (#{inner_values.join(', ')})"
         end
+      end
 
-        # A UnionSubquery wraps several projected Selects; UNION their compiled
-        # forms. cast_to is the union-wide decision (see union_cast_to): when any
-        # arm's column type would clash with the outer column or another arm,
-        # every arm's projected column and the outer key are cast to text so the
-        # UNION and the enclosing IN comparison resolve to one type.
-        if subquery.is_a?(Exwiw::QueryAst::UnionSubquery)
-          return subquery.queries.map { |q| compile_ast(q, select_cast_to: cast_to) }.join(' UNION ')
-        end
+      # A self-referencing foreign key may be stored as text while the key it
+      # points at is a uuid; reconcile them the same way a JOIN does.
+      private def ancestor_link_condition(table, referenced_column, foreign_key)
+        return super unless types_need_cast?(column_pg_type(table, referenced_column), column_pg_type(table, foreign_key))
 
-        inner_values = subquery.where_values.map { |v| escape_value(v) }
-        select_expr = qualified_name(subquery.table_name, subquery.select_column)
-        select_expr = "#{select_expr}::#{cast_to}" if cast_to
-        "SELECT #{select_expr} " \
-          "FROM #{quote_table_name(subquery.table_name)} " \
-          "WHERE #{qualified_name(subquery.table_name, subquery.where_column)} IN (#{inner_values.join(', ')})"
+        "#{qualified_name(table, referenced_column)}::text = #{ANCESTOR_SET_NAME}.#{quote_identifier(foreign_key)}::text"
       end
 
       private def subquery_select_target(subquery)

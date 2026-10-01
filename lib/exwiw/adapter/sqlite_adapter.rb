@@ -232,20 +232,23 @@ module Exwiw
       end
 
       private def compile_subquery(subquery)
-        # A SelectSubquery wraps a full Select (the referencing table's
-        # extraction query, projected to a foreign key); compile it as-is.
-        return compile_ast(subquery.query) if subquery.is_a?(Exwiw::QueryAst::SelectSubquery)
-
-        # A UnionSubquery wraps several such Selects; UNION their compiled forms
-        # into a single id set.
-        if subquery.is_a?(Exwiw::QueryAst::UnionSubquery)
-          return subquery.queries.map { |q| compile_ast(q) }.join(' UNION ')
+        case subquery
+        in Exwiw::QueryAst::RecursiveAncestorSubquery
+          compile_ancestor_closure(subquery)
+        in Exwiw::QueryAst::SelectSubquery
+          # A SelectSubquery wraps a full Select (the referencing table's
+          # extraction query, projected to a foreign key); compile it as-is.
+          compile_ast(subquery.query)
+        in Exwiw::QueryAst::UnionSubquery
+          # A UnionSubquery wraps several such Selects; UNION their compiled forms
+          # into a single id set.
+          subquery.queries.map { |q| compile_ast(q) }.join(' UNION ')
+        in Exwiw::QueryAst::Subquery
+          inner_values = subquery.where_values.map { |v| escape_value(v) }
+          "SELECT #{qualified_name(subquery.table_name, subquery.select_column)} " \
+            "FROM #{quote_table_name(subquery.table_name)} " \
+            "WHERE #{qualified_name(subquery.table_name, subquery.where_column)} IN (#{inner_values.join(', ')})"
         end
-
-        inner_values = subquery.where_values.map { |v| escape_value(v) }
-        "SELECT #{qualified_name(subquery.table_name, subquery.select_column)} " \
-          "FROM #{quote_table_name(subquery.table_name)} " \
-          "WHERE #{qualified_name(subquery.table_name, subquery.where_column)} IN (#{inner_values.join(', ')})"
       end
 
       private def escape_value(value)
