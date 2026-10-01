@@ -158,7 +158,7 @@ A config with a key exwiw does not know fails to load, with an error naming the 
 
 ### Ignore / annotate a column or `belongs_to`
 
-Entries in `columns` and `belongs_tos` accept `comment` (a note exwiw never reads) and `ignore: true`. An ignored column is not exported; it still exists in the restored table, with its default value. An ignored `belongs_to` is not followed.
+Entries in `columns` and `belongs_tos` accept `comment` (a note exwiw never reads) and `ignore: true`. An ignored column is left out of the `SELECT` and the `INSERT`, so the restored rows get the column's database default, or `NULL` if it has none. On a `NOT NULL` column without a default, the `INSERT` can fail. An ignored `belongs_to` is not followed.
 
 ```json
 {
