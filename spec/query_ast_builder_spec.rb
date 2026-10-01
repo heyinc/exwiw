@@ -2514,7 +2514,9 @@ RSpec.describe Exwiw::QueryAstBuilder do
     context 'when the categories are the dump target itself' do
       let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'categories', ids: [3]) }
 
-      it 'widens the requested categories to their ancestors' do
+      it 'widens the requested categories to their ancestors, and narrows their notes by them' do
+        expect(build('category_notes').where_clauses.first.value.query.where_clauses.map { |clause| clause.value.class })
+          .to eq([Exwiw::QueryAst::RecursiveAncestorSubquery])
         expect(build('categories').where_clauses.map(&:to_h)).to eq([
           {
             column_name: 'id',
@@ -2532,6 +2534,47 @@ RSpec.describe Exwiw::QueryAstBuilder do
             },
           },
         ])
+      end
+    end
+
+    context 'when the categories reach the scope through a belongs_to of their own' do
+      let(:categories) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'categories', primary_key: 'id', filter: 'categories.active = 1',
+          belongs_tos: [
+            { table_name: 'categories', foreign_key: 'parent_id' },
+            { table_name: 'merchants', foreign_key: 'merchant_id' },
+          ],
+          columns: [{ name: 'id' }, { name: 'parent_id' }, { name: 'merchant_id' }, { name: 'active' }]
+        )
+      end
+      let(:merchants) do
+        Exwiw::TableConfig.from_symbol_keys(
+          name: 'merchants', primary_key: 'id', belongs_tos: [],
+          columns: [{ name: 'id' }, { name: 'tenant_id' }]
+        )
+      end
+      let(:all_tables) { [categories, merchants, category_notes] }
+
+      # A JOIN through categories would apply their own merchant and filter
+      # conditions, which the ancestors are exempt from.
+      def expect_notes_narrowed_by_categories_with_ancestors
+        sql = sqlite_adapter.compile_ast(build('category_notes'))
+
+        expect(sql).not_to include('JOIN categories ON category_notes.category_id')
+        expect(sql).to include('WITH RECURSIVE exwiw_ancestors')
+      end
+
+      it 'narrows the notes by the categories including the ancestors' do
+        expect_notes_narrowed_by_categories_with_ancestors
+      end
+
+      context 'in single-target mode' do
+        let(:dump_target) { Exwiw::DumpTarget.new(table_name: 'merchants', ids: [1]) }
+
+        it 'narrows the notes by the categories including the ancestors' do
+          expect_notes_narrowed_by_categories_with_ancestors
+        end
       end
     end
 
@@ -2848,6 +2891,25 @@ RSpec.describe Exwiw::QueryAstBuilder do
         "JOIN customers ON activities.customer_id = customers.id AND customers.id = '7' " \
         'WHERE activities.happened_at > 0'
       )
+    end
+
+    context 'when the batched tables reference themselves or are batched through such a table' do
+      let(:log_output) { StringIO.new }
+      let(:logger) { Logger.new(log_output) }
+
+      before do
+        activities.belongs_tos += [Exwiw::BelongsTo.from_symbol_keys(table_name: 'activities', foreign_key: 'parent_id')]
+      end
+
+      it 'keeps the JOIN route and warns before extracting that the ancestors rows are left out' do
+        described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+
+        expect(log_output.string).to include(
+          'activities references itself, but a batched table does not add the ancestors',
+          'activity_orders is batched through activities, which keeps the ancestors of its rows'
+        )
+        expect(build('activity_orders').join_clauses.map(&:join_table_name)).to eq(%w[activities customers])
+      end
     end
 
     it 'leaves another table scope filter untouched while batching this one' do

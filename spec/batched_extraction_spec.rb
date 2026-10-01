@@ -147,7 +147,7 @@ RSpec.describe Exwiw::BatchedExtraction do
       activities.belongs_tos += [Exwiw::BelongsTo.from_symbol_keys(table_name: 'activities', foreign_key: 'parent_id')]
     end
 
-    it 'batches by the terminus ids including its ancestors, adds none to the batch table, and warns about it' do
+    it 'batches by the terminus ids including its ancestors and adds none to the batch table' do
       extraction = batched
       extraction.prepare!
       extraction.each { |_row| nil }
@@ -157,7 +157,6 @@ RSpec.describe Exwiw::BatchedExtraction do
           .count(Exwiw::QueryAst::RecursiveAncestorSubquery)
       end
       expect(closures_by_table).to eq('customers' => 1, 'activities' => 0)
-      expect(log_output.string).to include('activities references itself, but a batched table does not add the ancestors')
     end
   end
 

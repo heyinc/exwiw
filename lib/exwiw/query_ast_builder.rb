@@ -111,7 +111,9 @@ module Exwiw
       tables.reject(&:ignore).each do |table|
         next unless table.respond_to?(:batch_scope) && table.batch_scope
 
-        new(table.name, table_by_name, dump_target, logger).batch_scope_terminus!
+        builder = new(table.name, table_by_name, dump_target, logger)
+        builder.batch_scope_terminus!
+        builder.warn_batch_scope_ancestor_gaps
       end
     end
 
@@ -236,8 +238,13 @@ module Exwiw
 
     private def build_single_target(table)
       arm_queries = target_polymorphic_arm_queries(table)
+      tree_route_clauses = arm_queries ? nil : dump_target_tree_route_clauses(table)
       if arm_queries
         where_clauses = [pk_union_clause(table, arm_queries)]
+        where_clauses.push(table.filter) if table.filter
+        join_clauses = []
+      elsif tree_route_clauses
+        where_clauses = tree_route_clauses
         where_clauses.push(table.filter) if table.filter
         join_clauses = []
       else
@@ -595,22 +602,52 @@ module Exwiw
         return nil
       end
 
-      relation, parent, parent_query = candidates.first
+      relation, _parent, parent_query = candidates.first
+      parent_ids_clause(relation, parent_query)
+    end
 
-      # Project the parent's extraction query down to just its primary key — the
-      # column this table's foreign key points at.
-      pk_column = TableColumn.from_symbol_keys(name: parent.primary_key)
-      projected = QueryAst::Select.new
-      projected.from(parent_query.from_table_name)
-      projected.select([pk_column])
-      parent_query.join_clauses.each { |j| projected.join(j) }
-      parent_query.where_clauses.each { |w| projected.where(w) }
-
+    # `<fk> IN (<the parent's extraction query, projected to its primary key>)`.
+    private def parent_ids_clause(relation, parent_query)
+      parent = table_by_name.fetch(relation.table_name)
       QueryAst::WhereClause.new(
         column_name: relation.foreign_key,
         operator: :in_subquery,
-        value: QueryAst::SelectSubquery.new(query: projected)
+        value: QueryAst::SelectSubquery.new(query: project_query_to(parent_query, parent.primary_key))
       )
+    end
+
+    # A JOIN through a tree table applies that table's own conditions, which its
+    # ancestors are exempt from, so such a route narrows by the first hop's
+    # extraction query instead. A batched table keeps the JOIN its batches slice.
+    private def route_through_tree?(table, route_tables)
+      return false if batched?(table)
+
+      !tree_tables_in(route_tables).empty?
+    end
+
+    private def tree_tables_in(table_names)
+      table_names.select { |name| (hop = table_by_name[name]) && self.class.self_ancestor_links(hop).any? }
+    end
+
+    # nil keeps the JOIN: on a cycle, or when the parent is unconstrained or
+    # scoped through this very table.
+    private def route_parent_query(table, relation)
+      parent = table_by_name[relation.table_name]
+      return nil if parent.nil? || parent.primary_key.nil?
+      return nil if parent.name == table.name || @forward_path.include?(parent.name)
+
+      parent_query = self.class.run(
+        parent.name, table_by_name, dump_target, @logger,
+        forward_path: @forward_path + [table.name], reverse_path: @reverse_path, deep_chain_warned: @deep_chain_warned
+      )
+      return nil unless parent_query.where_clauses.any? || parent_query.join_clauses.any?
+      return nil if QueryAst.reads_table?(parent_query, table.name)
+
+      parent_query
+    end
+
+    private def batched?(table)
+      table.respond_to?(:batch_scope) && !table.batch_scope.nil?
     end
 
     private def polymorphic_parent_groups(table)
@@ -738,6 +775,28 @@ module Exwiw
       )
     end
 
+    # Single-target counterpart of #path_or_parent_query_arm; nil keeps the JOIN.
+    private def dump_target_tree_route_clauses(table)
+      return nil if table.name == dump_target.table_name
+
+      relation = table.belongs_to(dump_target.table_name)
+      route = relation ? [dump_target.table_name] : dump_target_route_after_first_hop(table)
+      return nil if route.empty? || !route_through_tree?(table, route)
+
+      relation ||= table.belongs_to(route.first)
+      parent_query = route_parent_query(table, relation)
+      return nil if parent_query.nil?
+
+      [parent_ids_clause(relation, parent_query)].tap do |clauses|
+        clauses.push(polymorphic_type_clause(relation)) if relation.polymorphic?
+      end
+    end
+
+    private def dump_target_route_after_first_hop(table)
+      path = find_path_to_dump_target(table, table_by_name, dump_target)
+      path.size < 2 ? [] : path.drop(1) + [dump_target.table_name]
+    end
+
     # Single-target counterpart of #scoped_arms.
     private def target_polymorphic_arm_queries(table)
       return nil if table.name == dump_target.table_name
@@ -764,18 +823,25 @@ module Exwiw
     end
 
     private def target_arm_query(table, relation)
-      if relation.table_name == dump_target.table_name
+      target = table_by_name[relation.table_name]
+      return nil if target.nil?
+
+      on_target = relation.table_name == dump_target.table_name
+      path = on_target ? [] : find_path_to_dump_target(target, table_by_name, dump_target)
+      joinable = on_target || (path.any? && !path.include?(table.name))
+      route = on_target ? [target.name] : path + [dump_target.table_name]
+      if joinable && route_through_tree?(table, route) && (parent_query = route_parent_query(table, relation))
+        return target_ids_arm_query(table, relation, parent_query)
+      end
+
+      if on_target
         return arm_pk_query(table).tap do |query|
           query.where dump_target_fk_clause(relation.foreign_key)
           query.where polymorphic_type_clause(relation)
         end
       end
 
-      target = table_by_name[relation.table_name]
-      return nil if target.nil?
-
-      path = find_path_to_dump_target(target, table_by_name, dump_target)
-      if path.any? && !path.include?(table.name)
+      if joinable
         return arm_pk_query(table).tap do |query|
           query.join(build_join_clause(table, target, relation))
           build_join_clauses(target, table_by_name, dump_target).each { |join_clause| query.join(join_clause) }
@@ -887,6 +953,10 @@ module Exwiw
       if arms.size == 1 && arms.first.path
         arm = arms.first
         build_scoped_join_clauses(arm.path, first_relation: arm.relation).each { |join_clause| ast.join(join_clause) }
+        ast.where(table.filter) if table.filter
+        return ast
+      elsif arms.size == 1 && !arms.first.relation.polymorphic?
+        ast.where(parent_ids_clause(arms.first.relation, arms.first.target_query))
         ast.where(table.filter) if table.filter
         return ast
       elsif arms.size >= 1
@@ -1085,6 +1155,30 @@ module Exwiw
       terminus
     end
 
+    # These gaps should reject the batch_scope like the shapes
+    # #batch_scope_terminus! raises on, but only warn so that configs batching a
+    # table that now keeps ancestors still run. Called once from the pre-flight,
+    # after #batch_scope_terminus! accepts the shape; #batch_scope_terminus!
+    # itself also runs mid-extraction.
+    def warn_batch_scope_ancestor_gaps
+      table = table_by_name.fetch(table_name)
+
+      if self.class.self_ancestor_links(table).any?
+        @logger.warn(
+          "  #{table.name} references itself, but a batched table does not add the ancestors " \
+          "of its rows (every batch would repeat them); a kept row's parent may be missing."
+        )
+      end
+
+      route = directly_scoped?(table) ? [] : scoped_arms(table).first.path.drop(1)
+      tree_tables_in(route).each do |tree|
+        @logger.warn(
+          "  #{table.name} is batched through #{tree}, which keeps the ancestors of its rows, but " \
+          "the batches join #{tree} directly; #{table.name} rows of those ancestors are not extracted."
+        )
+      end
+    end
+
     # BFS over belongs_tos to the nearest *directly scoped* ancestor. Unlike the
     # target-mode walk, the returned path INCLUDES that ancestor: the scope column
     # lives on the ancestor itself (not on a foreign key of the child), so the
@@ -1182,7 +1276,7 @@ module Exwiw
         else
           sibling_arms = polymorphic_sibling_arms(table, shortest[1])
           if sibling_arms.nil?
-            [ScopedArm.new(relation: nil, path: shortest)]
+            [path_or_parent_query_arm(table, table.belongs_to(shortest[1]), shortest, pinned: false)]
           else
             arms = sibling_arms.filter_map { |relation| resolve_scoped_arm(table, relation) }
             @logger.debug(
@@ -1207,10 +1301,19 @@ module Exwiw
     # up referenced_by / reverse_scope / the multi-hop cascade for free.
     private def resolve_scoped_arm(table, relation)
       path = find_path_to_scoped(table, first_relation: relation)
-      return ScopedArm.new(relation: relation, path: path) if path.size >= 2
+      return path_or_parent_query_arm(table, relation, path, pinned: true) if path.size >= 2
 
       target_query = scoped_target_query(table, relation, allow_automatic_reverse: true)
       target_query && ScopedArm.new(relation: relation, target_query: target_query)
+    end
+
+    # `pinned` keeps the relation on a JOIN arm, which only a polymorphic arm needs.
+    private def path_or_parent_query_arm(table, relation, path, pinned:)
+      if route_through_tree?(table, path.drop(1)) && (parent_query = route_parent_query(table, relation))
+        return ScopedArm.new(relation: relation, target_query: parent_query)
+      end
+
+      ScopedArm.new(relation: pinned ? relation : nil, path: path)
     end
 
     private def scoped_target_arm_query(table, relation)
@@ -1344,15 +1447,8 @@ module Exwiw
     # to be constrained: the foreign key alone cannot tell this arm's rows from
     # another arm's (record_id=1 may be any type).
     private def target_ids_arm_query(table, relation, target_query)
-      target = table_by_name.fetch(relation.table_name)
       arm_pk_query(table).tap do |query|
-        query.where QueryAst::WhereClause.new(
-          column_name: relation.foreign_key,
-          operator: :in_subquery,
-          value: QueryAst::SelectSubquery.new(
-            query: project_query_to(target_query, target.primary_key)
-          )
-        )
+        query.where parent_ids_clause(relation, target_query)
         query.where polymorphic_type_clause(relation)
       end
     end
