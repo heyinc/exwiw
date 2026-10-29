@@ -93,6 +93,24 @@ module Exwiw
             .with(hash_including(ssl_mode: Trilogy::SSL_REQUIRED_NOVERIFY, ssl_ca: '/etc/ca.pem'))
         end
 
+        context 'when mysql2 is linked against MariaDB Connector/C' do
+          before do
+            stub_const('Mysql2::Client::SSL_MODE_PREFERRED', 0)
+            stub_const('Mysql2::Client::SSL_MODE_VERIFY_CA', 0)
+            allow(Mysql2::Client).to receive(:new)
+          end
+
+          it 'verifies the host name too for verify_ca' do
+            MysqlClient.new(config(ssl_mode: 'verify_ca', ssl_ca: '/etc/ca.pem'), driver: :mysql2).send(:raw)
+            expect(Mysql2::Client).to have_received(:new).with(hash_including(ssl_mode: 'verify_identity'))
+          end
+
+          it 'leaves the client default for preferred' do
+            MysqlClient.new(config(ssl_mode: 'preferred'), driver: :mysql2).send(:raw)
+            expect(Mysql2::Client).to have_received(:new).with(hash_excluding(:ssl_mode))
+          end
+        end
+
         it 'leaves the client defaults alone when no TLS option is given' do
           allow(Mysql2::Client).to receive(:new)
           MysqlClient.new(config, driver: :mysql2).send(:raw)

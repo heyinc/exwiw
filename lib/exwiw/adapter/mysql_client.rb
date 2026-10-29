@@ -204,7 +204,16 @@ module Exwiw
       end
 
       private def mysql2_ssl_options
-        { ssl_mode: @connection_config.ssl_mode, sslca: @connection_config.ssl_ca }.compact
+        { ssl_mode: mysql2_ssl_mode, sslca: @connection_config.ssl_ca }.compact
+      end
+
+      # mysql2 linked against MariaDB Connector/C defines unsupported modes as 0 and
+      # ignores them with a warning, so fall back to the nearest mode it supports.
+      private def mysql2_ssl_mode
+        mode = @connection_config.ssl_mode
+        return mode if mode.nil? || !Mysql2::Client.const_get("SSL_MODE_#{mode.upcase}").zero?
+
+        "verify_identity" if mode == "verify_ca"
       end
 
       private def trilogy_ssl_options
