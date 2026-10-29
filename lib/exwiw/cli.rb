@@ -65,7 +65,7 @@ module Exwiw
     # Database connection settings are environment-specific (and sometimes
     # secret-adjacent), so they must be passed via CLI/env, never the committed
     # config file. `adapter` is the one connection-ish key allowed in config.
-    REJECTED_CONNECTION_KEYS = %w[host port user database uri password].freeze
+    REJECTED_CONNECTION_KEYS = %w[host port user database uri password ssl_mode ssl_ca].freeze
 
     # Keys that only make sense for `export`. They are skipped when merging config
     # for `explain` so a shared config file does not trip validate_explain_only!,
@@ -664,6 +664,11 @@ module Exwiw
 
       if @database_adapter != "mysql"
         $stderr.puts "--ssl-mode / --ssl-ca are only supported by the mysql adapter"
+        exit 1
+      end
+
+      if @ssl_ca&.empty?
+        $stderr.puts "--ssl-ca must be a path to a CA certificate file"
         exit 1
       end
 

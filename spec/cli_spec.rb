@@ -357,6 +357,11 @@ module Exwiw
           .and output(/Invalid --ssl-mode. Available options are: disabled, preferred, required, verify_ca, verify_identity/).to_stderr
       end
 
+      it 'rejects an empty --ssl-ca' do
+        expect { run_cli(schema_check_argv + ['--adapter=mysql', '--ssl-ca=']) }.to raise_error(SystemExit)
+          .and output(/--ssl-ca must be a path to a CA certificate file/).to_stderr
+      end
+
       it 'rejects the TLS options for non-mysql adapters' do
         expect { run_cli(schema_check_argv + ['--adapter=postgresql', '--ssl-ca=/etc/ca.pem']) }.to raise_error(SystemExit)
           .and output(/--ssl-mode \/ --ssl-ca are only supported by the mysql adapter/).to_stderr
@@ -900,6 +905,13 @@ module Exwiw
         cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3', "--config=#{path}"])
         expect { cli.send(:apply_config_file!) }.to raise_error(SystemExit)
           .and output(/'host' is a database connection setting/).to_stderr
+      end
+
+      it 'rejects TLS settings in the config file as connection keys' do
+        path = write_config("ssl_mode: required\nschema_dir: e2e/sqlite-schema\n")
+        cli = CLI.new(['--adapter=sqlite', '--database=tmp/test.sqlite3', "--config=#{path}"])
+        expect { cli.send(:apply_config_file!) }.to raise_error(SystemExit)
+          .and output(/'ssl_mode' is a database connection setting/).to_stderr
       end
 
       it 'rejects unknown keys in the config file' do
