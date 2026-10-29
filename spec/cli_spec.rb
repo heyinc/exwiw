@@ -333,6 +333,36 @@ module Exwiw
       end
     end
 
+    describe '--ssl-mode / --ssl-ca options' do
+      def run_cli(argv)
+        CLI.new(argv).run
+      end
+
+      let(:schema_check_argv) do
+        ['schema', 'check', '--from-db', '--host=localhost', '--port=3306', '--user=root',
+         '--database=app', '--schema-dir=e2e/mysql-schema']
+      end
+
+      it 'flows the TLS settings into the ConnectionConfig' do
+        cli = CLI.new(schema_check_argv + ['--adapter=mysql', '--ssl-mode=VERIFY_IDENTITY', '--ssl-ca=/etc/ca.pem'])
+        captured = nil
+        allow(cli).to receive(:run_schema) { |config| captured = config }
+        cli.run
+        expect(captured.ssl_mode).to eq('verify_identity')
+        expect(captured.ssl_ca).to eq('/etc/ca.pem')
+      end
+
+      it 'rejects an unknown --ssl-mode' do
+        expect { run_cli(schema_check_argv + ['--adapter=mysql', '--ssl-mode=on']) }.to raise_error(SystemExit)
+          .and output(/Invalid --ssl-mode. Available options are: disabled, preferred, required, verify_ca, verify_identity/).to_stderr
+      end
+
+      it 'rejects the TLS options for non-mysql adapters' do
+        expect { run_cli(schema_check_argv + ['--adapter=postgresql', '--ssl-ca=/etc/ca.pem']) }.to raise_error(SystemExit)
+          .and output(/--ssl-mode \/ --ssl-ca are only supported by the mysql adapter/).to_stderr
+      end
+    end
+
     describe '--parallel-workers validation' do
       def run_cli(argv)
         CLI.new(argv).run

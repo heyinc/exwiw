@@ -72,6 +72,34 @@ module Exwiw
         end
       end
 
+      describe 'TLS options' do
+        def config(**tls)
+          ConnectionConfig.new(adapter: 'mysql', host: 'db.example.com', port: 3306, user: 'reader',
+                               password: 'secret', database_name: 'app', **tls)
+        end
+
+        it 'passes ssl_mode and sslca to mysql2' do
+          allow(Mysql2::Client).to receive(:new)
+          MysqlClient.new(config(ssl_mode: 'verify_identity', ssl_ca: '/etc/ca.pem'), driver: :mysql2).send(:raw)
+          expect(Mysql2::Client).to have_received(:new)
+            .with(hash_including(ssl_mode: 'verify_identity', sslca: '/etc/ca.pem'))
+        end
+
+        it 'passes the matching ssl_mode constant and ssl_ca to trilogy' do
+          require 'trilogy'
+          allow(Trilogy).to receive(:new)
+          MysqlClient.new(config(ssl_mode: 'required', ssl_ca: '/etc/ca.pem'), driver: :trilogy).send(:raw)
+          expect(Trilogy).to have_received(:new)
+            .with(hash_including(ssl_mode: Trilogy::SSL_REQUIRED_NOVERIFY, ssl_ca: '/etc/ca.pem'))
+        end
+
+        it 'leaves the client defaults alone when no TLS option is given' do
+          allow(Mysql2::Client).to receive(:new)
+          MysqlClient.new(config, driver: :mysql2).send(:raw)
+          expect(Mysql2::Client).to have_received(:new).with(hash_excluding(:ssl_mode, :sslca))
+        end
+      end
+
       describe '.detect_driver' do
         around do |example|
           original = ENV['EXWIW_MYSQL_DRIVER']

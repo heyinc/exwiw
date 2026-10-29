@@ -116,5 +116,7 @@ module Exwiw
   # source: the server aborts the operation past the deadline. nil leaves it
   # unset (no timeout). A per-collection `query_timeout_ms` overrides it.
   # mongodb adapter only.
-  ConnectionConfig = Struct.new(:adapter, :host, :port, :user, :password, :database_name, :uri, :mongodb_query_timeout_ms, keyword_init: true)
+  #
+  # `ssl_mode` / `ssl_ca` apply to both the driver connection and mysqldump. mysql adapter only.
+  ConnectionConfig = Struct.new(:adapter, :host, :port, :user, :password, :database_name, :uri, :mongodb_query_timeout_ms, :ssl_mode, :ssl_ca, keyword_init: true)
 end
