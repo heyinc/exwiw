@@ -21,6 +21,8 @@ You usually want `require: false` on the Gemfile entry. Without bundler, run `ge
 
 For MySQL, exwiw uses the `mysql2` gem if it is available and `trilogy` otherwise; pass `--adapter=mysql` either way. Set `EXWIW_MYSQL_DRIVER=trilogy` (or `mysql2`) to choose one. `trilogy` helps when `mysql2` is linked against a client library that cannot load the server's auth plugin, such as a MySQL 9.x client connecting to a server that uses `mysql_native_password`.
 
+To connect to MySQL over TLS, pass `--ssl-mode` (`disabled`, `preferred`, `required`, `verify_ca` or `verify_identity`) and, to verify the server, `--ssl-ca=<CA file>`. Both apply to the driver connection and to `mysqldump`. Without them, exwiw uses the client library's default, which may connect without TLS and then fail against a server with `require_secure_transport=ON`. MariaDB's `mysqldump` has no `--ssl-mode`, so exwiw passes `--ssl` and `--ssl-verify-server-cert` (or `--skip-ssl-verify-server-cert` for `required`) instead; `verify_ca` also checks the host name there.
+
 ## Usage
 
 exwiw has three subcommands:

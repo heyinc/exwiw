@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`--ssl-mode` and `--ssl-ca` connect to MySQL over TLS.** exwiw passed no TLS options to the driver or to `mysqldump`, so with a client library that does not use TLS by default (MariaDB Connector/C, for one) every command failed against a server with `require_secure_transport=ON` — `Connections using insecure transport are prohibited`. The two options take the MySQL client's values (`disabled`, `preferred`, `required`, `verify_ca`, `verify_identity`) and a CA file, and apply to the `mysql2` / `trilogy` connection and to `mysqldump`; MariaDB's `mysqldump`, which has no `--ssl-mode`, gets the equivalent `--ssl` / `--ssl-verify-server-cert` flags. Without them nothing changes. mysql adapter only.
+
 ## [1.1.7] - 2026-10-01
 
 ### Added
