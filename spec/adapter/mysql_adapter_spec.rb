@@ -233,6 +233,31 @@ module Exwiw
             adapter.dump_schema(tables, schema_path)
             expect(@captured_cmd).to include('--no-tablespaces')
           end
+
+          it "passes no TLS flags by default" do
+            adapter.dump_schema([shops_table(adapter_name)], schema_path)
+            expect(@captured_cmd.grep(/ssl/)).to be_empty
+          end
+
+          {
+            "disabled" => ['--skip-ssl'],
+            "preferred" => [],
+            "required" => ['--ssl', '--skip-ssl-verify-server-cert'],
+            "verify_ca" => ['--ssl', '--ssl-verify-server-cert'],
+            "verify_identity" => ['--ssl', '--ssl-verify-server-cert'],
+          }.each do |mode, flags|
+            context "with ssl_mode #{mode}" do
+              let(:connection_config) do
+                ConnectionConfig.new(adapter: adapter_name, database_name: 'exwiw_test', host: '127.0.0.1', port: 3306,
+                                     user: 'root', password: 'rootpassword', ssl_mode: mode, ssl_ca: '/etc/ca.pem')
+              end
+
+              it "passes --ssl-ca#{flags.map { " #{it}" }.join}" do
+                adapter.dump_schema([shops_table(adapter_name)], schema_path)
+                expect(@captured_cmd.grep(/ssl/)).to eq(['--ssl-ca=/etc/ca.pem', *flags])
+              end
+            end
+          end
         end
 
         context "when mysqldump is MySQL" do
@@ -261,6 +286,23 @@ module Exwiw
             tables = [shops_table(adapter_name)]
             adapter.dump_schema(tables, schema_path)
             expect(@captured_cmd).to include('--no-tablespaces')
+          end
+
+          it "passes no TLS flags by default" do
+            adapter.dump_schema([shops_table(adapter_name)], schema_path)
+            expect(@captured_cmd.grep(/ssl/)).to be_empty
+          end
+
+          context "with ssl_mode and ssl_ca" do
+            let(:connection_config) do
+              ConnectionConfig.new(adapter: adapter_name, database_name: 'exwiw_test', host: '127.0.0.1', port: 3306,
+                                   user: 'root', password: 'rootpassword', ssl_mode: 'verify_identity', ssl_ca: '/etc/ca.pem')
+            end
+
+            it "passes --ssl-mode and --ssl-ca through" do
+              adapter.dump_schema([shops_table(adapter_name)], schema_path)
+              expect(@captured_cmd.grep(/ssl/)).to eq(['--ssl-ca=/etc/ca.pem', '--ssl-mode=VERIFY_IDENTITY'])
+            end
           end
         end
 
