@@ -358,8 +358,13 @@ module Exwiw
       end
 
       it 'rejects an empty --ssl-ca' do
-        expect { run_cli(schema_check_argv + ['--adapter=mysql', '--ssl-ca=']) }.to raise_error(SystemExit)
+        expect { run_cli(schema_check_argv + ['--adapter=mysql', '--ssl-mode=verify_ca', '--ssl-ca=']) }.to raise_error(SystemExit)
           .and output(/--ssl-ca must be a path to a CA certificate file/).to_stderr
+      end
+
+      it 'rejects --ssl-ca without --ssl-mode, which the drivers would treat differently' do
+        expect { run_cli(schema_check_argv + ['--adapter=mysql', '--ssl-ca=/etc/ca.pem']) }.to raise_error(SystemExit)
+          .and output(/--ssl-ca requires --ssl-mode/).to_stderr
       end
 
       it 'rejects the TLS options for non-mysql adapters' do

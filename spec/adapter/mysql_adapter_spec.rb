@@ -252,7 +252,7 @@ module Exwiw
                                      user: 'root', password: 'rootpassword', ssl_mode: mode, ssl_ca: '/etc/ca.pem')
               end
 
-              it "passes --ssl-ca#{flags.map { " #{it}" }.join}" do
+              it "passes --ssl-ca#{flags.map { |flag| " #{flag}" }.join}" do
                 adapter.dump_schema([shops_table(adapter_name)], schema_path)
                 expect(@captured_cmd.grep(/ssl/)).to eq(['--ssl-ca=/etc/ca.pem', *flags])
               end

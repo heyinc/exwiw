@@ -672,7 +672,10 @@ module Exwiw
         exit 1
       end
 
-      return if @ssl_mode.nil?
+      if @ssl_mode.nil?
+        $stderr.puts "--ssl-ca requires --ssl-mode (verify_ca or verify_identity to verify the server)"
+        exit 1
+      end
 
       @ssl_mode = @ssl_mode.downcase
       unless Adapter::MysqlClient::SSL_MODES.include?(@ssl_mode)
