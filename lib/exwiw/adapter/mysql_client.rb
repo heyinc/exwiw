@@ -20,6 +20,16 @@ module Exwiw
 
       DRIVERS = [:mysql2, :trilogy].freeze
 
+      SSL_MODES = %w[disabled preferred required verify_ca verify_identity].freeze
+
+      TRILOGY_SSL_MODE_CONSTANTS = {
+        "disabled" => :SSL_DISABLED,
+        "preferred" => :SSL_PREFERRED_NOVERIFY,
+        "required" => :SSL_REQUIRED_NOVERIFY,
+        "verify_ca" => :SSL_VERIFY_CA,
+        "verify_identity" => :SSL_VERIFY_IDENTITY,
+      }.freeze
+
       # Pick the available driver, preferring mysql2 (exwiw's historical default).
       # require returns false when already loaded, so this is safe to call repeatedly.
       #
@@ -188,9 +198,30 @@ module Exwiw
         }.compact
 
         case @driver
-        when :mysql2 then Mysql2::Client.new(options)
-        when :trilogy then Trilogy.new(options)
+        when :mysql2 then Mysql2::Client.new(options.merge(mysql2_ssl_options))
+        when :trilogy then Trilogy.new(options.merge(trilogy_ssl_options))
         end
+      end
+
+      private def mysql2_ssl_options
+        { ssl_mode: mysql2_ssl_mode, sslca: @connection_config.ssl_ca }.compact
+      end
+
+      # mysql2 linked against MariaDB Connector/C defines unsupported modes as 0 and
+      # ignores them with a warning, so fall back to the nearest mode it supports.
+      private def mysql2_ssl_mode
+        mode = @connection_config.ssl_mode
+        return mode if mode.nil? || !Mysql2::Client.const_get("SSL_MODE_#{mode.upcase}").zero?
+
+        "verify_identity" if mode == "verify_ca"
+      end
+
+      private def trilogy_ssl_options
+        mode = @connection_config.ssl_mode
+        {
+          ssl_mode: mode && Trilogy.const_get(TRILOGY_SSL_MODE_CONSTANTS.fetch(mode)),
+          ssl_ca: @connection_config.ssl_ca,
+        }.compact
       end
     end
   end

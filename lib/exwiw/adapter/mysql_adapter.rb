@@ -103,6 +103,7 @@ module Exwiw
         # MariaDB's mysqldump does not recognise the MySQL-specific
         # --set-gtid-purged flag and exits with code 7.
         gtid_flags = mariadb_mysqldump?(mysqldump_bin) ? [] : ['--set-gtid-purged=OFF']
+        ssl_flags = mysqldump_ssl_flags(mariadb: mariadb_mysqldump?(mysqldump_bin))
 
         cmd = [
           mysqldump_bin,
@@ -115,6 +116,7 @@ module Exwiw
           '--skip-set-charset',
           '--no-tablespaces', # skip tablespace query that requires PROCESS privilege (unavailable on managed MySQL like RDS)
           *gtid_flags,
+          *ssl_flags,
           '--compact',
           @connection_config.database_name,
         ]
@@ -435,6 +437,23 @@ module Exwiw
           rescue SystemCallError
             false
           end
+      end
+
+      private def mysqldump_ssl_flags(mariadb:)
+        mode = @connection_config.ssl_mode
+        ca_flags = @connection_config.ssl_ca ? ["--ssl-ca=#{@connection_config.ssl_ca}"] : []
+        return ca_flags + (mode ? ["--ssl-mode=#{mode.upcase}"] : []) unless mariadb
+
+        # MariaDB's client has no --ssl-mode, and from 11.4 verifies the server
+        # certificate by default, so `required` must opt out to stay unverified.
+        mode_flags =
+          case mode
+          when nil, "preferred" then []
+          when "disabled" then ["--skip-ssl"]
+          when "required" then ["--ssl", "--skip-ssl-verify-server-cert"]
+          else ["--ssl", "--ssl-verify-server-cert"]
+          end
+        ca_flags + mode_flags
       end
 
       private def connection

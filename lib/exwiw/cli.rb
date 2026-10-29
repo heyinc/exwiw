@@ -65,7 +65,7 @@ module Exwiw
     # Database connection settings are environment-specific (and sometimes
     # secret-adjacent), so they must be passed via CLI/env, never the committed
     # config file. `adapter` is the one connection-ish key allowed in config.
-    REJECTED_CONNECTION_KEYS = %w[host port user database uri password].freeze
+    REJECTED_CONNECTION_KEYS = %w[host port user database uri password ssl_mode ssl_ca].freeze
 
     # Keys that only make sense for `export`. They are skipped when merging config
     # for `explain` so a shared config file does not trip validate_explain_only!,
@@ -103,6 +103,8 @@ module Exwiw
       @database_user = nil
       @database_password = ENV["DATABASE_PASSWORD"]
       @connection_uri = nil
+      @ssl_mode = nil
+      @ssl_ca = nil
       @output_dir = nil
       @schema_dir = nil
       @from_db = false
@@ -148,6 +150,8 @@ module Exwiw
         database_name: @database_name,
         uri: @connection_uri,
         mongodb_query_timeout_ms: @mongodb_query_timeout_ms,
+        ssl_mode: @ssl_mode,
+        ssl_ca: @ssl_ca,
       )
 
       dump_target = DumpTarget.new(
@@ -324,6 +328,7 @@ module Exwiw
       resolve_scope_column!
       resolve_ids_field!
       resolve_uri_option!
+      resolve_ssl_options!
       resolve_parallel_workers!
       resolve_mongodb_query_timeout_ms!
 
@@ -654,6 +659,31 @@ module Exwiw
       end
     end
 
+    private def resolve_ssl_options!
+      return if @ssl_mode.nil? && @ssl_ca.nil?
+
+      if @database_adapter != "mysql"
+        $stderr.puts "--ssl-mode / --ssl-ca are only supported by the mysql adapter"
+        exit 1
+      end
+
+      if @ssl_ca&.empty?
+        $stderr.puts "--ssl-ca must be a path to a CA certificate file"
+        exit 1
+      end
+
+      if @ssl_mode.nil?
+        $stderr.puts "--ssl-ca requires --ssl-mode (verify_ca or verify_identity to verify the server)"
+        exit 1
+      end
+
+      @ssl_mode = @ssl_mode.downcase
+      unless Adapter::MysqlClient::SSL_MODES.include?(@ssl_mode)
+        $stderr.puts "Invalid --ssl-mode. Available options are: #{Adapter::MysqlClient::SSL_MODES.join(', ')}"
+        exit 1
+      end
+    end
+
     # `--parallel-workers` opts into the MongoDB fork-parallel dump schedule
     # (docs/mongodb-dump-parallelism-2x-notes.md). It is mongodb-only (the SQL
     # adapters shell out to their own dumpers) and must be a positive integer;
@@ -919,6 +949,8 @@ module Exwiw
         end
         opts.on("-a", "--adapter=ADAPTER", "Database adapter: mysql, sqlite, postgresql, mongodb (aliases: mysql2, sqlite3)") { |v| @database_adapter = v }
         opts.on("--uri=URI", "Full MongoDB connection URI (mongodb:// or mongodb+srv://). mongodb adapter only; takes precedence over --host/--port/--user. TLS, replicaSet, authSource and credentials are read from the URI.") { |v| @connection_uri = v }
+        opts.on("--ssl-mode=MODE", "TLS mode for the connection and mysqldump: #{Adapter::MysqlClient::SSL_MODES.join(', ')}. mysql adapter only; defaults to the client library's behavior.") { |v| @ssl_mode = v }
+        opts.on("--ssl-ca=PATH", "CA certificate file used to verify the server. mysql adapter only.") { |v| @ssl_ca = v }
         opts.on("--database=DATABASE", "Target database name") { |v| @database_name = v }
         opts.on("--target-table=[TABLE]", "Target table for extraction. If omitted with --ids, run in scope-column mode (SQL adapters; the schema must declare `scope_column:`). If omitted without --ids, dump all tables.") { |v| @target_table_name = v }
         opts.on("--target-collection=[COLLECTION]", "Alias of --target-table for the mongodb adapter.") { |v| @target_collection_name = v }
