@@ -22,8 +22,8 @@ module Exwiw
     attribute :type, optional(String), skip_serializing_if_nil: true
     attribute :comment, optional(String), skip_serializing_if_nil: true
     attribute :filter, optional(String), skip_serializing_if_nil: true
-    attribute :belongs_tos, array(BelongsTo), default: []
-    attribute :columns, array(TableColumn), default: []
+    attribute :belongs_tos, array(BelongsTo), default: [], merge: { list: BelongsTo::IDENTITY_ATTRIBUTES }
+    attribute :columns, array(TableColumn), default: [], merge: { list: :name }
     attribute :bulk_insert_chunk_size, optional(Integer), skip_serializing_if_nil: true
     attribute :ignore, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
     # Scope-column mode only (see Exwiw::DumpTarget#scope_column). Both are

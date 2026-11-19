@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Two schema config files with the same `name` are an error.** `export` and `explain` kept whichever was read last. They now fail naming both files.
+- **Two `columns` / `fields` with the same `name`, or two `belongs_tos` with the same `table_name`, `foreign_key`, `foreign_type` and `type_value`, in one config are an error** when `export`, `explain` or `schema show` loads it, instead of both being used.
+
 ## [1.1.8] - 2026-10-29
 
 ### Added

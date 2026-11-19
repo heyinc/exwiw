@@ -10,8 +10,8 @@ module Exwiw
     attribute :name, String
     attribute :primary_key, String
     attribute :filter, optional(String), skip_serializing_if_nil: true
-    attribute :belongs_tos, array(BelongsTo)
-    attribute :fields, array(MongodbField)
+    attribute :belongs_tos, array(BelongsTo), merge: { list: BelongsTo::IDENTITY_ATTRIBUTES }
+    attribute :fields, array(MongodbField), merge: { list: :name }
     attribute :bulk_insert_chunk_size, optional(Integer), skip_serializing_if_nil: true
     # Per-collection server-enforced query timeout in milliseconds (CSOT). Applied
     # to this collection's find (whole cursor lifetime), count, and an executing

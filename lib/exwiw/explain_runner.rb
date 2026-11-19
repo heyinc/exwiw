@@ -97,15 +97,7 @@ module Exwiw
     end
 
     private def load_table_config(klass)
-      Dir[File.join(@schema_dir, "*.json")].map do |file|
-        json = JSON.parse(File.read(file))
-        begin
-          klass.from(json).reject_ignored_members!
-        rescue UnknownConfigKeyError => e
-          # `.from` knows the table, not the file; point at the offending file.
-          raise UnknownConfigKeyError, "#{file}: #{e.message}", e.backtrace
-        end
-      end
+      SchemaLoader.new(dir: @schema_dir, config_class: klass).load
     end
 
     # Reject a `--target-table` (or `--target-collection`) absent from the loaded
