@@ -81,7 +81,10 @@ def configs
       Exwiw::MongodbCollectionConfig.from_symbol_keys(
         name: "account_addresses", primary_key: "_id", belongs_tos: [],
         embedded_in: { collection_name: "accounts", path: "addresses" },
-        fields: [{ name: "street", replace_with: "masked street" }, { name: "zip" }],
+        fields: [
+          { name: "street", replace_with: "masked street" }, { name: "zip" },
+          { name: "secret", ignore: true }, { name: "label", replace_with: "{secret}-x" },
+        ],
       ),
     ]
   else
@@ -154,7 +157,7 @@ def seed_documents
   ROWS.map do |id, name, email, nick, phone, city|
     { "_id" => id, "name" => name, "email" => email, "phone" => phone, "greeting" => "orig", "tier" => 7,
       "city" => city, "internal_note" => "keep #{id}",
-      "addresses" => [{ "street" => "s#{id}a", "zip" => "z#{id}" }, { "street" => "s#{id}b", "zip" => "z#{id}" }] }
+      "addresses" => %w[a b].map { |k| { "street" => "s#{id}#{k}", "zip" => "z#{id}", "secret" => "sec#{id}#{k}", "label" => "orig" } } }
   end
 end
 
@@ -241,6 +244,8 @@ end
 # ---- scenario -------------------------------------------------------------------------------
 
 $failures = []
+# normalize stringified addresses; export drops the ignored embedded field, the update leaves it
+def without_secret(addresses) = addresses.gsub(/, "secret" => "[^"]*"/, "")
 def check(label, condition)
   puts "#{condition ? '✓' : '✗'} #{label}"
   $failures << label unless condition
@@ -278,7 +283,8 @@ compared = declared - RANDOM
     check("row #{id} #{col}: update == export (#{applied[id][col].inspect})", applied[id][col] == exported[id][col])
   end
   if ADAPTER == "mongodb"
-    check("row #{id} embedded: update == export", applied[id]["addresses"] == exported[id]["addresses"])
+    check("row #{id} embedded: update == export", without_secret(applied[id]["addresses"]) == exported[id]["addresses"])
+    check("row #{id} embedded ignored field unchanged", applied[id]["addresses"].scan(/"secret" => "[^"]*"/) == original[id]["addresses"].scan(/"secret" => "[^"]*"/))
   end
   untouched = original[id].keys - declared - (ADAPTER == "mongodb" ? ["addresses"] : [])
   check("row #{id} undeclared columns unchanged", untouched.all? { |c| applied[id][c] == original[id][c] })

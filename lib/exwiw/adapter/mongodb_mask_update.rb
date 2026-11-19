@@ -14,7 +14,7 @@ module Exwiw
         config = config_by_name.fetch(config.name)
         @embedded_children_by_parent = index_embedded_children(config_by_name)
 
-        plan = without_drops(build_mask_plan(config))
+        plan = build_mask_plan(config)
         names = mask_target_names(plan)
         if names.empty?
           raise MaskUpdatePlan::Error, "collection '#{config.name}' declares no mask (replace_with / replace_with_fake_data) on any field"
@@ -54,14 +54,6 @@ module Exwiw
         )
       end
 
-      # Ignored fields are left alone, not dropped as export does.
-      private def without_drops(plan)
-        MongodbAdapter::MaskPlan.new(
-          plan.masked_fields, plan.faked_fields, [],
-          plan.embedded.map { |e| MongodbAdapter::EmbeddedMask.new(e.prefix, e.last, without_drops(e.plan)) }
-        )
-      end
-
       private def mask_target_names(plan, prefix = nil)
         own = (plan.masked_fields.map(&:first) + plan.faked_fields.map(&:first)).map { |n| [prefix, n].compact.join(".") }
         own + plan.embedded.flat_map { |e| mask_target_names(e.plan, [prefix, *e.prefix, e.last].compact.join(".")) }
@@ -85,7 +77,7 @@ module Exwiw
         end
       end
 
-      # Dotted path => new value for every leaf the masking changed.
+      # Dotted path => new value for every changed leaf; keys export drops are absent from `masked`, so never $set or $unset.
       private def changed_paths(original, masked, prefix = nil, out = {})
         case masked
         when Hash
