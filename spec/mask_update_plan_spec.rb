@@ -478,6 +478,38 @@ module Exwiw
       end
     end
 
+    describe "a primary key value the database converts to another key" do
+      let(:accounts) { table(columns: [{ name: "id" }, { name: "email", replace_with: "masked{id}" }]) }
+
+      it "refuses to mask the row MySQL matches after converting the value" do
+        adapter = Adapter.build(connection_config(:mysql), logger)
+        connection = adapter.send(:connection)
+        connection.query("CREATE TEMPORARY TABLE accounts (id int PRIMARY KEY, email varchar(64))")
+        connection.query("INSERT INTO accounts VALUES (7, 'c@x'), (10, 'a@x'), (12, 'b@x')")
+
+        ["12x", " 12", "1e1", "007"].each do |given|
+          expect { build(adapter, [accounts], [given]) }
+            .to raise_error(MaskUpdatePlan::Error, /matched none of the given values exactly/)
+        end
+        expect(build(adapter, [accounts], [12]).summary).to have_attributes(target_count: 1, missing_primary_key_values: [])
+      end
+
+      it "reports the value as missing where the database does not convert it" do
+        Dir.mktmpdir do |dir|
+          path = File.join(dir, "mask.sqlite3")
+          SQLite3::Database.new(path).execute_batch(
+            "CREATE TABLE accounts (id INTEGER PRIMARY KEY, email TEXT); INSERT INTO accounts VALUES (12, 'b@x');"
+          )
+          adapter = Adapter.build(ConnectionConfig.new(adapter: "sqlite", database_name: path), logger)
+
+          plan = build(adapter, [accounts], ["12x"])
+
+          expect(plan.script).to eq("")
+          expect(plan.summary).to have_attributes(target_count: 0, missing_primary_key_values: ["12x"])
+        end
+      end
+    end
+
     describe "MongoDB values a mongosh script cannot express" do
       let(:adapter) { Adapter.build(connection_config(:mongodb), logger) }
 

@@ -70,6 +70,7 @@ module Exwiw
         masked_indexes = masked.map { |c| columns.index(c) }
         computed = masked.map { |c| c.map || c.replace_with_fake_data }
         given_by_key = primary_key_values.to_h { |v| [v.to_s, v] }
+        given_folded = primary_key_values.to_set { |v| v.to_s.downcase }
 
         matched = []
         statements = []
@@ -82,7 +83,16 @@ module Exwiw
           rows = select_rows("/* #{label} */ #{compile_ast(ast)}")
 
           rows.each do |row|
-            pk_value = given_by_key.fetch(row[pk_index].to_s, row[pk_index])
+            returned = row[pk_index]
+            # MySQL converts a string like '12x' to 12 when comparing with an integer key, so such a row is not the one asked for.
+            unless given_by_key.key?(returned.to_s) || given_folded.include?(returned.to_s.downcase)
+              raise MaskUpdatePlan::Error,
+                    "'#{effective.name}' row with primary key #{returned.inspect} matched none of the given values exactly " \
+                    "(#{primary_key_values.map(&:to_s).first(5).join(', ')}#{primary_key_values.size > 5 ? ', ...' : ''}); " \
+                    "the database converted one of them, so pass the exact primary key values"
+            end
+
+            pk_value = given_by_key.fetch(returned.to_s, returned)
             matched << pk_value
 
             row = transformer.transform(row) if transformer
