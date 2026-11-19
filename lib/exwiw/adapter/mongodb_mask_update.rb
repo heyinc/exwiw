@@ -29,8 +29,8 @@ module Exwiw
         primary_key_values = dump_target.default_ids
         ids = coerce_ids(primary_key_values)
         docs = find_for_mask_update(config, ids)
-        found_ids = docs.map { |doc| doc[config.primary_key] }
-        missing = primary_key_values.reject { |v| found_ids.include?(coerce_id(v)) }
+        found_ids = docs.to_set { |doc| doc[config.primary_key] }
+        missing = primary_key_values.zip(ids).reject { |_, id| found_ids.include?(id) }.map(&:first)
 
         operations = docs.filter_map do |doc|
           masked = copy_containers(doc)
