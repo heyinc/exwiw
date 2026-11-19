@@ -89,6 +89,36 @@ exwiw explain \
 
 `--output-dir`, `--output-format` and `--after-insert-hook` cannot be used with `explain`.
 
+### `exwiw mask-update`
+
+Prints the UPDATE statements that mask the given rows of one table in place, using the [masks](#masking) of the schema config, the same ones `export` applies. For MongoDB it prints a `mongosh` script instead.
+
+```bash
+exwiw mask-update \
+  --adapter=postgresql \
+  --host=localhost --port=5432 --user=reader \
+  --database=app_production \
+  --schema-dir=exwiw/schema \
+  --target-table=users --ids=1,2 > mask.sql
+```
+
+`--ids` are primary key values (a composite primary key is not supported). The statements go to stdout; a summary (the number of rows, the columns, primary key values that were not found) goes to stderr. `--profile` applies the overlay of a [profile](#profile-overlays).
+
+- exwiw only reads. The output has no header and no transaction control; review it and apply it yourself. Whether the declared masks are safe values for the database you apply it to is not checked: a mask written for a development copy is applied as written.
+- Every masked value is computed when the statements are generated, by the same SELECT `export` runs, and written as a literal: one UPDATE per row. Apply them soon after generating; a row changed in between is overwritten with a value computed from its old data.
+- Applying the same statements twice leaves the same values. Generating them again after masking reads the masked values, so a mask that reads the column (`{column}`), `map` or `replace_with_fake_data` can give different values the second time, and a random `raw_sql` always does.
+- A column whose name contains `password`, `digest`, `salt`, `secret`, `token`, `credential`, `encrypted`, `passcode`, `api_key` or `access_key` may only be masked to NULL (`"raw_sql": "NULL"`) or to a random expression as its `raw_sql` (the table below), because any other value is guessable: a constant, one derived from the primary key, or a fake or `map` value. Use a random expression for a column that cannot be NULL (NOT NULL or UNIQUE). The value is drawn when the statements are generated and written into them, so treat the output as a secret. MongoDB can neither say NULL nor draw a random value, so every such path needs an allowance. Name a column with `--allow-constant-column=table.column` (repeatable) to accept any other mask; the summary lists those columns.
+- The literals assume MySQL is applied over a `utf8mb4` connection without `NO_BACKSLASH_ESCAPES`, and PostgreSQL with `standard_conforming_strings` on.
+- It is an error when the table is not declared or is `ignore: true`, has no primary key or a composite one, declares no mask, or masks its primary key.
+
+The `raw_sql` forms accepted for such a column (the whole expression, case-insensitive; `N` is 16 to 1024):
+
+| Adapter | `raw_sql` |
+|---|---|
+| PostgreSQL | `gen_random_uuid()::text`, `replace(gen_random_uuid()::text, '-', '')`, `encode(gen_random_bytes(N), 'hex')` (needs the `pgcrypto` extension) |
+| MySQL | `HEX(RANDOM_BYTES(N))`, `LOWER(HEX(RANDOM_BYTES(N)))` |
+| SQLite | `hex(randomblob(N))`, `lower(hex(randomblob(N)))` |
+
 ### Config file (`exwiw.yml`)
 
 Options can be kept in a YAML file passed with `--config=PATH`. Without `--config`, `exwiw.yml` (or `exwiw.yaml`) in the current directory is used if it exists. Options passed on the command line take precedence.
@@ -111,7 +141,7 @@ DATABASE_PASSWORD=... exwiw \
 
 - Connection settings (`host`, `port`, `user`, `database`, `uri`, `password`) are rejected, so they stay out of a committed file. `adapter` is allowed.
 - Relative paths are resolved from the config file's directory, not the current directory.
-- Unknown keys are rejected. Keys that only apply to `export` are ignored by `explain` and `schema`, so all subcommands can share one file.
+- Unknown keys are rejected. Keys that only apply to `export` are ignored by `explain`, `mask-update` and `schema`, so all subcommands can share one file (`ids_field` is the exception: `mask-update` picks rows by primary key and rejects it).
 - MongoDB-only keys (`explain_verbosity`, `mongodb_query_timeout_ms`, `parallel_workers`) are described in [MongoDB support](docs/mongodb.md).
 - `profiles` declares schema profiles; see [Profile overlays](#profile-overlays).
 
@@ -207,7 +237,7 @@ exwiw export --profile=dev ...    # without --profile, no profile applies
 exwiw schema show --profile=dev --table=users   # prints the merged config; needs no database
 ```
 
-- Only the names in `profiles` are recognized: without them, `users.dev.json` is an ordinary config file. Profile names use lowercase letters, digits, `_` and `-`. A profile applies only when `--profile` names it (export, explain and `schema show`), one per run; naming an undeclared profile is an error.
+- Only the names in `profiles` are recognized: without them, `users.dev.json` is an ordinary config file. Profile names use lowercase letters, digits, `_` and `-`. A profile applies only when `--profile` names it (export, explain, `mask-update` and `schema show`), one per run; naming an undeclared profile is an error.
 - An overlay must have the `name` of a config in the same directory (with multiple databases, in that database's subdirectory), and each config can have one overlay per profile.
 - A key in the overlay replaces the base value; a nested object such as `batch_scope` is replaced as a whole. `columns` (`fields` for MongoDB) are matched by `name`, and `belongs_tos` by `table_name`, `foreign_key`, `foreign_type` and `type_value`; the matched entry is merged key by key. An overlay can only change entries the base has, not add new ones.
 - Setting one of `replace_with`, `raw_sql`, `map` and `replace_with_fake_data` on a column removes the others, so the overlay's mask is the one that applies.
