@@ -72,5 +72,40 @@ module Exwiw
         expect(ConfigFile.schema_dir(path)).to be_nil
       end
     end
+
+    describe '.profiles' do
+      around do |example|
+        Dir.mktmpdir do |dir|
+          @tmpdir = dir
+          example.run
+        end
+      end
+
+      def config(yaml)
+        File.join(@tmpdir, 'exwiw.yml').tap { |path| File.write(path, yaml) }
+      end
+
+      it 'returns the declared profiles' do
+        expect(ConfigFile.profiles(config("profiles: [dev, ci]\n"))).to eq(%w[dev ci])
+      end
+
+      it 'returns none without a config file or a declaration' do
+        Dir.chdir(@tmpdir) { expect(ConfigFile.profiles).to eq([]) }
+        expect(ConfigFile.profiles(config("schema_dir: s\n"))).to eq([])
+      end
+
+      it 'raises on an invalid declaration rather than treating overlays as base files' do
+        expect { ConfigFile.profiles(config("profiles: [Dev]\n")) }.to raise_error(ArgumentError, /profile name 'Dev'/)
+        expect { ConfigFile.profiles(config("profiles: [dev, dev]\n")) }.to raise_error(ArgumentError, /more than once/)
+        expect { ConfigFile.profiles(config("profiles: dev\n")) }.to raise_error(ArgumentError, /must be a list/)
+      end
+
+      it 'raises on a config file it cannot read as a mapping' do
+        expect { ConfigFile.profiles(config("profiles: [unterminated\n")) }
+          .to raise_error(ArgumentError, /Could not parse the config file/)
+        expect { ConfigFile.profiles(config("- dev\n")) }.to raise_error(ArgumentError, /must be a YAML mapping/)
+        expect(ConfigFile.profiles(config(""))).to eq([])
+      end
+    end
   end
 end

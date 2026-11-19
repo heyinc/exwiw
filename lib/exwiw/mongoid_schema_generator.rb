@@ -72,13 +72,14 @@ module Exwiw
     # is unchanged unless a caller opts in.
     #
     # `safe_new_columns` mirrors `SchemaGenerator`; see #initialize.
-    def self.from_rails_application(output_dir:, skip_unsupported: false, safe_new_columns: true)
+    def self.from_rails_application(output_dir:, skip_unsupported: false, safe_new_columns: true, profiles: [])
       Rails.application.eager_load!
       new(
         models: ::Mongoid.models,
         output_dir: output_dir,
         skip_unsupported: skip_unsupported,
         safe_new_columns: safe_new_columns,
+        profiles: profiles,
       )
     end
 
@@ -88,11 +89,14 @@ module Exwiw
     # entry win, so in practice only fields a model change has just added keep
     # that treatment. Pass false to bootstrap a config, where every field is new
     # and flagging all of them at once is noise.
-    def initialize(models:, output_dir:, skip_unsupported: false, safe_new_columns: true)
+    #
+    # `profiles` are the declared schema profiles; see SchemaGenerator#initialize.
+    def initialize(models:, output_dir:, skip_unsupported: false, safe_new_columns: true, profiles: [])
       @models = models
       @output_dir = output_dir
       @skip_unsupported = skip_unsupported
       @safe_new_columns = safe_new_columns
+      @profiles = profiles
     end
 
     def generate!
@@ -151,7 +155,7 @@ module Exwiw
 
       live_names = models_by_collection_name.keys
 
-      Dir[File.join(@output_dir, "*.json")].sort.each do |path|
+      SchemaFiles.base_files(@output_dir, @profiles).each do |path|
         config = read_raw_config(path)
 
         # A file that does not parse says nothing about what it describes: its
@@ -174,6 +178,9 @@ module Exwiw
         result.add_removed_table(name)
       end
 
+      result.add_removed_overlay_entries(
+        OverlayDrift.prune!(@output_dir, config_class: MongodbCollectionConfig, profiles: @profiles),
+      )
       result
     end
 
@@ -237,7 +244,7 @@ module Exwiw
     private def existing_configs_by_name(dir)
       return {} unless dir && File.directory?(dir)
 
-      Dir[File.join(dir, "*.json")].each_with_object({}) do |path, acc|
+      SchemaFiles.base_files(dir, @profiles).each_with_object({}) do |path, acc|
         config = MongodbCollectionConfig.from(JSON.parse(File.read(path)))
         acc[config.name] = config
       rescue JSON::ParserError, ArgumentError
@@ -249,6 +256,7 @@ module Exwiw
       FileUtils.mkdir_p(dir)
 
       collections.each do |collection|
+        SchemaFiles.ensure_base_name!(collection.name, @profiles)
         path = File.join(dir, "#{collection.name}.json")
         config_to_write =
           if File.exist?(path)

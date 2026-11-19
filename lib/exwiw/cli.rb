@@ -250,13 +250,14 @@ module Exwiw
         introspector: introspector,
         output_dir: @schema_dir,
         safe_new_columns: schema_safe_new_columns?,
+        profiles: @profiles,
       ).generate!
 
       puts "exwiw: wrote the schema config for #{@database_name} to #{@schema_dir}."
     end
 
     private def run_schema_tidy(introspector)
-      result = DbSchemaGenerator.new(introspector: introspector, output_dir: @schema_dir).tidy!
+      result = DbSchemaGenerator.new(introspector: introspector, output_dir: @schema_dir, profiles: @profiles).tidy!
 
       if result.empty?
         puts "exwiw: schema config is already tidy; nothing to remove."
@@ -273,6 +274,9 @@ module Exwiw
         puts "exwiw: removed belongs_to(s) to #{targets.join(', ')} from '#{table_name}' " \
              "(the target table no longer exists)."
       end
+      result.removed_overlay_entries.each do |label|
+        puts "exwiw: removed overlay entry #{label} (no longer in the base config)."
+      end
     end
 
     private def run_schema_check(introspector)
@@ -281,13 +285,14 @@ module Exwiw
       # has been through both steps rather than only the first.
       regenerator = lambda do |tmp_dir|
         # Explicit: safe mode is not optional here, whatever the library default is.
-        DbSchemaGenerator.new(introspector: introspector, output_dir: tmp_dir, safe_new_columns: true).generate!
-        DbSchemaGenerator.new(introspector: introspector, output_dir: tmp_dir).tidy!
+        DbSchemaGenerator.new(introspector: introspector, output_dir: tmp_dir, safe_new_columns: true,
+                              profiles: @profiles).generate!
+        DbSchemaGenerator.new(introspector: introspector, output_dir: tmp_dir, profiles: @profiles).tidy!
       end
 
       report =
         begin
-          SchemaCheck.new(schema_dir: @schema_dir, regenerator: regenerator).run
+          SchemaCheck.new(schema_dir: @schema_dir, regenerator: regenerator, profiles: @profiles).run
         rescue StandardError => e
           # See SCHEMA_CHECK_ERROR_EXIT: not being able to run the check is a
           # different answer from "the config is out of date".
@@ -313,7 +318,8 @@ module Exwiw
       if SchemaCheck.stale?(report)
         # Name what blocks the export, capped — a migration can drop dozens of
         # columns, and the full list is in the report above.
-        stale = SchemaCheck::STALE_CATEGORIES.flat_map { |category| report.fetch(category, []) }
+        stale = (SchemaCheck::STALE_CATEGORIES + [SchemaCheck::OVERLAY_STALE])
+                .flat_map { |category| report.fetch(category, []) }
         listed = stale.first(10)
         listed << "and #{stale.size - listed.size} more (see the report)" if stale.size > listed.size
         $stderr.puts "exwiw: the config still references #{listed.join(', ')} — gone from the database, " \

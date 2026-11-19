@@ -178,5 +178,23 @@ module Exwiw
         expect { described_class.validate_unique_keys!(TableConfig, base, owner: "users.json") }.not_to raise_error
       end
     end
+
+    describe ".prune" do
+      it "removes the entries whose key the base no longer has, keeping the rest as written" do
+        overlay = {
+          "name" => "users",
+          "filter" => nil,
+          "columns" => [{ "name" => "legacy", "raw_sql" => "'x'" }, { "name" => "email", "replace_with" => "a" }],
+          "belongs_tos" => [{ "table_name" => "gone", "foreign_key" => "gone_id", "ignore" => true }],
+        }
+
+        pruned, removed = described_class.prune(TableConfig, base, overlay)
+
+        expect(pruned).to eq(
+          "name" => "users", "filter" => nil, "columns" => [{ "name" => "email", "replace_with" => "a" }],
+        )
+        expect(removed).to eq(["belongs_tos[table_name=gone,foreign_key=gone_id]", "columns.legacy"])
+      end
+    end
   end
 end

@@ -18,6 +18,10 @@ namespace :exwiw do
     # whole config at once. See SchemaGenerator#initialize.
     safe_new_columns = lambda { ENV["EXWIW_NEW_COLUMNS"] != "plain" }
 
+    # The declared schema profiles, so these tasks never read, rewrite or delete
+    # an overlay file as if it were a base config.
+    resolve_profiles = lambda { Exwiw::ConfigFile.profiles }
+
     desc "Generate schema from application"
     task generate: :environment do
       require "exwiw"
@@ -25,6 +29,7 @@ namespace :exwiw do
       groups = Exwiw::SchemaGenerator.from_rails_application(
         output_dir: resolve_schema_dir.call,
         safe_new_columns: safe_new_columns.call,
+        profiles: resolve_profiles.call,
       ).generate!
 
       # Surface cross-database belongs_tos the generator auto-ignored: these
@@ -48,7 +53,10 @@ namespace :exwiw do
     task check: :environment do
       require "exwiw"
 
-      report = Exwiw::SchemaCheck.from_rails_application(schema_dir: resolve_schema_dir.call).run
+      report = Exwiw::SchemaCheck.from_rails_application(
+        schema_dir: resolve_schema_dir.call,
+        profiles: resolve_profiles.call,
+      ).run
       json = JSON.pretty_generate(report)
       puts json
       # A file too, so a caller need not assume stdout carries only the JSON.
@@ -68,6 +76,7 @@ namespace :exwiw do
 
       result = Exwiw::SchemaGenerator.from_rails_application(
         output_dir: resolve_schema_dir.call,
+        profiles: resolve_profiles.call,
       ).tidy!
 
       if result.empty?
@@ -78,6 +87,9 @@ namespace :exwiw do
         end
         result.removed_columns.each do |table_name, columns|
           puts "exwiw: removed column(s) #{columns.join(', ')} from '#{table_name}' (no longer in the table)."
+        end
+        result.removed_overlay_entries.each do |label|
+          puts "exwiw: removed overlay entry #{label} (no longer in the base config)."
         end
       end
     end
@@ -102,6 +114,7 @@ namespace :exwiw do
         skip_unsupported: ENV["EXWIW_SKIP_UNSUPPORTED"] == "1",
         # Same convention as `generate`: safe unless EXWIW_NEW_COLUMNS=plain.
         safe_new_columns: safe_new_columns.call,
+        profiles: resolve_profiles.call,
       ).generate!
     end
 
@@ -111,6 +124,7 @@ namespace :exwiw do
 
       result = Exwiw::MongoidSchemaGenerator.from_rails_application(
         output_dir: resolve_schema_dir.call,
+        profiles: resolve_profiles.call,
       ).tidy!
 
       if result.empty?
@@ -119,6 +133,9 @@ namespace :exwiw do
         result.removed_tables.each do |name|
           puts "exwiw: removed config for collection '#{name}' (no longer exists in the application)."
         end
+        result.removed_overlay_entries.each do |label|
+          puts "exwiw: removed overlay entry #{label} (no longer in the base config)."
+        end
       end
     end
 
@@ -126,7 +143,10 @@ namespace :exwiw do
     task check_mongoid: :environment do
       require "exwiw"
 
-      report = Exwiw::SchemaCheck.from_mongoid_application(schema_dir: resolve_schema_dir.call).run
+      report = Exwiw::SchemaCheck.from_mongoid_application(
+        schema_dir: resolve_schema_dir.call,
+        profiles: resolve_profiles.call,
+      ).run
       json = JSON.pretty_generate(report)
       puts json
       # A file too, so a caller need not assume stdout carries only the JSON.

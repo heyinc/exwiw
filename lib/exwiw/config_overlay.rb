@@ -6,6 +6,7 @@ module Exwiw
   # `null` and an absent key are still distinguishable:
   #
   # - #merge: merges an overlay into its base config.
+  # - #prune: drops the overlay entries the base no longer has (for tidy and check).
   # - #validate_unique_keys!: the keyed lists an overlay is matched against
   #   must have unique keys.
   #
@@ -36,6 +37,16 @@ module Exwiw
 
       StrictKeys.validate!(klass, overlay, owner: owner)
       merge_record(klass, base, overlay, owner: owner, path: nil, keys: [])
+    end
+
+    # The overlay without the list entries (recursively) whose key the base no
+    # longer has, for tidy and check.
+    #
+    # @return [Array(Hash, Array<String>)] the pruned overlay and the labels of
+    #   the removed entries (e.g. `columns.legacy_col`)
+    def prune(klass, base, overlay)
+      removed = []
+      [prune_record(klass, base, overlay, nil, removed), removed]
     end
 
     # @raise [ArgumentError] if a keyed list of the raw config `hash` has two
@@ -173,6 +184,44 @@ module Exwiw
 
         merge_record(element_klass, element, overlay_element, owner: owner, path: element_path, keys: key_names)
       end
+    end
+
+    private_class_method def prune_record(klass, base, overlay, path, removed)
+      return overlay unless base.is_a?(Hash) && overlay.is_a?(Hash)
+
+      result = overlay.dup
+      attributes(klass).each do |key, attr|
+        next unless array_type?(attr.attr_type) && overlay[key].is_a?(Array)
+
+        key_names = list_keys(attr)
+        element_klass = StrictKeys.serdes_class(attr.attr_type)
+        next if key_names.nil? || element_klass.nil?
+
+        base_by_key = (base[key].is_a?(Array) ? base[key] : []).each_with_object({}) do |element, acc|
+          acc[key_names.map { |name| element[name] }] = element if element.is_a?(Hash)
+        end
+
+        kept = overlay[key].filter_map do |element|
+          next element unless element.is_a?(Hash)
+
+          element_key = key_names.map { |name| element[name] }
+          element_path = element_location(path, key, key_names, element_key)
+          base_element = base_by_key[element_key]
+          if base_element.nil?
+            removed << element_path
+            next
+          end
+
+          prune_record(element_klass, base_element, element, element_path, removed)
+        end
+
+        if kept.empty? && !overlay[key].empty?
+          result.delete(key)
+        else
+          result[key] = kept
+        end
+      end
+      result
     end
 
     # `columns.email` for a single key; `belongs_tos[table_name=users,foreign_key=user_id]` otherwise.

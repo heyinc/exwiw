@@ -67,5 +67,26 @@ module Exwiw
       end
     end
 
+    # Like #base_files / #overlay_files, including per-database subdirectories.
+    def base_files_recursive(dir, profiles)
+      Dir.glob(File.join(dir, "**", "*.json")).sort.reject { |path| overlay?(path, profiles) }
+    end
+
+    def overlay_files_recursive(dir, profiles)
+      Dir.glob(File.join(dir, "**", "*.json")).sort.select { |path| overlay?(path, profiles) }
+    end
+
+    # The generators write `<name>.json`; a name ending in `.<profile>` would be read back as an overlay.
+    #
+    # @raise [ArgumentError] if `<name>.json` is an overlay file name
+    def ensure_base_name!(name, profiles)
+      path = "#{name}.json"
+      profile = overlay_profile(path, profiles)
+      return if profile.nil?
+
+      raise ArgumentError,
+            "Cannot write the config of '#{name}' as #{path}: that file name is an overlay of " \
+            "profile '#{profile}'. Rename the profile in `profiles`."
+    end
   end
 end

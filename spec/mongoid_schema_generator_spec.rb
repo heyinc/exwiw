@@ -1423,5 +1423,46 @@ module Exwiw
         )
       end
     end
+
+    describe "profile overlays" do
+      def generator
+        described_class.new(models: models, output_dir: output_dir, profiles: ["dev"])
+      end
+
+      def overlay_path(name)
+        File.join(output_dir, "#{name}.dev.json")
+      end
+
+      def write_overlay(name, hash)
+        File.write(overlay_path(name), JSON.pretty_generate(hash) + "\n")
+      end
+
+      it "leaves overlays untouched on generate and tidy" do
+        generator.generate!
+        write_overlay("users", { "name" => "users", "filter" => "{}", "fields" => [{ "name" => "email", "replace_with" => nil }] })
+        before = File.read(overlay_path("users"))
+
+        generator.generate!
+        result = generator.tidy!
+
+        expect(File.read(overlay_path("users"))).to eq(before)
+        expect(result).to be_empty
+      end
+
+      it "prunes overlay fields the base no longer has and deletes overlays of removed collections" do
+        generator.generate!
+        File.write(File.join(output_dir, "legacy_things.json"), JSON.pretty_generate(
+          "name" => "legacy_things", "primary_key" => "_id", "belongs_tos" => [], "fields" => [{ "name" => "_id" }],
+        ))
+        write_overlay("legacy_things", { "name" => "legacy_things", "ignore" => true })
+        write_overlay("users", { "name" => "users", "fields" => [{ "name" => "removed_field", "replace_with" => "x" }] })
+
+        result = generator.tidy!
+
+        expect(File).not_to exist(overlay_path("legacy_things"))
+        expect(JSON.parse(File.read(overlay_path("users")))).to eq("name" => "users")
+        expect(result.removed_overlay_entries).to contain_exactly("dev:legacy_things", "dev:users.fields.removed_field")
+      end
+    end
   end
 end

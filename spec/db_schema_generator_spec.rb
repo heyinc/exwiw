@@ -448,6 +448,59 @@ module Exwiw
           end
         end
       end
+
+      describe "profile overlays" do
+        def with_profiles(**options)
+          described_class.new(introspector: introspector, output_dir: output_dir, profiles: ["dev"], **options)
+        end
+
+        def overlay_path(table_name)
+          File.join(output_dir, "#{table_name}.dev.json")
+        end
+
+        def write_overlay(table_name, hash)
+          File.write(overlay_path(table_name), JSON.pretty_generate(hash) + "\n")
+        end
+
+        it "leaves overlays untouched on generate and tidy" do
+          with_profiles.generate!
+          write_overlay("#{prefix}_shops", { "name" => "#{prefix}_shops", "columns" => [{ "name" => "name", "replace_with" => nil }] })
+          before = File.read(overlay_path("#{prefix}_shops"))
+
+          with_profiles.generate!
+          result = with_profiles.tidy!
+
+          expect(File.read(overlay_path("#{prefix}_shops"))).to eq(before)
+          expect(result).to be_empty
+        end
+
+        it "prunes overlay entries the tidied base no longer has" do
+          write_config("#{prefix}_orders", {
+            "name" => "#{prefix}_orders",
+            "primary_key" => "id",
+            "belongs_tos" => [
+              { "table_name" => "#{prefix}_shops", "foreign_key" => "shop_id" },
+              { "table_name" => "#{prefix}_vanished", "foreign_key" => "vanished_id" },
+            ],
+            "columns" => [{ "name" => "id" }, { "name" => "shop_id" }, { "name" => "ghost_column" }],
+          })
+          write_overlay("#{prefix}_orders", {
+            "name" => "#{prefix}_orders",
+            "belongs_tos" => [{ "table_name" => "#{prefix}_vanished", "foreign_key" => "vanished_id", "ignore" => true }],
+            "columns" => [{ "name" => "ghost_column", "ignore" => true }, { "name" => "shop_id", "comment" => "kept" }],
+          })
+
+          result = with_profiles.tidy!
+
+          expect(JSON.parse(File.read(overlay_path("#{prefix}_orders")))).to eq(
+            "name" => "#{prefix}_orders", "columns" => [{ "name" => "shop_id", "comment" => "kept" }],
+          )
+          expect(result.removed_overlay_entries).to contain_exactly(
+            "dev:#{prefix}_orders.belongs_tos[table_name=#{prefix}_vanished,foreign_key=vanished_id]",
+            "dev:#{prefix}_orders.columns.ghost_column",
+          )
+        end
+      end
     end
 
     describe "against mysql" do
