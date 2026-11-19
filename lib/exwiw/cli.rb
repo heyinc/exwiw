@@ -17,6 +17,8 @@ module Exwiw
     # The verbs `exwiw schema` takes, mirroring the `exwiw:schema:*` rake tasks
     # a Rails application would run instead.
     SCHEMA_VERBS = %w[generate check tidy].freeze
+    # `schema show` only reads the config files, so it needs no database and no --from-db.
+    SCHEMA_SHOW_VERB = "show"
 
     # `schema check` exit codes. 1 means "the config needs work" — that is the
     # signal CI acts on — so a failure to *perform* the check (an unreachable
@@ -49,6 +51,7 @@ module Exwiw
       parallel_workers
       explain_verbosity
       mongodb_query_timeout_ms
+      profiles
     ].freeze
 
     # MongoDB explain verbosity levels (passed through to the server's explain
@@ -126,6 +129,13 @@ module Exwiw
       # nil (not "any") so validation can tell "user passed --fail-on" apart
       # from the default when rejecting it on the other verbs.
       @fail_on = nil
+      # Schema profiles (see SchemaFiles): the declared names, the --profile
+      # flag, and the one applied to this run once validated.
+      @profiles = []
+      @profile_option = nil
+      @profile = nil
+      # `schema show` only: print one table instead of all.
+      @show_table = nil
       # nil (not :info) so we can tell "user passed --log-level" from the default,
       # letting a config-file value fill in; the :info default is applied later.
       @log_level = nil
@@ -176,6 +186,8 @@ module Exwiw
           parallel_workers: @parallel_workers,
           cli_options: build_cli_options_hash,
           logger: logger,
+          profiles: @profiles,
+          profile: @profile,
         ).run
       when "explain"
         ExplainRunner.new(
@@ -185,6 +197,8 @@ module Exwiw
           logger: logger,
           io: $stdout,
           explain_verbosity: @explain_verbosity,
+          profiles: @profiles,
+          profile: @profile,
         ).run
       when "schema"
         run_schema(connection_config)
@@ -195,6 +209,8 @@ module Exwiw
     # the `exwiw:schema:*` rake tasks perform for a Rails application, driven
     # from a database connection instead of from the application's models.
     private def run_schema(connection_config)
+      return run_schema_show if @schema_verb == SCHEMA_SHOW_VERB
+
       introspector = DbIntrospector.build(connection_config)
 
       case @schema_verb
@@ -204,18 +220,44 @@ module Exwiw
       end
     end
 
+    # Prints the config as export/explain load it (with the selected profile
+    # merged in): a JSON array of every table, or one table with --table.
+    private def run_schema_show
+      config_class = Adapter.class_for(@database_adapter).table_config_class
+      configs =
+        begin
+          SchemaLoader.new(dir: @schema_dir, config_class: config_class, profiles: @profiles, profile: @profile)
+                      .load(reject_ignored: false)
+        rescue ArgumentError, JSON::ParserError, Serdes::TypeError, Serdes::RequiredAttributeError => e
+          $stderr.puts "exwiw: could not load the schema config: #{e.message}"
+          exit 1
+        end
+
+      if @show_table
+        config = configs.find { |c| c.name == @show_table }
+        if config.nil?
+          $stderr.puts "'#{@show_table}' does not exist in the schema (#{@schema_dir})."
+          exit 1
+        end
+        puts JSON.pretty_generate(config.to_hash)
+      else
+        puts JSON.pretty_generate(configs.map(&:to_hash))
+      end
+    end
+
     private def run_schema_generate(introspector)
       DbSchemaGenerator.new(
         introspector: introspector,
         output_dir: @schema_dir,
         safe_new_columns: schema_safe_new_columns?,
+        profiles: @profiles,
       ).generate!
 
       puts "exwiw: wrote the schema config for #{@database_name} to #{@schema_dir}."
     end
 
     private def run_schema_tidy(introspector)
-      result = DbSchemaGenerator.new(introspector: introspector, output_dir: @schema_dir).tidy!
+      result = DbSchemaGenerator.new(introspector: introspector, output_dir: @schema_dir, profiles: @profiles).tidy!
 
       if result.empty?
         puts "exwiw: schema config is already tidy; nothing to remove."
@@ -232,6 +274,9 @@ module Exwiw
         puts "exwiw: removed belongs_to(s) to #{targets.join(', ')} from '#{table_name}' " \
              "(the target table no longer exists)."
       end
+      result.removed_overlay_entries.each do |label|
+        puts "exwiw: removed overlay entry #{label} (no longer in the base config)."
+      end
     end
 
     private def run_schema_check(introspector)
@@ -240,13 +285,14 @@ module Exwiw
       # has been through both steps rather than only the first.
       regenerator = lambda do |tmp_dir|
         # Explicit: safe mode is not optional here, whatever the library default is.
-        DbSchemaGenerator.new(introspector: introspector, output_dir: tmp_dir, safe_new_columns: true).generate!
-        DbSchemaGenerator.new(introspector: introspector, output_dir: tmp_dir).tidy!
+        DbSchemaGenerator.new(introspector: introspector, output_dir: tmp_dir, safe_new_columns: true,
+                              profiles: @profiles).generate!
+        DbSchemaGenerator.new(introspector: introspector, output_dir: tmp_dir, profiles: @profiles).tidy!
       end
 
       report =
         begin
-          SchemaCheck.new(schema_dir: @schema_dir, regenerator: regenerator).run
+          SchemaCheck.new(schema_dir: @schema_dir, regenerator: regenerator, profiles: @profiles).run
         rescue StandardError => e
           # See SCHEMA_CHECK_ERROR_EXIT: not being able to run the check is a
           # different answer from "the config is out of date".
@@ -272,7 +318,8 @@ module Exwiw
       if SchemaCheck.stale?(report)
         # Name what blocks the export, capped — a migration can drop dozens of
         # columns, and the full list is in the report above.
-        stale = SchemaCheck::STALE_CATEGORIES.flat_map { |category| report.fetch(category, []) }
+        stale = (SchemaCheck::STALE_CATEGORIES + [SchemaCheck::OVERLAY_STALE])
+                .flat_map { |category| report.fetch(category, []) }
         listed = stale.first(10)
         listed << "and #{stale.size - listed.size} more (see the report)" if stale.size > listed.size
         $stderr.puts "exwiw: the config still references #{listed.join(', ')} — gone from the database, " \
@@ -331,6 +378,12 @@ module Exwiw
       resolve_ssl_options!
       resolve_parallel_workers!
       resolve_mongodb_query_timeout_ms!
+      resolve_profile!
+
+      if @show_table && @subcommand != "schema"
+        $stderr.puts "--table only applies to `exwiw schema #{SCHEMA_SHOW_VERB}`."
+        exit 1
+      end
 
       if @subcommand == "explain"
         validate_explain_only!
@@ -396,7 +449,7 @@ module Exwiw
         exit 1
       end
 
-      if Dir.glob(File.join(@schema_dir, "*.json")).empty?
+      if SchemaFiles.base_files(@schema_dir, @profiles).empty?
         $stderr.puts "Schema dir contains no .json files: #{@schema_dir}"
         exit 1
       end
@@ -516,6 +569,33 @@ module Exwiw
       @parallel_workers ||= parse_parallel_workers(config["parallel_workers"]) if config.key?("parallel_workers")
       @mongodb_query_timeout_ms ||= parse_mongodb_query_timeout_ms(config["mongodb_query_timeout_ms"]) if config.key?("mongodb_query_timeout_ms")
       @explain_verbosity ||= config["explain_verbosity"]
+      begin
+        @profiles = SchemaFiles.validate_profiles!(config["profiles"], source: path)
+      rescue ArgumentError => e
+        $stderr.puts e.message
+        exit 1
+      end
+    end
+
+    # A profile applies only when --profile names it, and only to export,
+    # explain and `schema show`.
+    private def resolve_profile!
+      return if @profile_option.nil?
+
+      if @subcommand == "schema" && @schema_verb != SCHEMA_SHOW_VERB
+        $stderr.puts "--profile only applies to export, explain and `exwiw schema show` " \
+                     "(got `exwiw schema #{@schema_verb}`)."
+        exit 1
+      end
+
+      unless @profiles.include?(@profile_option)
+        declared = @profiles.empty? ? "no profiles are declared" : "declared: #{@profiles.join(', ')}"
+        $stderr.puts "Profile '#{@profile_option}' is not declared; declare it under `profiles` in the config file " \
+                     "(#{declared})."
+        exit 1
+      end
+
+      @profile = @profile_option
     end
 
     # Accept either a YAML list or a "1,2" string; coerce to strings to match
@@ -751,9 +831,20 @@ module Exwiw
     # Everything `exwiw schema <verb>` needs, and nothing the export path
     # requires. Runs instead of the export/explain validations, not after them.
     private def validate_schema_options!
+      if @schema_verb == SCHEMA_SHOW_VERB
+        validate_schema_show_options!
+        return
+      end
+
       unless SCHEMA_VERBS.include?(@schema_verb)
-        $stderr.puts "Usage: exwiw schema #{SCHEMA_VERBS.join('|')} --from-db [options] " \
+        $stderr.puts "Usage: exwiw schema #{SCHEMA_VERBS.join('|')} --from-db [options], or " \
+                     "exwiw schema #{SCHEMA_SHOW_VERB} [--profile=NAME] [--table=TABLE] " \
                      "(got #{@schema_verb.inspect})"
+        exit 1
+      end
+
+      if @show_table
+        $stderr.puts "--table only applies to `exwiw schema #{SCHEMA_SHOW_VERB}`."
         exit 1
       end
 
@@ -812,6 +903,25 @@ module Exwiw
       if @schema_verb == "generate"
         FileUtils.mkdir_p(@schema_dir)
       elsif !Dir.exist?(@schema_dir)
+        $stderr.puts "Schema dir does not exist: #{@schema_dir}"
+        exit 1
+      end
+    end
+
+    private def validate_schema_show_options!
+      if @from_db
+        $stderr.puts "`exwiw schema #{SCHEMA_SHOW_VERB}` reads the config files only; --from-db does not apply."
+        exit 1
+      end
+      if @fail_on
+        $stderr.puts "--fail-on only applies to `exwiw schema check` (got `exwiw schema #{@schema_verb}`)."
+        exit 1
+      end
+      if @schema_dir.nil?
+        $stderr.puts "Schema dir is required (pass --schema-dir or set schema_dir in the config file)"
+        exit 1
+      end
+      unless Dir.exist?(@schema_dir)
         $stderr.puts "Schema dir does not exist: #{@schema_dir}"
         exit 1
       end
@@ -928,7 +1038,9 @@ module Exwiw
                       reading a live database, for applications that cannot be
                       loaded to generate it from their models. Requires --from-db;
                       mysql and postgresql only. `check` prints a JSON report and
-                      exits 1 when the config needs work.
+                      exits 1 when the config needs work. `schema show` prints
+                      the config as export/explain load it (with --profile
+                      applied); it needs no database connection.
         BANNER
         opts.version = Exwiw::VERSION
 
@@ -967,6 +1079,8 @@ module Exwiw
         opts.on("--parallel-workers=N", Integer, "Fork N workers for the MongoDB dump's parallel schedule (mongodb + export only; N>=2 enables it, default is serial). Output is byte-identical to serial; falls back to serial where fork is unavailable.") { |v| @parallel_workers = v }
         opts.on("--mongodb-query-timeout-ms=N", Integer, "Global server-enforced timeout (ms) for every MongoDB query (mongodb only). Aborts an accidentally heavy/unscoped query past the deadline. Overridden per collection by `query_timeout_ms` in the schema config.") { |v| @mongodb_query_timeout_ms = v }
         opts.on("--fail-on=CATEGORY", "schema check only: what makes the exit code non-zero. 'any' (default) fails on any drift or undecided masking; 'stale' fails only when the committed config references tables/columns the schema no longer has - the drift that would break an export. The full report is printed either way.") { |v| @fail_on = v }
+        opts.on("--profile=NAME", "Schema profile whose overlay files (<table>.<profile>.json) are merged into the base config (export, explain and schema show). Must be declared under `profiles` in the config file. Without it, no profile applies.") { |v| @profile_option = v }
+        opts.on("--table=TABLE", "schema show only: print the config of this table/collection only.") { |v| @show_table = v }
         opts.on("--log-level=LEVEL", "Log level (debug, info). default is info") { |v| @log_level = v.to_sym }
 
         opts.on("--help", "Print this help") do

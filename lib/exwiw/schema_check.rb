@@ -30,18 +30,30 @@ module Exwiw
     # though a SELECT against it would succeed.
     STALE_CATEGORIES = %w[stale_tables stale_columns].freeze
 
-    def self.from_rails_application(schema_dir:)
+    # Overlay entries referencing a table/column/field/belongs_to the
+    # regenerated base no longer has (labeled `<profile>:<table>[.<entry>]`).
+    # Once the base is regenerated such an overlay no longer merges, so it is
+    # stale drift. Reported only when profiles are declared, keeping the report
+    # unchanged otherwise.
+    OVERLAY_STALE = "overlay_stale"
+
+    def self.from_rails_application(schema_dir:, profiles: [])
       Rails.application.eager_load!
-      new(models: ActiveRecord::Base.descendants, schema_dir: schema_dir)
+      new(models: ActiveRecord::Base.descendants, schema_dir: schema_dir, profiles: profiles)
     end
 
     # The Mongoid counterpart. `Mongoid.models` registers only the base class of
     # an inheritance hierarchy, which is exactly what MongoidSchemaGenerator
     # expects (it expands descendants itself), so the same source the generate
     # task introspects is used here.
-    def self.from_mongoid_application(schema_dir:)
+    def self.from_mongoid_application(schema_dir:, profiles: [])
       Rails.application.eager_load!
-      new(schema_dir: schema_dir, regenerator: mongoid_regenerator(::Mongoid.models))
+      new(
+        schema_dir: schema_dir,
+        regenerator: mongoid_regenerator(::Mongoid.models, profiles: profiles),
+        profiles: profiles,
+        config_class: MongodbCollectionConfig,
+      )
     end
 
     # The regeneration step `from_mongoid_application` injects, exposed so a
@@ -53,60 +65,104 @@ module Exwiw
     # newly added construct exwiw cannot represent has to fail the task with the
     # generator's actionable message rather than quietly become an `ignore: true`
     # config that reports clean while the collection stops being dumped.
-    def self.mongoid_regenerator(models)
+    def self.mongoid_regenerator(models, profiles: [])
       lambda do |tmp_dir|
         # Explicit: safe mode is not optional here, whatever the library default is.
-        MongoidSchemaGenerator.new(models: models, output_dir: tmp_dir, safe_new_columns: true).generate!
-        MongoidSchemaGenerator.new(models: models, output_dir: tmp_dir).tidy!
+        MongoidSchemaGenerator.new(models: models, output_dir: tmp_dir, safe_new_columns: true,
+                                   profiles: profiles).generate!
+        MongoidSchemaGenerator.new(models: models, output_dir: tmp_dir, profiles: profiles).tidy!
       end
     end
 
-    def initialize(schema_dir:, models: nil, regenerator: nil)
+    # `profiles` are the declared schema profiles: their overlays are left out of
+    # the diff, must merge into the committed config (`config_class` loads the
+    # result), and are checked against the regenerated one (OVERLAY_STALE).
+    def initialize(schema_dir:, models: nil, regenerator: nil, profiles: [], config_class: TableConfig)
       if models.nil? && regenerator.nil?
         raise ArgumentError, "SchemaCheck requires either models: or regenerator:"
       end
 
       @schema_dir = schema_dir
+      @profiles = profiles
+      @config_class = config_class
       @regenerator = regenerator || active_record_regenerator(models)
     end
 
     # The report as a plain Hash. Every list is sorted, so a given state always
     # produces the same output (it ends up in a CI comment).
+    #
+    # @raise [ArgumentError] if an overlay does not merge into the committed config
     def run
       committed = read_configs(@schema_dir)
+      validate_overlays!
+      overlay_stale = nil
       regenerated = Dir.mktmpdir do |tmp_dir|
         regenerate_into(tmp_dir)
+        overlay_stale = stale_overlay_entries(tmp_dir) unless @profiles.empty?
         read_configs(tmp_dir)
       end
 
       report = diff(committed, regenerated)
       report["needs_mask_decision"] = flagged_columns(committed)
+      report[OVERLAY_STALE] = overlay_stale if overlay_stale
       report
     end
 
     # Whether the report requires someone to act: the config is out of date, or
     # a column's masking has not been decided yet.
     def self.clean?(report)
-      CATEGORIES.all? { |category| report.fetch(category, []).empty? }
+      (CATEGORIES + [OVERLAY_STALE]).all? { |category| report.fetch(category, []).empty? }
     end
 
     # Whether the report contains drift that would break an extraction run
     # (see STALE_CATEGORIES). Always a subset of what makes clean? false.
     def self.stale?(report)
-      STALE_CATEGORIES.any? { |category| !report.fetch(category, []).empty? }
+      (STALE_CATEGORIES + [OVERLAY_STALE]).any? { |category| !report.fetch(category, []).empty? }
     end
 
+    # The overlays are left out of the copy: the generators never read them, and
+    # the regenerated side is compared against base configs only.
     private def regenerate_into(tmp_dir)
-      FileUtils.cp_r(File.join(@schema_dir, "."), tmp_dir) if Dir.exist?(@schema_dir)
+      if Dir.exist?(@schema_dir)
+        FileUtils.cp_r(File.join(@schema_dir, "."), tmp_dir)
+        SchemaFiles.overlay_files_recursive(tmp_dir, @profiles).each { |path| File.delete(path) }
+      end
       @regenerator.call(tmp_dir)
     end
 
     private def active_record_regenerator(models)
       lambda do |tmp_dir|
         # Explicit: safe mode is not optional here, whatever the library default is.
-        SchemaGenerator.new(models: models, output_dir: tmp_dir, safe_new_columns: true).generate!
-        SchemaGenerator.new(models: models, output_dir: tmp_dir).tidy!
+        SchemaGenerator.new(models: models, output_dir: tmp_dir, safe_new_columns: true,
+                            profiles: @profiles).generate!
+        SchemaGenerator.new(models: models, output_dir: tmp_dir, profiles: @profiles).tidy!
       end
+    end
+
+    # Loads every (directory, profile) that has overlays exactly as export would,
+    # so an overlay that does not merge fails the check whatever --fail-on says.
+    private def validate_overlays!
+      return if @profiles.empty? || !Dir.exist?(@schema_dir)
+
+      SchemaFiles.overlay_files_recursive(@schema_dir, @profiles)
+                 .map { |path| [File.dirname(path), SchemaFiles.overlay_profile(path, @profiles)] }
+                 .uniq
+                 .each do |dir, profile|
+        SchemaLoader.new(dir: dir, config_class: @config_class, profiles: @profiles, profile: profile).load
+      end
+    end
+
+    private def stale_overlay_entries(regenerated_dir)
+      return [] unless Dir.exist?(@schema_dir)
+
+      SchemaFiles.overlay_files_recursive(@schema_dir, @profiles).group_by { |path| File.dirname(path) }
+                 .flat_map do |dir, paths|
+        relative = Pathname.new(dir).relative_path_from(Pathname.new(@schema_dir)).to_s
+        bases = OverlayDrift.read_bases(File.join(regenerated_dir, relative), @profiles)
+        OverlayDrift.scan(paths, bases, config_class: @config_class, profiles: @profiles).flat_map do |entry|
+          entry.labels(relative == "." ? entry.name : "#{relative}/#{entry.name}")
+        end
+      end.sort
     end
 
     # Every config file under `dir`, keyed by its path relative to `dir` so the
@@ -115,7 +171,7 @@ module Exwiw
     private def read_configs(dir)
       return {} unless Dir.exist?(dir)
 
-      Dir[File.join(dir, "**", "*.json")].each_with_object({}) do |path, acc|
+      SchemaFiles.base_files_recursive(dir, @profiles).each_with_object({}) do |path, acc|
         key = Pathname.new(path).relative_path_from(Pathname.new(dir)).to_s
         begin
           acc[key] = JSON.parse(File.read(path))

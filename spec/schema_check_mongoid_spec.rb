@@ -132,5 +132,37 @@ module Exwiw
         MongoidSchemaGenerator::UnsupportedEmbedding, /polymorphic `embedded_in :addressable`/,
       )
     end
+
+    describe "profile overlays" do
+      def overlay_report
+        described_class.new(
+          schema_dir: schema_dir,
+          regenerator: described_class.mongoid_regenerator(models, profiles: ["dev"]),
+          profiles: ["dev"],
+          config_class: MongodbCollectionConfig,
+        ).run
+      end
+
+      def write_overlay(name, hash)
+        File.write(File.join(schema_dir, "#{name}.dev.json"), JSON.pretty_generate(hash) + "\n")
+      end
+
+      it "reports an overlay entry for a field the regenerated base drops, without listing the overlay as a collection" do
+        generate_current_config
+        rewrite("users") { |config| config["fields"] << { "name" => "legacy_field" } }
+        write_overlay("users", { "name" => "users", "fields" => [{ "name" => "legacy_field", "replace_with" => "x" }] })
+
+        expect(overlay_report["overlay_stale"]).to eq(["dev:users.fields.legacy_field"])
+        expect(overlay_report["removed_tables"]).to eq([])
+        expect(described_class.stale?(overlay_report)).to be(true)
+      end
+
+      it "fails when an overlay does not merge into the committed config" do
+        generate_current_config
+        write_overlay("users", { "name" => "users", "fields" => nil })
+
+        expect { overlay_report }.to raise_error(ArgumentError, /'fields' is a list and cannot be set to null/)
+      end
+    end
   end
 end

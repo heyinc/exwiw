@@ -711,5 +711,82 @@ module Exwiw
         expect(result.removed_columns).to eq("e2e_kept" => ["doomed_col"])
       end
     end
+
+    describe "profile overlays" do
+      let(:profiles) { ["dev"] }
+
+      def generator(models_list = models)
+        described_class.new(models: models_list, output_dir: output_dir, profiles: profiles)
+      end
+
+      def overlay_path(name)
+        File.join(output_dir, "#{name}.dev.json")
+      end
+
+      def write_overlay(name, hash)
+        File.write(overlay_path(name), JSON.pretty_generate(hash) + "\n")
+      end
+
+      it "leaves overlays untouched on generate and tidy, and never writes one" do
+        generator.generate!
+        overlay = { "name" => "users", "filter" => "users.id < 10", "columns" => [{ "name" => "email", "replace_with" => nil }] }
+        write_overlay("users", overlay)
+        before = File.read(overlay_path("users"))
+
+        generator.generate!
+        result = generator.tidy!
+
+        expect(File.read(overlay_path("users"))).to eq(before)
+        expect(result).to be_empty
+        expect(Dir[File.join(output_dir, "*.dev.json")]).to eq([overlay_path("users")])
+      end
+
+      it "treats an overlay as a base file when its profile is not declared" do
+        generator.generate!
+        write_overlay("users", { "name" => "ghost_table", "primary_key" => "id", "columns" => [{ "name" => "id" }] })
+
+        described_class.new(models: models, output_dir: output_dir).tidy!
+
+        expect(File).not_to exist(overlay_path("users"))
+      end
+
+      it "prunes overlay entries for removed columns and deletes overlays of removed tables, keeping the rest as written" do
+        generator.generate!
+        File.write(File.join(output_dir, "legacy_things.json"), JSON.pretty_generate(
+          "name" => "legacy_things", "primary_key" => "id", "columns" => [{ "name" => "id" }],
+        ))
+        write_overlay("legacy_things", { "name" => "legacy_things", "ignore" => true })
+        users = JSON.parse(File.read(File.join(output_dir, "users.json")))
+        users["columns"] << { "name" => "legacy_col" }
+        File.write(File.join(output_dir, "users.json"), JSON.pretty_generate(users))
+        write_overlay("users", {
+          "name" => "users",
+          "filter" => nil,
+          "columns" => [{ "name" => "legacy_col", "raw_sql" => "'x'" }, { "name" => "email", "replace_with" => "x" }],
+        })
+
+        result = generator.tidy!
+
+        expect(File).not_to exist(overlay_path("legacy_things"))
+        expect(JSON.parse(File.read(overlay_path("users")))).to eq(
+          "name" => "users", "filter" => nil, "columns" => [{ "name" => "email", "replace_with" => "x" }],
+        )
+        expect(result.removed_overlay_entries).to contain_exactly("dev:legacy_things", "dev:users.columns.legacy_col")
+      end
+
+      it "fails tidy on an overlay with an unknown key instead of rewriting it" do
+        generator.generate!
+        write_overlay("users", { "name" => "users", "filtr" => "users.id < 10" })
+        before = File.read(overlay_path("users"))
+
+        expect { generator.tidy! }.to raise_error(UnknownConfigKeyError, /Unknown key 'filtr' in overlay/)
+        expect(File.read(overlay_path("users"))).to eq(before)
+      end
+
+      it "refuses to write a table whose file name would be an overlay" do
+        expect { generator.write_files(output_dir, [TableConfig.from("name" => "users.dev", "primary_key" => "id", "columns" => [{ "name" => "id" }])]) }
+          .to raise_error(ArgumentError, /overlay of profile 'dev'/)
+      end
+    end
   end
 end

@@ -4,6 +4,9 @@ module Exwiw
   class BelongsTo
     include Serdes
 
+    # What identifies a relation; see #identity.
+    IDENTITY_ATTRIBUTES = %i[table_name foreign_key foreign_type type_value].freeze
+
     attribute :foreign_key, String
     # Optional so an ignored, no-longer-resolvable relation (a stale
     # `belongs_to` whose target class is gone) can be recorded with no target
@@ -56,7 +59,7 @@ module Exwiw
     # regardless of whether either carries a `references`, letting the merge
     # reconcile them (a hand-edited `references` wins over the generated one).
     def identity
-      [table_name, foreign_key, foreign_type, type_value]
+      IDENTITY_ATTRIBUTES.map { |attribute| public_send(attribute) }
     end
 
     def to_hash

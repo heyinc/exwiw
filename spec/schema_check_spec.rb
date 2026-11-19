@@ -166,5 +166,65 @@ module Exwiw
       after = Dir[File.join(schema_dir, "**", "*")].sort.to_h { |path| [path, File.read(path)] }
       expect(after).to eq(before)
     end
+
+    describe "profile overlays" do
+      def overlay_report
+        described_class.new(models: models, schema_dir: schema_dir, profiles: ["dev"]).run
+      end
+
+      def write_overlay(table_name, hash)
+        File.write(File.join(schema_dir, "#{table_name}.dev.json"), JSON.pretty_generate(hash) + "\n")
+      end
+
+      it "reports nothing for an overlay that matches the base, and never lists it as a table" do
+        generate_current_config
+        write_overlay("users", { "name" => "users", "columns" => [{ "name" => "email", "replace_with" => "x" }] })
+
+        expect(overlay_report["overlay_stale"]).to eq([])
+        expect(overlay_report.values.flatten).to be_empty
+        expect(described_class.clean?(overlay_report)).to be(true)
+      end
+
+      it "reports an overlay entry for a column the regenerated base drops, as stale" do
+        generate_current_config
+        rewrite("users") { |config| config["columns"] << { "name" => "legacy_col" } }
+        write_overlay("users", { "name" => "users", "columns" => [{ "name" => "legacy_col", "ignore" => true }] })
+
+        expect(overlay_report["overlay_stale"]).to eq(["dev:users.columns.legacy_col"])
+        expect(overlay_report["removed_tables"]).to eq([])
+        expect(described_class.stale?(overlay_report)).to be(true)
+        expect(described_class.clean?(overlay_report)).to be(false)
+      end
+
+      it "reports an overlay of a table that is gone" do
+        generate_current_config
+        FileUtils.cp(config_path("users"), config_path("obsolete"))
+        rewrite("obsolete") { |config| config["name"] = "obsolete" }
+        write_overlay("obsolete", { "name" => "obsolete", "ignore" => true })
+
+        expect(overlay_report["overlay_stale"]).to eq(["dev:obsolete"])
+        expect(overlay_report["removed_tables"]).to eq(["obsolete"])
+      end
+
+      it "fails when an overlay does not merge into the committed config" do
+        generate_current_config
+        write_overlay("users", { "name" => "users", "columns" => [{ "name" => "no_such_column" }] })
+
+        expect { overlay_report }.to raise_error(ArgumentError, /'columns.no_such_column' does not exist in the base config/)
+      end
+
+      it "fails when the merged config does not load" do
+        generate_current_config
+        write_overlay("users", { "name" => "users", "primary_key" => nil })
+
+        expect { overlay_report }.to raise_error(ArgumentError, /profile 'dev'.*requires primary_key/)
+      end
+
+      it "omits the overlay report when no profiles are declared" do
+        generate_current_config
+
+        expect(report).not_to have_key("overlay_stale")
+      end
+    end
   end
 end

@@ -41,10 +41,13 @@ module Exwiw
     # column is emitted masked as far as its type allows and flagged
     # `needs_mask_decision: true`, and #merge lets an already-decided entry win,
     # so in practice only genuinely new columns keep that treatment.
-    def initialize(introspector:, output_dir:, safe_new_columns: true)
+    #
+    # `profiles` are the declared schema profiles; see SchemaGenerator#initialize.
+    def initialize(introspector:, output_dir:, safe_new_columns: true, profiles: [])
       @introspector = introspector
       @output_dir = output_dir
       @safe_new_columns = safe_new_columns
+      @profiles = profiles
     end
 
     # Write one config file per table in the database, merged with whatever is
@@ -59,6 +62,7 @@ module Exwiw
       FileUtils.mkdir_p(@output_dir)
 
       @introspector.table_names.map do |table_name|
+        SchemaFiles.ensure_base_name!(table_name, @profiles)
         path = File.join(@output_dir, "#{table_name}.json")
         existing = read_config(path)
         generated = build_table(table_name, existing)
@@ -95,7 +99,7 @@ module Exwiw
       # config naming one is stale by the same definition as a dropped table.
       existing_tables = @introspector.table_names.to_set
 
-      Dir[File.join(@output_dir, "*.json")].sort.each do |path|
+      SchemaFiles.base_files(@output_dir, @profiles).each do |path|
         existing = TableConfig.from(JSON.parse(File.read(path)))
 
         unless existing_tables.include?(existing.name)
@@ -110,6 +114,7 @@ module Exwiw
         File.write(path, JSON.pretty_generate(existing.to_hash) + "\n") if changed
       end
 
+      result.add_removed_overlay_entries(OverlayDrift.prune!(@output_dir, config_class: TableConfig, profiles: @profiles))
       result
     end
 

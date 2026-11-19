@@ -4,14 +4,18 @@ module Exwiw
   class TableColumn
     include Serdes
 
-    attribute :name, String
-    attribute :replace_with, Serdes::OptionalType.new(MaskValue.new), skip_serializing_if_nil: true
-    attribute :raw_sql, optional(String), skip_serializing_if_nil: true
+    attribute :name, String, merge: :identity
+    # The masking modes form one exclusive group for overlays: raw_sql silently
+    # wins over replace_with, so an overlay setting one must drop the others.
+    attribute :replace_with, Serdes::OptionalType.new(MaskValue.new), skip_serializing_if_nil: true,
+                             merge: { exclusive: :mask }
+    attribute :raw_sql, optional(String), skip_serializing_if_nil: true, merge: { exclusive: :mask }
     # Ruby-process-side masking modes, applied to the fetched rows by
     # RowTransformer (SQL adapters only) — unlike replace_with/raw_sql, which
     # compile into the SELECT and run in the database.
-    attribute :map, optional(String), skip_serializing_if_nil: true
-    attribute :replace_with_fake_data, Serdes::OptionalType.new(FakeData), skip_serializing_if_nil: true
+    attribute :map, optional(String), skip_serializing_if_nil: true, merge: { exclusive: :mask }
+    attribute :replace_with_fake_data, Serdes::OptionalType.new(FakeData), skip_serializing_if_nil: true,
+                                       merge: { exclusive: :mask }
     # User-owned fields preserved across schema regeneration (see
     # TableConfig#merge). `ignore:true` drops the column from extraction (SELECT /
     # INSERT) once the config is loaded (see TableConfig#reject_ignored_members!).
