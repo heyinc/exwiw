@@ -148,6 +148,13 @@ module Exwiw
           (hash[space] ||= []) << table.name if space
         end
 
+      # A config with no scoped table at all (every table ignored, exempt or Rails-managed)
+      # has nothing for the ids to narrow, so there is no ID space name to have mistyped.
+      if tables_by_space.empty?
+        logger.warn("scope-column mode: no table is filtered by a scope_column, so --ids narrows nothing.")
+        return
+      end
+
       missing = tables_by_space.keys.select { |space| dump_target.ids_for(space).empty? }.sort
       if missing.any?
         details = missing.map do |space|
