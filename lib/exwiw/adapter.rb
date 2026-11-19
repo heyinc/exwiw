@@ -364,17 +364,19 @@ module Exwiw
     end
 
     def self.build(connection_config, logger)
-      case normalize_name(connection_config.adapter)
-      when 'sqlite'
-        Adapter::SqliteAdapter.new(connection_config, logger)
-      when 'mysql'
-        Adapter::MysqlAdapter.new(connection_config, logger)
-      when 'postgresql'
-        Adapter::PostgresqlAdapter.new(connection_config, logger)
-      when 'mongodb'
-        Adapter::MongodbAdapter.new(connection_config, logger)
+      class_for(connection_config.adapter).new(connection_config, logger)
+    end
+
+    # @param name [String] an adapter name or alias
+    # @return [Class] the adapter class, without connecting to anything
+    def self.class_for(name)
+      case normalize_name(name)
+      when 'sqlite' then Adapter::SqliteAdapter
+      when 'mysql' then Adapter::MysqlAdapter
+      when 'postgresql' then Adapter::PostgresqlAdapter
+      when 'mongodb' then Adapter::MongodbAdapter
       else
-        raise "Unsupported adapter: #{connection_config.adapter.inspect}"
+        raise "Unsupported adapter: #{name.inspect}"
       end
     end
   end

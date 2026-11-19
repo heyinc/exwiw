@@ -17,7 +17,8 @@ module Exwiw
     # signpost for adding support later.
     UNSUPPORTED_COMPOSITE_PRIMARY_KEY = "unsupported_composite_primary_key"
 
-    attribute :name, String
+    # `merge:` options declare how a profile overlay merges in (see Exwiw::ConfigOverlay).
+    attribute :name, String, merge: :identity
     attribute :primary_key, optional(String), skip_serializing_if_nil: true
     attribute :type, optional(String), skip_serializing_if_nil: true
     attribute :comment, optional(String), skip_serializing_if_nil: true

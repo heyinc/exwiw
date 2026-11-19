@@ -3,27 +3,32 @@
 require "json"
 
 module Exwiw
-  # Loads the schema config files of one directory.
+  # Loads the schema config files of one directory, merging the overlays of the
+  # selected profile into their base configs (see Exwiw::ConfigOverlay).
   class SchemaLoader
-    # A raw config ready to load, and the file it came from.
-    Source = Struct.new(:hash, :base_path, keyword_init: true) do
+    # A raw config ready to load, and the file(s) it came from.
+    Source = Struct.new(:hash, :base_path, :overlay_path, :profile, keyword_init: true) do
       def label
-        base_path
+        return base_path if overlay_path.nil?
+
+        "#{overlay_path} (profile '#{profile}', merged into #{base_path})"
       end
     end
 
     # @param dir [String] the schema directory (one database's)
     # @param config_class [Class] TableConfig or MongodbCollectionConfig
     # @param profiles [Array<String>] the declared profiles
-    def initialize(dir:, config_class:, profiles: [])
+    # @param profile [String, nil] the profile to apply, or nil for none
+    def initialize(dir:, config_class:, profiles: [], profile: nil)
       @dir = dir
       @config_class = config_class
       @profiles = profiles
+      @profile = profile
     end
 
     # @param reject_ignored [Boolean] drop the `ignore: true` members as extraction does
     # @return [Array<TableConfig, MongodbCollectionConfig>] in base file order
-    # @raise [ArgumentError] if a config cannot be loaded
+    # @raise [ArgumentError] if a config or an overlay cannot be loaded
     def load(reject_ignored: true)
       sources.map do |source|
         config = load_source(source)
@@ -35,9 +40,12 @@ module Exwiw
       end
     end
 
-    # @return [Array<Source>] the raw configs
+    # @return [Array<Source>] the raw configs, overlays merged in
     def sources
-      read_bases
+      bases = read_bases
+      return bases if @profile.nil?
+
+      apply_overlays(bases)
     end
 
     private def read_bases
@@ -57,15 +65,54 @@ module Exwiw
       end
     end
 
+    private def apply_overlays(bases)
+      by_name = bases.each_with_object({}) { |source, acc| acc[source.hash["name"]] = source if source.hash.is_a?(Hash) }
+      merged = {}
+
+      SchemaFiles.overlay_files(@dir, @profiles, profile: @profile).each do |path|
+        overlay = JSON.parse(File.read(path))
+        owner = "overlay #{path}"
+        name = overlay["name"] if overlay.is_a?(Hash)
+        unless name.is_a?(String)
+          raise ArgumentError, "#{owner} must be a JSON object with a 'name' naming the config it overlays."
+        end
+
+        base = by_name[name]
+        if base.nil?
+          raise ArgumentError, "#{owner}: there is no base config named '#{name}' in #{@dir} to overlay."
+        end
+        if merged.key?(name)
+          raise ArgumentError,
+                "'#{name}' has more than one overlay for profile '#{@profile}': " \
+                "#{merged[name].overlay_path} and #{path}."
+        end
+
+        merged[name] = Source.new(
+          hash: ConfigOverlay.merge(@config_class, base.hash, overlay, owner: owner),
+          base_path: base.base_path,
+          overlay_path: path,
+          profile: @profile,
+        )
+      end
+
+      bases.map { |source| merged.fetch(source.hash["name"], source) }
+    end
+
     private def load_source(source)
       with_source(source) { @config_class.from(source.hash) }
     end
 
-    # Only an unknown key names the file, as before: `.from` knows the table, not the file.
+    # A base-only config keeps the historical message (only an unknown key names
+    # the file); a merged config always names the files, since the error may come
+    # from either of them.
     private def with_source(source)
       yield
     rescue UnknownConfigKeyError => e
       raise UnknownConfigKeyError, "#{source.label}: #{e.message}", e.backtrace
+    rescue ArgumentError, Serdes::TypeError, Serdes::RequiredAttributeError => e
+      raise if source.overlay_path.nil?
+
+      raise e.class, "#{source.label}: #{e.message}", e.backtrace
     end
   end
 end

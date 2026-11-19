@@ -13,7 +13,9 @@ module Exwiw
       output_format: 'insert',
       after_insert_hook_path: nil,
       parallel_workers: nil,
-      cli_options: {}
+      cli_options: {},
+      profiles: [],
+      profile: nil
     )
       @connection_config = connection_config
       @output_dir = output_dir
@@ -23,6 +25,8 @@ module Exwiw
       @after_insert_hook_path = after_insert_hook_path
       @parallel_workers = parallel_workers
       @cli_options = cli_options
+      @profiles = profiles
+      @profile = profile
       @logger = logger
     end
 
@@ -289,7 +293,8 @@ module Exwiw
     # than in `.from` so the schema generators keep the full config and can
     # preserve the ignored entries on regeneration.
     private def load_table_config(klass)
-      SchemaLoader.new(dir: @schema_dir, config_class: klass).load
+      @logger.info("Applying schema profile '#{@profile}'") if @profile
+      SchemaLoader.new(dir: @schema_dir, config_class: klass, profiles: @profiles, profile: @profile).load
     end
 
     private def validate_ignored(configs)

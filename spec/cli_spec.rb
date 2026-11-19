@@ -966,5 +966,143 @@ module Exwiw
           .and output(/not applicable in 'explain'/).to_stderr
       end
     end
+
+    describe 'schema profiles' do
+      def run_cli(argv)
+        CLI.new(argv).run
+      end
+
+      around do |example|
+        Dir.mktmpdir do |dir|
+          @dir = dir
+          @schema_dir = File.join(dir, 'schema')
+          FileUtils.mkdir_p(@schema_dir)
+          FileUtils.cp(Dir.glob('e2e/sqlite-schema/*.json'), @schema_dir)
+          example.run
+        end
+      end
+
+      def write_config(yaml)
+        File.join(@dir, 'exwiw.yml').tap { |path| File.write(path, "adapter: sqlite\nschema_dir: schema\n#{yaml}") }
+      end
+
+      def write_overlay(name, hash)
+        File.write(File.join(@schema_dir, "#{name}.dev.json"), JSON.pretty_generate(hash))
+      end
+
+      def sqlite_argv(subcommand, *extra, yaml: "profiles: [dev]\n")
+        [subcommand, '--database=tmp/test.sqlite3', "--config=#{write_config(yaml)}", *extra]
+      end
+
+      def resolved_profile(argv)
+        cli = CLI.new(argv)
+        cli.send(:validate_options!)
+        cli.instance_variable_get(:@profile)
+      end
+
+      describe 'selection' do
+        it 'applies a profile only when --profile names it' do
+          expect(resolved_profile(sqlite_argv('explain', '--profile=dev'))).to eq('dev')
+          expect(resolved_profile(sqlite_argv('explain'))).to be_nil
+        end
+
+        it 'rejects a `profile` key in the config file' do
+          expect { resolved_profile(sqlite_argv('explain', yaml: "profiles: [dev]\nprofile: dev\n")) }
+            .to raise_error(SystemExit).and output(/Unknown config key 'profile'/).to_stderr
+        end
+
+        it 'rejects an undeclared profile' do
+          expect { resolved_profile(sqlite_argv('explain', '--profile=staging')) }
+            .to raise_error(SystemExit)
+            .and output(/Profile 'staging' is not declared.*\(declared: dev\)/).to_stderr
+          expect { resolved_profile(sqlite_argv('explain', '--profile=dev', yaml: '')) }
+            .to raise_error(SystemExit).and output(/Profile 'dev' is not declared.*\(no profiles are declared\)/).to_stderr
+        end
+
+        it 'rejects an invalid declaration' do
+          expect { resolved_profile(sqlite_argv('explain', yaml: "profiles: [Dev]\n")) }
+            .to raise_error(SystemExit).and output(/profile name 'Dev'/).to_stderr
+        end
+
+        it 'rejects --table outside schema show' do
+          expect { resolved_profile(sqlite_argv('explain', '--table=users')) }
+            .to raise_error(SystemExit).and output(/--table only applies to `exwiw schema show`/).to_stderr
+        end
+      end
+
+      describe 'schema show' do
+        it 'prints the merged config of one table without a database connection' do
+          write_overlay('users', 'name' => 'users', 'filter' => 'users.id < 3',
+                                 'columns' => [{ 'name' => 'name', 'replace_with' => 'anonymous' }])
+
+          expect { run_cli(['schema', 'show', "--config=#{write_config("profiles: [dev]\n")}", '--profile=dev', '--table=users']) }
+            .to output(/"filter": "users.id < 3".*"name": "name",\s*"replace_with": "anonymous"\s*\}/m).to_stdout
+        end
+
+        it 'prints every config as a JSON array, the base when no profile applies' do
+          write_overlay('users', 'name' => 'users', 'filter' => 'users.id < 3')
+
+          output = capture { run_cli(['schema', 'show', "--config=#{write_config("profiles: [dev]\n")}"]) }
+          configs = JSON.parse(output)
+
+          expect(configs.map { |c| c['name'] }).to eq(Dir.glob('e2e/sqlite-schema/*.json').sort.map { |f| File.basename(f, '.json') })
+          expect(configs.find { |c| c['name'] == 'users' }).not_to have_key('filter')
+        end
+
+        it 'exits 1 with the reason when the overlay does not merge' do
+          write_overlay('users', 'name' => 'users', 'columns' => nil)
+
+          expect { run_cli(['schema', 'show', "--config=#{write_config("profiles: [dev]\n")}", '--profile=dev']) }
+            .to raise_error(SystemExit) { |error| expect(error.status).to eq(1) }
+            .and output(/users.dev.json: 'columns' is a list and cannot be set to null/).to_stderr
+        end
+
+        it 'rejects --from-db and an unknown --table' do
+          path = write_config("profiles: [dev]\n")
+          expect { run_cli(['schema', 'show', '--from-db', "--config=#{path}"]) }
+            .to raise_error(SystemExit).and output(/--from-db does not apply/).to_stderr
+          expect { run_cli(['schema', 'show', "--config=#{path}", '--table=nope']) }
+            .to raise_error(SystemExit).and output(/'nope' does not exist in the schema/).to_stderr
+        end
+
+        def capture
+          original = $stdout
+          $stdout = StringIO.new
+          yield
+          $stdout.string
+        ensure
+          $stdout = original
+        end
+      end
+
+      describe 'explain and export' do
+        before do
+          write_overlay('users', 'name' => 'users', 'columns' => [{ 'name' => 'name', 'replace_with' => 'anonymous' }])
+        end
+
+        it 'explains the merged config and names the profile' do
+          expect { run_cli(sqlite_argv('explain', '--profile=dev')) }
+            .to output(/\A-- profile: dev\n.*'anonymous'/m).to_stdout
+        end
+
+        it 'exports the merged config' do
+          output_dir = File.join(@dir, 'dump')
+
+          expect { run_cli(sqlite_argv('export', '--profile=dev', "--output-dir=#{output_dir}")) }
+            .to output(/Applying schema profile 'dev'/).to_stdout_from_any_process
+
+          users_insert = File.read(Dir.glob(File.join(output_dir, '*-users.sql')).first)
+          expect(users_insert).to include("'anonymous'")
+          expect(users_insert).not_to match(/'masked\d+'/)
+        end
+
+        it 'fails when the profile ignores a table another table belongs to' do
+          write_overlay('shops', 'name' => 'shops', 'ignore' => true)
+
+          expect { run_cli(sqlite_argv('explain', '--profile=dev')) }
+            .to raise_error(ArgumentError, /has belongs_to references to ignored table\(s\): shops/)
+        end
+      end
+    end
   end
 end

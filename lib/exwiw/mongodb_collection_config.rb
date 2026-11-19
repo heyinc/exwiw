@@ -7,7 +7,8 @@ module Exwiw
     # MongoDB-native names. Intentionally re-declared instead of inheriting
     # from TableConfig — Serdes does not propagate attribute declarations
     # across class boundaries.
-    attribute :name, String
+    # `merge:` options declare how a profile overlay merges in (see Exwiw::ConfigOverlay).
+    attribute :name, String, merge: :identity
     attribute :primary_key, String
     attribute :filter, optional(String), skip_serializing_if_nil: true
     attribute :belongs_tos, array(BelongsTo), merge: { list: BelongsTo::IDENTITY_ATTRIBUTES }
