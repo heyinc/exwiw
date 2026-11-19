@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-19
+
 ### Fixed
 
 - **Scope-column mode accepts `--ids` when no table is filtered by a scope column.** A database whose tables are all `ignore: true`, `scope_exempt` or Rails-managed failed with "ids were given for the ID space(s) 'default', but no table declares a scope_column in them", so a run that passes the same `--ids` to every database could not export it. There is no ID space name to have mistyped in that case, so it now logs a warning and exports. Ids for an unused ID space are still an error when some table is scoped.
