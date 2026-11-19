@@ -5,6 +5,14 @@ module Exwiw
     class PostgresqlAdapter < Base
       include IdentifierQuoting::Postgresql
       include SqlBulkInsert
+      include SqlMaskUpdate
+
+      # Whole-expression forms of a cryptographically random string accepted for a credential-looking column.
+      RANDOM_SECRET_PATTERNS = [
+        /\Agen_random_uuid\s*\(\s*\)\s*::\s*text\z/i,
+        /\Areplace\s*\(\s*gen_random_uuid\s*\(\s*\)\s*::\s*text\s*,\s*'-'\s*,\s*''\s*\)\z/i,
+        /\Aencode\s*\(\s*gen_random_bytes\s*\(\s*(?<bytes>[1-9]\d*)\s*\)\s*,\s*'hex'\s*\)\z/i,
+      ].freeze
 
       # A lazy, streaming stand-in for the materialized rows #execute used to
       # return (`connection.exec(sql).values`). It pulls rows off the wire one
@@ -617,6 +625,10 @@ module Exwiw
         string_types = %w[varchar text bpchar name].freeze
         (type_a == 'uuid' && string_types.include?(type_b)) ||
           (type_b == 'uuid' && string_types.include?(type_a))
+      end
+
+      private def fetch_rows(sql)
+        connection.exec(sql).values
       end
 
       private def connection

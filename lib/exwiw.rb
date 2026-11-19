@@ -27,10 +27,12 @@ require_relative "exwiw/ddl_postprocessor"
 require_relative "exwiw/adapter/identifier_quoting"
 require_relative "exwiw/adapter"
 require_relative "exwiw/adapter/sql_bulk_insert"
+require_relative "exwiw/adapter/sql_mask_update"
 require_relative "exwiw/adapter/sqlite_adapter"
 require_relative "exwiw/adapter/mysql_client"
 require_relative "exwiw/adapter/mysql_adapter"
 require_relative "exwiw/adapter/postgresql_adapter"
+require_relative "exwiw/adapter/mongodb_mask_update"
 require_relative "exwiw/adapter/mongodb_adapter"
 require_relative "exwiw/determine_table_processing_order"
 require_relative "exwiw/mongodb_parallel_plan"
@@ -42,6 +44,7 @@ require_relative "exwiw/row_transformer"
 require_relative "exwiw/batched_extraction"
 require_relative "exwiw/after_insert_hook"
 require_relative "exwiw/runner"
+require_relative "exwiw/mask_update_plan"
 require_relative "exwiw/explain_runner"
 require_relative "exwiw/schema_generator"
 require_relative "exwiw/db_introspector"
@@ -106,6 +109,15 @@ module Exwiw
     # ID spaces other than `default` that were given, with or without values.
     def named_id_spaces
       ids.keys - [DEFAULT_ID_SPACE]
+    end
+
+    # The condition selecting the target table's rows: `ids_field` when set, else the primary key.
+    #
+    # @param table [Exwiw::TableConfig, Exwiw::MongodbCollectionConfig] the target table
+    # @param ids [Array] values to match
+    # @return [Exwiw::QueryAst::WhereClause]
+    def target_where_clause(table, ids: default_ids)
+      QueryAst::WhereClause.new(column_name: ids_field || table.primary_key, operator: :eq, value: ids)
     end
   end
   # `uri` is an optional full connection string (currently only honored by the

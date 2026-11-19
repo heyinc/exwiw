@@ -5,6 +5,13 @@ module Exwiw
     class SqliteAdapter < Base
       include IdentifierQuoting::Sqlite
       include SqlBulkInsert
+      include SqlMaskUpdate
+
+      # Whole-expression forms of a random string accepted for a credential-looking column.
+      RANDOM_SECRET_PATTERNS = [
+        /\Ahex\s*\(\s*randomblob\s*\(\s*(?<bytes>[1-9]\d*)\s*\)\s*\)\z/i,
+        /\Alower\s*\(\s*hex\s*\(\s*randomblob\s*\(\s*(?<bytes>[1-9]\d*)\s*\)\s*\)\s*\)\z/i,
+      ].freeze
 
       # A lazy, streaming stand-in for the materialized rows #execute used to
       # return (`connection.execute(sql)`). It walks the result one row at a time
@@ -285,6 +292,10 @@ module Exwiw
         else
           raise "Unreachable case: #{column.inspect}"
         end
+      end
+
+      private def fetch_rows(sql)
+        connection.execute(sql)
       end
 
       private def connection

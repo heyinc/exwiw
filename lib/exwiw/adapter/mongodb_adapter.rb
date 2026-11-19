@@ -10,6 +10,8 @@ require 'set'
 module Exwiw
   module Adapter
     class MongodbAdapter < Base
+      include MongodbMaskUpdate
+
       def self.table_config_class
         Exwiw::MongodbCollectionConfig
       end

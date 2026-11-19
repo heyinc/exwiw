@@ -42,6 +42,9 @@ jobs:
       - name: Run exwiw (explain)
         run: e2e/test_explain_with_sqlite.sh
 
+      - name: Run exwiw (mask-update, UPDATEs match export)
+        run: e2e/test_with_mask_update.sh sqlite
+
   with_mysql:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -87,6 +90,9 @@ jobs:
 
       - name: Run exwiw (explain)
         run: e2e/test_explain_with_mysql.sh
+
+      - name: Run exwiw (mask-update, UPDATEs match export)
+        run: e2e/test_with_mask_update.sh mysql
 
   with_postgres:
     runs-on: ubuntu-latest
@@ -151,6 +157,9 @@ jobs:
       - name: Run exwiw (explain)
         run: e2e/test_explain_with_postgresql.sh
 
+      - name: Run exwiw (mask-update, UPDATEs match export)
+        run: e2e/test_with_mask_update.sh postgresql
+
   with_mongodb:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -207,3 +216,6 @@ jobs:
 
       - name: Run exwiw (--parallel-workers, 3-phase, byte-identical to serial)
         run: e2e/test_with_mongodb_parallel.sh
+
+      - name: Run exwiw (mask-update, UPDATEs match export)
+        run: e2e/test_with_mask_update.sh mongodb

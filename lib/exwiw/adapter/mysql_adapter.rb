@@ -7,6 +7,13 @@ module Exwiw
     class MysqlAdapter < Base
       include IdentifierQuoting::Mysql
       include SqlBulkInsert
+      include SqlMaskUpdate
+
+      # Whole-expression forms of a cryptographically random string accepted for a credential-looking column.
+      RANDOM_SECRET_PATTERNS = [
+        /\AHEX\s*\(\s*RANDOM_BYTES\s*\(\s*(?<bytes>[1-9]\d*)\s*\)\s*\)\z/i,
+        /\ALOWER\s*\(\s*HEX\s*\(\s*RANDOM_BYTES\s*\(\s*(?<bytes>[1-9]\d*)\s*\)\s*\)\s*\)\z/i,
+      ].freeze
 
       # A lazy, streaming stand-in for the materialized rows #execute used to
       # return (`connection.query(sql).rows`). It pulls rows off the wire one at
@@ -454,6 +461,10 @@ module Exwiw
           else ["--ssl", "--ssl-verify-server-cert"]
           end
         ca_flags + mode_flags
+      end
+
+      private def fetch_rows(sql)
+        connection.query(sql).rows
       end
 
       private def connection

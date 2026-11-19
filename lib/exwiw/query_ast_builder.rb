@@ -720,11 +720,7 @@ module Exwiw
         # column on the target table; otherwise fall back to the primary key.
         # Only the target table's filter changes — downstream foreign-key
         # propagation still keys off the primary key.
-        clauses.push Exwiw::QueryAst::WhereClause.new(
-          column_name: dump_target.ids_field || table.primary_key,
-          operator: :eq,
-          value: dump_target.default_ids
-        )
+        clauses.push dump_target.target_where_clause(table)
 
         return clauses
       end
