@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Profile overlays keep export-specific settings out of the base schema config.** With `profiles: [dev]` in `exwiw.yml`, a file `users.dev.json` next to `users.json` is merged into it when `--profile=dev` is passed. `export`, `explain` and the new `exwiw schema show` (which prints the merged config without connecting to a database; `--table` prints one table) apply it, and `explain` prints the profile it applied. The merge follows the config's shape: keys replace the base's, `columns` / `fields` are matched by `name` and `belongs_tos` by their relation, setting one masking mode on a column drops the others (so an overlay `replace_with` is not silently overridden by the base's `raw_sql`), and `null` removes an optional key. An overlay cannot add entries, rename a config, or null `name`, a required key or a list, and an overlay without a base config, two overlays of one config for one profile, or a merged config that fails validation is an error in every command. The schema generators, `tidy` and `check` (the rake tasks, which read `profiles` from `exwiw.yml`, `--from-db`, and Mongoid) never read or write overlays as base configs; `tidy` removes the overlay entries for tables, columns, fields and `belongs_tos` the base no longer has, and `check` reports them under `overlay_stale` (which both `--fail-on=any` and `--fail-on=stale` fail on) and exits with the error status when an overlay does not merge. Only declared profile names are recognized, so without `profiles` nothing changes. See [Profile overlays](README.md#profile-overlays).
+
 ### Changed
 
 - **Two schema config files with the same `name` are an error.** `export` and `explain` kept whichever was read last. They now fail naming both files.
