@@ -919,6 +919,23 @@ RSpec.describe Exwiw::QueryAstBuilder do
         }.not_to raise_error
       end
 
+      it 'passes, warning, when no table is filtered by a scope column (every table ignored or Rails-managed)' do
+        [orders, order_items, countries, legacy_orders, widgets].each { |table| table.ignore = true }
+        logger = instance_double(Logger, warn: nil, info: nil, debug: nil)
+        expect {
+          described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+        }.not_to raise_error
+        expect(logger).to have_received(:warn).with(/no table is filtered by a scope_column/)
+      end
+
+      it 'still rejects ids for an ID space no table uses while another space is in use' do
+        named = Exwiw::DumpTarget.new(ids: { 'default' => ['t1'], 'org' => ['o1'] }, scope_column: 'tenant_id')
+        widgets.ignore = true
+        expect {
+          described_class.validate_scope!(all_tables, table_by_name, named, logger)
+        }.to raise_error(ArgumentError, /'org'/)
+      end
+
       it 'is a no-op outside scope-column mode' do
         target_mode = Exwiw::DumpTarget.new(table_name: 'orders', ids: ['t1'])
         expect {
