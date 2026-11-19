@@ -70,16 +70,21 @@ jobs:
       - uses: actions/checkout@v7.0.1
 
       - name: Install postgresql-client-17
-        # The insert-output snapshot spec shells out to pg_dump, which enforces
-        # a strict major-version match with the server (postgres:17 here).
-        # ubuntu-latest's default pg_dump is older than 17, so install pgdg's pg17 client.
+        # The insert-output snapshot spec shells out to pg_dump, whose output
+        # must come from the server's major version (postgres:17 here).
+        # The runner image ships a newer client that /usr/bin/pg_dump would
+        # pick, and it dumps settings a 17 server keeps internal, so put
+        # pgdg's pg17 client first on PATH.
         run: |
           sudo install -d /usr/share/postgresql-common/pgdg
           sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update
           sudo apt-get install -y postgresql-client-17
-          pg_dump --version
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+
+      - name: Check the pg_dump version
+        run: pg_dump --version | grep -E '^pg_dump \(PostgreSQL\) 17\.'
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
