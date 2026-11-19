@@ -904,6 +904,60 @@ module Exwiw
           expect(parsed["posts"][0]["title"]).to eq("masked-title-101")
         end
 
+        context "generate" do
+          let(:generated_users) do
+            MongodbCollectionConfig.from(
+              "name" => "users",
+              "primary_key" => "_id",
+              "belongs_tos" => [{ "table_name" => "shops", "foreign_key" => "shop_id" }],
+              "fields" => [
+                { "name" => "_id" },
+                { "name" => "name", "generate" => "random:10" },
+                { "name" => "shop_id" },
+              ],
+            )
+          end
+
+          it "gives every document its own alphanumeric value of the given length" do
+            local = config_by_name.merge("users" => generated_users)
+            adapter.build_query(generated_users, dump_target, local)
+            rows = [1, 2, 3].map { |id| { "_id" => id, "name" => "User #{id}", "shop_id" => 1 } }
+            parsed = adapter.to_bulk_insert(rows, generated_users).split("\n").map { |l| JSON.parse(l) }
+
+            names = parsed.map { |doc| doc["name"] }
+            expect(names).to all(match(/\A[A-Za-z0-9]{10}\z/))
+            expect(names.uniq.size).to eq(3)
+          end
+
+          it "keeps a NULL value and an absent key as they are" do
+            local = config_by_name.merge("users" => generated_users)
+            adapter.build_query(generated_users, dump_target, local)
+            parsed = adapter.to_bulk_insert(
+              [{ "_id" => 1, "name" => nil, "shop_id" => 1 }, { "_id" => 2, "shop_id" => 1 }], generated_users
+            ).split("\n").map { |l| JSON.parse(l) }
+
+            expect(parsed[0]["name"]).to be_nil
+            expect(parsed[1]).not_to have_key("name")
+          end
+
+          it "generates a new value for each embedded subdocument" do
+            profile = MongodbCollectionConfig.from(
+              "name" => "profile",
+              "primary_key" => "_id",
+              "embedded_in" => { "collection_name" => "users", "path" => "profile" },
+              "belongs_tos" => [],
+              "fields" => [{ "name" => "_id" }, { "name" => "secret", "generate" => "random:6" }],
+            )
+            users_t = config_by_name.fetch("users")
+            adapter.build_query(users_t, dump_target, config_by_name.merge("profile" => profile))
+            rows = [{ "_id" => 1, "name" => "User 1", "email" => "u1@example.com", "shop_id" => 1,
+                      "profile" => { "_id" => 7, "secret" => "real" } }]
+            parsed = JSON.parse(adapter.to_bulk_insert(rows, users_t))
+
+            expect(parsed["profile"]["secret"]).to match(/\A[A-Za-z0-9]{6}\z/)
+          end
+        end
+
         context "replace_with_fake_data" do
           # A `users` variant whose `name`/`email` carry replace_with_fake_data
           # seeded by `_id`, so the same _id always maps to the same fake value.

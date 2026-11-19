@@ -80,6 +80,17 @@ module Exwiw
       expect(report["removed_tables"]).to eq(["obsolete"])
     end
 
+    it "is clean for a column masked with generate" do
+      generate_current_config
+      rewrite("users") do |config|
+        config["columns"].find { |c| c["name"] == "email" }["generate"] = "random:12"
+      end
+
+      expect(report["changed_tables"]).to be_empty
+      expect(report["needs_mask_decision"]).to be_empty
+      expect(described_class.clean?(report)).to be(true)
+    end
+
     it "reports a column still waiting for a masking decision" do
       generate_current_config
       rewrite("users") do |config|

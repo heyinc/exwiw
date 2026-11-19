@@ -804,6 +804,49 @@ module Exwiw
       end
     end
 
+    describe 'generate' do
+      def config_with_columns(columns)
+        TableConfig.from_symbol_keys(name: 'users', primary_key: 'id', columns: columns)
+      end
+
+      it 'round-trips through JSON and is omitted when unset' do
+        config = config_with_columns([{ name: 'id' }, { name: 'token', generate: 'random:16' }])
+        reloaded = TableConfig.from(JSON.parse(JSON.generate(config.to_hash)))
+
+        expect(reloaded.columns[1].generate).to eq('random:16')
+        expect(reloaded.columns[1].to_hash).to eq({ 'name' => 'token', 'generate' => 'random:16' })
+        expect(reloaded.columns[0].to_hash).to eq({ 'name' => 'id' })
+      end
+
+      it 'is preserved across merge with a regenerated config' do
+        current = config_with_columns([{ name: 'id' }, { name: 'token', generate: 'random:16' }])
+        regenerated = config_with_columns([{ name: 'id' }, { name: 'token' }])
+
+        expect(current.merge(regenerated).columns[1].generate).to eq('random:16')
+      end
+
+      { 'replace_with' => 'x', 'raw_sql' => "'x'", 'map' => 'proc {}',
+        'replace_with_fake_data' => { seed: 'id', type: 'human_name' } }.each do |key, value|
+        it "rejects combining generate with #{key}" do
+          expect {
+            config_with_columns([{ name: 'id' }, { name: 'token', generate: 'random:8', key.to_sym => value }])
+          }.to raise_error(ArgumentError, /Table 'users' column 'token': .*generate.*cannot be combined/)
+        end
+      end
+
+      %w[random random:0 random:257 random:abc foo:8].each do |value|
+        it "rejects #{value.inspect}, naming the table and the column" do
+          expect { config_with_columns([{ name: 'id' }, { name: 'token', generate: value }]) }
+            .to raise_error(ArgumentError, /Table 'users' column 'token': invalid generate value "#{value}"; expected "random:<length>"/)
+        end
+      end
+
+      it 'rejects a generate value that is not a String' do
+        expect { config_with_columns([{ name: 'id' }, { name: 'token', generate: 8 }]) }
+          .to raise_error(Serdes::TypeError)
+      end
+    end
+
     describe 'strict unknown-key validation' do
       let(:base_json) do
         {

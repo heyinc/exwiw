@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`generate` masks a column or field with a random string.** `"generate": "random:<len>"` replaces the value with `<len>` characters (1 to 256) of `A-Z`, `a-z` and `0-9` drawn with `SecureRandom`, a different value for every row and every export. It works on SQL columns and MongoDB fields (embedded subdocuments too), keeps `NULL`, cannot be combined with `replace_with`, `raw_sql`, `map` or `replace_with_fake_data` (including in a profile overlay, where setting one drops the others), and a value that does not match the format is an error when the config is loaded. See [`generate`](README.md#generate).
+
 ## [1.2.1] - 2026-11-19
 
 ### Fixed

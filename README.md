@@ -210,7 +210,7 @@ exwiw schema show --profile=dev --table=users   # prints the merged config; need
 - Only the names in `profiles` are recognized: without them, `users.dev.json` is an ordinary config file. Profile names use lowercase letters, digits, `_` and `-`. A profile applies only when `--profile` names it (export, explain and `schema show`), one per run; naming an undeclared profile is an error.
 - An overlay must have the `name` of a config in the same directory (with multiple databases, in that database's subdirectory), and each config can have one overlay per profile.
 - A key in the overlay replaces the base value; a nested object such as `batch_scope` is replaced as a whole. `columns` (`fields` for MongoDB) are matched by `name`, and `belongs_tos` by `table_name`, `foreign_key`, `foreign_type` and `type_value`; the matched entry is merged key by key. An overlay can only change entries the base has, not add new ones.
-- Setting one of `replace_with`, `raw_sql`, `map` and `replace_with_fake_data` on a column removes the others, so the overlay's mask is the one that applies.
+- Setting one of `replace_with`, `raw_sql`, `map`, `replace_with_fake_data` and `generate` on a column removes the others, so the overlay's mask is the one that applies.
 - `null` removes an optional key. `name`, required keys and lists cannot be set to `null`.
 - The merged config is loaded and validated like any config; a profile that cannot be merged or produces an invalid config fails every command that reads it.
 - The schema generators, `tidy` and `check` never read or write overlays as base configs. `tidy` removes overlay entries for tables, columns and `belongs_tos` that are gone from the base (and the overlay file when its table is gone). `check` reports them as `overlay_stale` (see [Checking the config against the schema](#checking-the-config-against-the-schema)), and fails when an overlay does not merge.
@@ -468,6 +468,21 @@ Replaces the value with realistic fake data from the [faker](https://github.com/
 - `NULL` stays `NULL`.
 - Add `gem "faker"` to your Gemfile. A config that uses only `ja` name types does not need it.
 - It runs in the exwiw process, so `explain` does not show it. The cost is small; see [`docs/row-transform-masking-notes.md`](docs/row-transform-masking-notes.md).
+
+### `generate`
+
+Replaces the value with a random string, for a column that must not keep a recognizable value, such as a token or a password. The value is `"<kind>:<argument>"`; the only kind is `random`:
+
+```jsonc
+{ "name": "api_token", "generate": "random:32" }
+```
+
+- `random:<len>` gives `<len>` characters from `A-Z`, `a-z` and `0-9`, drawn with Ruby's `SecureRandom`. `<len>` is an integer from 1 to 256.
+- Every row (every document in MongoDB, including embedded ones) gets its own value, and a new one on each export. Unlike `replace_with_fake_data`, the same input does not give the same output. With 62 possible characters, a short length can repeat a value, so use a length long enough for a unique column.
+- A value that does not match the format, such as `"random"`, `"random:0"`, `"random:257"` or `"foo:8"`, is an error when the config is loaded.
+- `NULL` stays `NULL`. In MongoDB, a field that is `null` or absent stays as it is.
+- Use it on a column or field of a SQL or MongoDB config. It cannot be combined with another masking key on the same column, and an error is raised when the config is loaded.
+- It runs in the exwiw process, so `explain` does not show it. No extra gem is needed.
 
 Only one masking key can be set on a column.
 

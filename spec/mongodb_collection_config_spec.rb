@@ -198,6 +198,53 @@ module Exwiw
         end
       end
 
+      context 'generate validation' do
+        def config_with_field(field)
+          {
+            "name" => "users",
+            "primary_key" => "_id",
+            "belongs_tos" => [],
+            "fields" => [{ "name" => "_id" }, field],
+          }
+        end
+
+        it 'accepts a valid generate field and round-trips it' do
+          config = described_class.from(config_with_field("name" => "token", "generate" => "random:16"))
+
+          expect(config.fields[1].generate).to eq("random:16")
+          expect(described_class.from(JSON.parse(JSON.generate(config.to_hash))).fields[1].generate).to eq("random:16")
+        end
+
+        it 'rejects combining generate with replace_with' do
+          json = config_with_field("name" => "token", "generate" => "random:8", "replace_with" => "x")
+          expect { described_class.from(json) }
+            .to raise_error(ArgumentError, /MongodbCollectionConfig 'users' field 'token': generate and replace_with cannot be combined/)
+        end
+
+        it 'rejects combining generate with replace_with_fake_data' do
+          json = config_with_field(
+            "name" => "token", "generate" => "random:8",
+            "replace_with_fake_data" => { "seed" => "_id", "type" => "human_name" },
+          )
+          expect { described_class.from(json) }
+            .to raise_error(ArgumentError, /field 'token': generate and replace_with_fake_data cannot be combined/)
+        end
+
+        %w[random random:0 random:257 random:abc foo:8].each do |value|
+          it "rejects #{value.inspect}, naming the collection and the field" do
+            expect { described_class.from(config_with_field("name" => "token", "generate" => value)) }
+              .to raise_error(ArgumentError, /'users' field 'token': invalid generate value "#{value}"; expected "random:<length>"/)
+          end
+        end
+
+        it 'is preserved across regeneration' do
+          current = described_class.from(config_with_field("name" => "token", "generate" => "random:8"))
+          regenerated = described_class.from(config_with_field("name" => "token"))
+
+          expect(current.merge(regenerated).fields.find { |f| f.name == "token" }.generate).to eq("random:8")
+        end
+      end
+
       context 'replace_with_fake_data validation' do
         def config_with_field(field)
           {

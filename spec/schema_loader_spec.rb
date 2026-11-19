@@ -52,6 +52,30 @@ module Exwiw
       expect(column.replace_with).to eq("anonymous")
     end
 
+    it "names the table and the column of an invalid generate value in the base config" do
+      users = JSON.parse(File.read(File.join(dir, "users.json")))
+      users["columns"].find { |c| c["name"] == "email" }.replace("name" => "email", "generate" => "random:0")
+      write("users.json", users)
+
+      expect { load(profile: nil) }
+        .to raise_error(ArgumentError, /\ATable 'users' column 'email': invalid generate value "random:0"/)
+    end
+
+    it "names the overlay and the column of an invalid generate value in an overlay" do
+      write("users.dev.json", "name" => "users", "columns" => [{ "name" => "email", "generate" => "random:abc" }])
+
+      expect { load }
+        .to raise_error(ArgumentError, /users\.dev\.json.*Table 'users' column 'email': invalid generate value "random:abc"/m)
+    end
+
+    it "lets an overlay's generate replace the base's mask" do
+      write("users.dev.json", "name" => "users", "columns" => [{ "name" => "email", "generate" => "random:9" }])
+
+      column = users(load).columns.find { |c| c.name == "email" }
+      expect(column.generate).to eq("random:9")
+      expect(column.replace_with).to be_nil
+    end
+
     it "ignores the overlays of other profiles" do
       write("users.ci.json", "name" => "users", "filter" => "users.id = 1")
 

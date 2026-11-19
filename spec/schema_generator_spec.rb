@@ -541,6 +541,20 @@ module Exwiw
         File.write(File.join(output_dir, "#{name}.json"), JSON.pretty_generate(hash) + "\n")
       end
 
+      it "keeps a generate mask, through generate! and tidy!" do
+        described_class.new(models: models, output_dir: output_dir).generate!
+        path = File.join(output_dir, "users.json")
+        config = JSON.parse(File.read(path))
+        config["columns"].find { |c| c["name"] == "email" }.replace("name" => "email", "generate" => "random:12")
+        File.write(path, JSON.pretty_generate(config) + "\n")
+
+        described_class.new(models: models, output_dir: output_dir).generate!
+        described_class.new(models: models, output_dir: output_dir).tidy!
+
+        reloaded = JSON.parse(File.read(path))
+        expect(reloaded["columns"].find { |c| c["name"] == "email" }).to eq("name" => "email", "generate" => "random:12")
+      end
+
       it "deletes the config file of a table that no longer exists" do
         described_class.new(models: models, output_dir: output_dir).generate!
         write_config("legacy_things", {

@@ -5,8 +5,8 @@ require "digest"
 require_relative "japanese_names"
 
 module Exwiw
-  # Applies the Ruby-process-side masking modes — `map` and
-  # `replace_with_fake_data` — to the rows streamed out of a SQL adapter's
+  # Applies the Ruby-process-side masking modes — `map`,
+  # `replace_with_fake_data` and `generate` — to the rows streamed out of a SQL adapter's
   # #execute. Unlike replace_with/raw_sql, which compile into the SELECT and
   # run in the database, these run in the exwiw process, so they can execute
   # arbitrary Ruby (`map`) or derive deterministic fake values (`fake data`).
@@ -144,7 +144,7 @@ module Exwiw
       return nil unless table.respond_to?(:columns)
 
       columns = table.columns
-      return nil if columns.nil? || columns.none? { |c| c.map || c.replace_with_fake_data }
+      return nil if columns.nil? || columns.none? { |c| c.map || c.replace_with_fake_data || c.generate }
 
       new(table)
     end
@@ -308,6 +308,8 @@ module Exwiw
           [index, compile_map(column)]
         elsif column.replace_with_fake_data
           [index, compile_fake(column, index)]
+        elsif column.generate
+          [index, compile_generate(column, index)]
         end
       end
       @replacement_buffer = Array.new(@transforms.size)
@@ -361,6 +363,16 @@ module Exwiw
         rescue StandardError => e
           raise "map proc for column '#{table_name}.#{column_name}' raised: #{e.class}: #{e.message}"
         end
+      end
+    end
+
+    # A NULL stays NULL, like replace_with_fake_data.
+    private def compile_generate(column, column_index)
+      generator = Generator.parse(column.generate)
+      lambda do |row|
+        next nil if row[column_index].nil?
+
+        generator.call
       end
     end
 

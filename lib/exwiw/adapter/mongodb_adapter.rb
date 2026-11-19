@@ -719,10 +719,11 @@ module Exwiw
       # document of that collection. `masked_fields` is `[field_name,
       # template_segments]` for each field carrying a `replace_with`;
       # `faked_fields` is `[field_name, deriver, seed_field]` for each field
-      # carrying a `replace_with_fake_data`; `dropped_fields` is the name of each
+      # carrying a `replace_with_fake_data`; `generated_fields` is `[field_name,
+      # generator]` for each field carrying a `generate`; `dropped_fields` is the name of each
       # field marked `ignore:true`; `embedded` is one EmbeddedMask per embedded
       # child.
-      MaskPlan = Struct.new(:masked_fields, :faked_fields, :dropped_fields, :embedded)
+      MaskPlan = Struct.new(:masked_fields, :faked_fields, :generated_fields, :dropped_fields, :embedded)
 
       # A pre-resolved embedded-child mask: the parent path split once into
       # `prefix` (the containers to descend into) and `last` (the field holding
@@ -755,6 +756,7 @@ module Exwiw
           acc << [field.name, mask]
         end
         faked_fields = build_faked_fields(config)
+        generated_fields = config.fields.filter_map { |field| [field.name, Generator.parse(field.generate)] if field.generate }
         # Mostly for an embedded config, but a top-level one fetches an ignored
         # field too when it is a propagation key (a child's `references`), and
         # this is what keeps it out of the dump.
@@ -763,7 +765,7 @@ module Exwiw
           *prefix, last = child.embedded_in.path.split(".")
           EmbeddedMask.new(prefix, last, build_mask_plan(child))
         end
-        MaskPlan.new(masked_fields, faked_fields, dropped_fields, embedded)
+        MaskPlan.new(masked_fields, faked_fields, generated_fields, dropped_fields, embedded)
       end
 
       # Compile each `replace_with_fake_data` field into `[field_name, deriver,
@@ -795,7 +797,7 @@ module Exwiw
 
       # Apply a precompiled MaskPlan to a document in place: drop each
       # `ignore:true` field, then render each `replace_with` field, then each
-      # `replace_with_fake_data` field, then descend into each embedded child
+      # `replace_with_fake_data` field, then each `generate` field, then descend into each embedded child
       # (recursing into its own plan). Fake fields are applied after replace_with
       # so a fake seed reads the already-masked value — matching the SQL
       # adapters, where replace_with runs in the database before the Ruby-side
@@ -821,6 +823,11 @@ module Exwiw
           next if doc[name].nil?
 
           doc[name] = deriver.call(doc[seed_field])
+        end
+        plan.generated_fields.each do |name, generator|
+          next if doc[name].nil?
+
+          doc[name] = generator.call
         end
         plan.embedded.each do |child|
           container = child.prefix.reduce(doc) { |acc, seg| acc.is_a?(Hash) ? acc[seg] : nil }

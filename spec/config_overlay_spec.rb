@@ -71,6 +71,48 @@ module Exwiw
         expect(merged["columns"][2]).to eq("name" => "email", "raw_sql" => "'x'", "comment" => "keep")
       end
 
+      it "makes generate replace the base's other mask keys, and the other way round" do
+        merged = merge("name" => "users", "columns" => [
+          { "name" => "name", "generate" => "random:8" },
+          { "name" => "email", "generate" => "random:8" },
+        ])
+
+        expect(merged["columns"][1]).to eq("name" => "name", "generate" => "random:8")
+        expect(merged["columns"][2]).to eq("name" => "email", "generate" => "random:8", "comment" => "keep")
+
+        generated_base = base.merge("columns" => [{ "name" => "id" }, { "name" => "token", "generate" => "random:8" }])
+        merged = merge({ "name" => "users", "columns" => [{ "name" => "token", "replace_with" => "x" }] },
+                       TableConfig, generated_base)
+        expect(merged["columns"][1]).to eq("name" => "token", "replace_with" => "x")
+      end
+
+      it "keeps generate when the overlay only sets a comment" do
+        generated_base = base.merge("columns" => [{ "name" => "id" }, { "name" => "token", "generate" => "random:8" }])
+        merged = merge({ "name" => "users", "columns" => [{ "name" => "token", "comment" => "c" }] },
+                       TableConfig, generated_base)
+
+        expect(merged["columns"][1]).to eq("name" => "token", "generate" => "random:8", "comment" => "c")
+      end
+
+      it "removes generate when the overlay sets it to null" do
+        generated_base = base.merge("columns" => [{ "name" => "id" }, { "name" => "token", "generate" => "random:8" }])
+        merged = merge({ "name" => "users", "columns" => [{ "name" => "token", "generate" => nil }] },
+                       TableConfig, generated_base)
+
+        expect(merged["columns"][1]).to eq("name" => "token")
+      end
+
+      it "merges generate on a MongoDB field with the mask group" do
+        mongo_base = {
+          "name" => "users", "primary_key" => "_id", "belongs_tos" => [],
+          "fields" => [{ "name" => "_id" }, { "name" => "token", "replace_with" => "x" }],
+        }
+        merged = merge({ "name" => "users", "fields" => [{ "name" => "token", "generate" => "random:8" }] },
+                       MongodbCollectionConfig, mongo_base)
+
+        expect(merged["fields"][1]).to eq("name" => "token", "generate" => "random:8")
+      end
+
       it "removes an optional key set to null" do
         merged = merge("name" => "users", "filter" => nil, "columns" => [{ "name" => "email", "replace_with" => nil }])
 

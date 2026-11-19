@@ -16,6 +16,8 @@ module Exwiw
     # (MongodbAdapter#apply_mask_plan!), after `replace_with`.
     attribute :replace_with_fake_data, Serdes::OptionalType.new(FakeData), skip_serializing_if_nil: true,
                                        merge: { exclusive: :mask }
+    # A new random value per row (see Generator), validated when the config is loaded.
+    attribute :generate, optional(String), skip_serializing_if_nil: true, merge: { exclusive: :mask }
     # The Mongoid model's Ruby accessor when the stored document key (`name`)
     # was renamed via `field :ctry, as: :country`. Purely informational — exwiw
     # masks/projects by `name` (the storage key) — but surfacing the accessor

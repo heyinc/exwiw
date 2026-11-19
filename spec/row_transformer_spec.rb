@@ -80,6 +80,34 @@ module Exwiw
       end
     end
 
+    describe 'generate mode' do
+      def token_transformer
+        build_transformer([{ name: 'id' }, { name: 'token', generate: 'random:12' }, { name: 'plain' }])
+      end
+
+      it 'builds a transformer for a column with generate' do
+        expect(token_transformer).to be_a(RowTransformer)
+      end
+
+      it 'replaces the column with an alphanumeric value of the given length, a new one per row' do
+        rows = token_transformer.wrap([['1', 'old', 'a'], ['2', 'old', 'b'], ['3', 'old', 'c']]).to_a
+
+        tokens = rows.map { |row| row[1] }
+        expect(tokens).to all(match(/\A[A-Za-z0-9]{12}\z/))
+        expect(tokens.uniq.size).to eq(3)
+        expect(rows.map { |row| row.values_at(0, 2) }).to eq([%w[1 a], %w[2 b], %w[3 c]])
+      end
+
+      it 'preserves NULL' do
+        expect(token_transformer.wrap([['1', nil, 'a']]).to_a).to eq([['1', nil, 'a']])
+      end
+
+      it 'does not need the faker gem' do
+        expect(RowTransformer).not_to receive(:require_faker!)
+        token_transformer
+      end
+    end
+
     describe 'fake data mode' do
       def name_transformer
         build_transformer([

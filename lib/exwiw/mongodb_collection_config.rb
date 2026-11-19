@@ -68,6 +68,7 @@ module Exwiw
       instance.__send__(:validate_embedded!)
       instance.__send__(:validate_belongs_tos!)
       instance.__send__(:validate_fake_data!)
+      instance.__send__(:validate_generate!)
       instance.__send__(:validate_ignored_fields!)
       instance.__send__(:validate_reverse_scope_column!)
       instance
@@ -106,7 +107,7 @@ module Exwiw
     #   belongs_tos, embedded_in.
     # - user customizations are kept from the receiver: filter, ignore,
     #   bulk_insert_chunk_size, query_timeout_ms, and each field's
-    #   `replace_with` / `replace_with_fake_data` masking rule.
+    #   `replace_with` / `replace_with_fake_data` / `generate` masking rule.
     # - generated fields drive the field list (so added/removed fields track the
     #   model), but for a field the receiver already has, its masking decision
     #   wins outright — including the parts of it left unset.
@@ -165,6 +166,7 @@ module Exwiw
 
           pf.replace_with = receiver.replace_with
           pf.replace_with_fake_data = receiver.replace_with_fake_data
+          pf.generate = receiver.generate
           pf.comment = receiver.comment
           pf.ignore = receiver.ignore
           pf.needs_mask_decision = receiver.needs_mask_decision
@@ -205,6 +207,27 @@ module Exwiw
                 "MongodbCollectionConfig '#{name}' field '#{field.name}': replace_with_fake_data " \
                 "seed '#{fake_data.seed}' does not name a field of this collection " \
                 "(use 'field' or '#{name}.field')."
+        end
+      end
+    end
+
+    # `generate` must parse and is exclusive with the other masking modes of the field.
+    private def validate_generate!
+      fields.each do |field|
+        next if field.generate.nil?
+
+        others = { "replace_with" => !field.replace_with.nil?, "replace_with_fake_data" => field.replace_with_fake_data }
+                 .select { |_, set| set }.keys
+        unless others.empty?
+          raise ArgumentError,
+                "MongodbCollectionConfig '#{name}' field '#{field.name}': generate and " \
+                "#{others.join('/')} cannot be combined; use only one."
+        end
+
+        begin
+          Generator.parse(field.generate)
+        rescue ArgumentError => e
+          raise ArgumentError, "MongodbCollectionConfig '#{name}' field '#{field.name}': #{e.message}"
         end
       end
     end

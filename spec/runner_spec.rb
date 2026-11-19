@@ -421,6 +421,94 @@ module Exwiw
       end
     end
 
+    describe 'with a generate mask on sqlite' do
+      let(:dump_target) { DumpTarget.new(table_name: 'users', ids: %w[1 2 3 4]) }
+
+      before do
+        File.write(File.join(schema_dir, 'users.json'), JSON.pretty_generate(
+          'name' => 'users',
+          'primary_key' => 'id',
+          'belongs_tos' => [],
+          'columns' => [
+            { 'name' => 'id' },
+            { 'name' => 'name' },
+            { 'name' => 'email', 'generate' => 'random:20' },
+            { 'name' => 'shop_id' },
+            { 'name' => 'created_at' },
+            { 'name' => 'updated_at' },
+          ],
+        ))
+      end
+
+      it 'exports a different alphanumeric value of the given length for every row' do
+        runner.run
+
+        sql = File.read(Dir[File.join(output_dir, 'insert-*-users.sql')].first)
+        emails = sql.scan(/'([A-Za-z0-9]{20})'/).flatten
+        expect(emails.size).to eq(4)
+        expect(emails.uniq.size).to eq(4)
+        expect(sql).not_to include('example.com')
+      end
+    end
+
+    describe 'with a generate mask on mongodb' do
+      let(:generate_db) { 'exwiw_generate_test' }
+      let(:connection_config) do
+        ConnectionConfig.new(
+          adapter: 'mongodb',
+          database_name: generate_db,
+          host: ENV.fetch('MONGO_HOST', '127.0.0.1'),
+          port: ENV.fetch('MONGO_PORT', 27017).to_i,
+          user: nil,
+          password: nil,
+        )
+      end
+      let(:dump_target) { DumpTarget.new(table_name: 'users', ids: [1, 2, 3].map { |i| "0a0000000000000000000#{i.to_s.rjust(3, '0')}" }) }
+
+      before do
+        require 'mongo'
+        Mongo::Logger.logger.level = ::Logger::WARN
+        client = Mongo::Client.new(["#{connection_config.host}:#{connection_config.port}"], database: generate_db)
+        client.database.drop
+        client['users'].insert_many([1, 2, 3].map do |i|
+          { '_id' => BSON::ObjectId.from_string("0a0000000000000000000#{i.to_s.rjust(3, '0')}"),
+            'api_token' => "secret-#{i}", 'nickname' => (i == 3 ? nil : "nick-#{i}") }
+        end)
+        client.close
+
+        File.write(File.join(schema_dir, 'users.json'), JSON.pretty_generate(
+          'name' => 'users',
+          'primary_key' => '_id',
+          'belongs_tos' => [],
+          'fields' => [
+            { 'name' => '_id' },
+            { 'name' => 'api_token', 'generate' => 'random:24' },
+            { 'name' => 'nickname', 'generate' => 'random:5' },
+          ],
+        ))
+      end
+
+      after do
+        client = Mongo::Client.new(["#{connection_config.host}:#{connection_config.port}"], database: generate_db)
+        client.database.drop
+        client.close
+      end
+
+      it 'exports a different value for every document and keeps a NULL' do
+        runner.run
+
+        path = Dir[File.join(output_dir, 'insert-*-users.jsonl')].first
+        docs = File.readlines(path, chomp: true).reject(&:empty?).map { |line| JSON.parse(line) }
+        expect(docs.size).to eq(3)
+        tokens = docs.map { |doc| doc['api_token'] }
+        expect(tokens).to all(match(/\A[A-Za-z0-9]{24}\z/))
+        expect(tokens.uniq.size).to eq(3)
+        nicknames = docs.map { |doc| doc['nickname'] }
+        expect(nicknames.compact).to all(match(/\A[A-Za-z0-9]{5}\z/))
+        expect(nicknames.count(nil)).to eq(1)
+      end
+    end
+
     describe 'with ignore:true on a table config' do
       let(:dump_target) { DumpTarget.new(table_name: nil, ids: []) }
 
