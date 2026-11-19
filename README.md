@@ -113,6 +113,7 @@ DATABASE_PASSWORD=... exwiw \
 - Relative paths are resolved from the config file's directory, not the current directory.
 - Unknown keys are rejected. Keys that only apply to `export` are ignored by `explain` and `schema`, so all subcommands can share one file.
 - MongoDB-only keys (`explain_verbosity`, `mongodb_query_timeout_ms`, `parallel_workers`) are described in [MongoDB support](docs/mongodb.md).
+- `profiles` declares schema profiles; see [Profile overlays](#profile-overlays).
 
 ### Output format
 
@@ -180,6 +181,39 @@ Entries in `columns` and `belongs_tos` accept `comment` (a note exwiw never read
 ### Hand-edited keys survive regeneration
 
 Regenerating the config (see [Generating the schema config](#generating-the-schema-config)) keeps what you wrote by hand. A column already in the config is kept as it is, `comment` and `ignore` on a table or `belongs_to` are kept, and so are the keys the generators never write (`filter`, `bulk_insert_chunk_size`, `scope_column`, `id_space`, `scope_exempt`, `reverse_scope`, `batch_scope`).
+
+### Profile overlays
+
+Settings that only one kind of export needs, such as the exports for a development environment, can live in an overlay file next to the base config instead of in it. `users.dev.json` is merged into `users.json` when the `dev` profile is selected:
+
+```yaml
+# exwiw.yml
+profiles: [dev]   # the profile names exwiw recognizes
+```
+
+```json
+{
+  "name": "users",
+  "filter": "users.created_at > '2025-01-01'",
+  "columns": [
+    { "name": "email", "replace_with": "user{id}@example.com" },
+    { "name": "nickname", "raw_sql": null }
+  ]
+}
+```
+
+```bash
+exwiw export --profile=dev ...    # without --profile, no profile applies
+exwiw schema show --profile=dev --table=users   # prints the merged config; needs no database
+```
+
+- Only the names in `profiles` are recognized: without them, `users.dev.json` is an ordinary config file. Profile names use lowercase letters, digits, `_` and `-`. A profile applies only when `--profile` names it (export, explain and `schema show`), one per run; naming an undeclared profile is an error.
+- An overlay must have the `name` of a config in the same directory (with multiple databases, in that database's subdirectory), and each config can have one overlay per profile.
+- A key in the overlay replaces the base value; a nested object such as `batch_scope` is replaced as a whole. `columns` (`fields` for MongoDB) are matched by `name`, and `belongs_tos` by `table_name`, `foreign_key`, `foreign_type` and `type_value`; the matched entry is merged key by key. An overlay can only change entries the base has, not add new ones.
+- Setting one of `replace_with`, `raw_sql`, `map` and `replace_with_fake_data` on a column removes the others, so the overlay's mask is the one that applies.
+- `null` removes an optional key. `name`, required keys and lists cannot be set to `null`.
+- The merged config is loaded and validated like any config; a profile that cannot be merged or produces an invalid config fails every command that reads it.
+- The schema generators, `tidy` and `check` never read or write overlays as base configs. `tidy` removes overlay entries for tables, columns and `belongs_tos` that are gone from the base (and the overlay file when its table is gone). `check` reports them as `overlay_stale` (see [Checking the config against the schema](#checking-the-config-against-the-schema)), and fails when an overlay does not merge.
 
 ## How each table is narrowed
 
@@ -465,7 +499,7 @@ For the first config of an application, where every column is new, run with `EXW
 
 ### Tidying stale config (`schema:tidy`)
 
-`schema:generate` never deletes anything. `schema:tidy` removes the config files of tables that no longer exist in the database, and the columns those tables no longer have. It reads the database, not the models, so a table without a model is kept. It does not touch anything else, and does not remove stale `belongs_tos`; run `schema:generate` for those.
+`schema:generate` never deletes anything. `schema:tidy` removes the config files of tables that no longer exist in the database, and the columns those tables no longer have. It reads the database, not the models, so a table without a model is kept. It does not touch anything else, and does not remove stale `belongs_tos`; run `schema:generate` for those. It also removes the [profile overlay](#profile-overlays) entries the tidied base no longer has.
 
 ```bash
 bundle exec rake exwiw:schema:tidy
@@ -495,6 +529,7 @@ bundle exec rake exwiw:schema:check
 - `added_*`, `removed_*` and `changed_tables`: run `schema:generate` and `schema:tidy`.
 - `needs_mask_decision`: columns still waiting for a decision.
 - `stale_*`: removed tables and columns that the config still exports, which would make the export fail. Used by `--fail-on=stale` (see [below](#non-rails-applications-exwiw-schema----from-db)).
+- `overlay_stale`: only when `profiles` are declared. Entries of [profile overlays](#profile-overlays) that reference what the regenerated base no longer has, such as `dev:users.columns.legacy_flag`. These are stale too: the overlay would no longer merge. An overlay that does not merge into the committed config makes the check fail with an error instead.
 
 With multiple databases each entry starts with the database name (`primary/users.email`). Set `EXWIW_SCHEMA_CHECK_OUTPUT=<path>` to also write the JSON to a file.
 

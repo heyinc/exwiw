@@ -8,7 +8,9 @@ module Exwiw
       dump_target:,
       logger:,
       io: $stdout,
-      explain_verbosity: nil
+      explain_verbosity: nil,
+      profiles: [],
+      profile: nil
     )
       @connection_config = connection_config
       @schema_dir = schema_dir
@@ -17,6 +19,8 @@ module Exwiw
       @io = io
       # mongodb-only; nil lets the adapter pick its safe default (queryPlanner).
       @explain_verbosity = explain_verbosity
+      @profiles = profiles
+      @profile = profile
     end
 
     def run
@@ -46,6 +50,7 @@ module Exwiw
         runtime_reverse_scope: adapter.is_a?(Adapter::MongodbAdapter),
       )
 
+      @io.puts "-- profile: #{@profile}" if @profile
       total_size = ordered_table_names.size
       ordered_table_names.each_with_index do |table_name, idx|
         table = table_by_name.fetch(table_name)
@@ -97,15 +102,7 @@ module Exwiw
     end
 
     private def load_table_config(klass)
-      Dir[File.join(@schema_dir, "*.json")].map do |file|
-        json = JSON.parse(File.read(file))
-        begin
-          klass.from(json).reject_ignored_members!
-        rescue UnknownConfigKeyError => e
-          # `.from` knows the table, not the file; point at the offending file.
-          raise UnknownConfigKeyError, "#{file}: #{e.message}", e.backtrace
-        end
-      end
+      SchemaLoader.new(dir: @schema_dir, config_class: klass, profiles: @profiles, profile: @profile).load
     end
 
     # Reject a `--target-table` (or `--target-collection`) absent from the loaded

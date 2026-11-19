@@ -9,11 +9,17 @@ module Exwiw
     # report it. `removed_columns` maps a surviving table's name to the column
     # names that were dropped from its config.
     class TidyResult
-      attr_reader :removed_tables, :removed_columns
+      attr_reader :removed_tables, :removed_columns, :removed_overlay_entries
 
       def initialize
         @removed_tables = []
         @removed_columns = {}
+        # Labels like `dev:users.columns.legacy_col` (see OverlayDrift::Entry#labels).
+        @removed_overlay_entries = []
+      end
+
+      def add_removed_overlay_entries(labels)
+        @removed_overlay_entries.concat(labels)
       end
 
       def add_removed_table(table_name)
@@ -25,7 +31,7 @@ module Exwiw
       end
 
       def empty?
-        @removed_tables.empty? && @removed_columns.empty?
+        @removed_tables.empty? && @removed_columns.empty? && @removed_overlay_entries.empty?
       end
     end
 
@@ -43,9 +49,14 @@ module Exwiw
     # belongs_to to it.
     ACTIVE_STORAGE_VARIANT_RECORDS_TABLE = "active_storage_variant_records"
 
-    def self.from_rails_application(output_dir:, safe_new_columns: true)
+    def self.from_rails_application(output_dir:, safe_new_columns: true, profiles: [])
       Rails.application.eager_load!
-      new(models: ActiveRecord::Base.descendants, output_dir: output_dir, safe_new_columns: safe_new_columns)
+      new(
+        models: ActiveRecord::Base.descendants,
+        output_dir: output_dir,
+        safe_new_columns: safe_new_columns,
+        profiles: profiles,
+      )
     end
 
     # `safe_new_columns` (the default) emits every column masked — as far as its
@@ -53,10 +64,15 @@ module Exwiw
     # #merge lets an existing entry win, so in practice only columns a migration
     # has just added keep that treatment. Pass false to bootstrap a config, where
     # every column is new and flagging all of them at once is noise.
-    def initialize(models:, output_dir:, safe_new_columns: true)
+    #
+    # `profiles` are the declared schema profiles: their overlay files are never
+    # read as base configs nor written, and tidy prunes what they reference
+    # that the base no longer has (see OverlayDrift).
+    def initialize(models:, output_dir:, safe_new_columns: true, profiles: [])
       @models = models
       @output_dir = output_dir
       @safe_new_columns = safe_new_columns
+      @profiles = profiles
     end
 
     def generate!
@@ -111,7 +127,7 @@ module Exwiw
 
         existing_data_sources = conn.data_sources.to_set
 
-        Dir[File.join(dir, "*.json")].sort.each do |path|
+        SchemaFiles.base_files(dir, @profiles).each do |path|
           existing = TableConfig.from(JSON.parse(File.read(path)))
 
           unless existing_data_sources.include?(existing.name)
@@ -128,6 +144,8 @@ module Exwiw
           File.write(path, JSON.pretty_generate(existing.to_hash) + "\n")
           stale_columns.each { |column| result.add_removed_column(existing.name, column.name) }
         end
+
+        result.add_removed_overlay_entries(OverlayDrift.prune!(dir, config_class: TableConfig, profiles: @profiles))
       end
 
       result
@@ -198,6 +216,7 @@ module Exwiw
       FileUtils.mkdir_p(dir)
 
       tables.each do |table|
+        SchemaFiles.ensure_base_name!(table.name, @profiles)
         path = File.join(dir, "#{table.name}.json")
         config_to_write =
           if File.exist?(path)
