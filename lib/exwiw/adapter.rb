@@ -66,7 +66,7 @@ module Exwiw
       # @param connection_config [Exwiw::ConnectionConfig] how to connect when `connection` is nil
       # @param logger [Logger]
       # @param connection [Object, nil] a driver connection the caller holds and keeps owning, read through instead
-      #   of opening one: PG::Connection, Mysql2::Client or Trilogy, SQLite3::Database, or Mongo::Client or Mongo::Database
+      #   of opening one: PG::Connection, Mysql2::Client or Trilogy, SQLite3::Database, or Mongo::Client
       # @param session [Mongo::Session, nil] mongodb only: the caller's session (e.g. a transaction's) to read in
       def initialize(connection_config, logger, connection: nil, session: nil)
         @connection_config = connection_config
@@ -113,7 +113,8 @@ module Exwiw
       # @param _results [Enumerable] the rows (documents) named by `_primary_key_values`, masked by the RowTransformer where one applies
       # @param _table [Exwiw::TableConfig, Exwiw::MongodbCollectionConfig] the table (collection) to mask
       # @param _primary_key_values [Array<Integer, String>] the given primary keys, checked and unique
-      # @param _extra_assignments [Hash{String => Object}] columns (fields) set to a fixed value on every row, unless masked
+      # @param _extra_assignments [Hash{String => Object}] columns (fields) set to a fixed value on every row found, unless
+      #   masked; for SQL a Time is written in its own zone without an offset
       # @return [Array(Array, Integer, Array)] the statements (an SQL String, or a MongodbAdapter::MaskUpdateBulkWrite), rows found, given keys with no row
       # @raise [Exwiw::MaskUpdateRunner::Error] when a row cannot be masked as declared
       def mask_update_statements(_results, _table, _primary_key_values, _extra_assignments = {})

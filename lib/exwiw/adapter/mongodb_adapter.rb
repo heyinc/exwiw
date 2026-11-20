@@ -72,6 +72,10 @@ module Exwiw
 
       def initialize(connection_config, logger, connection: nil, session: nil)
         super
+        if connection && !(defined?(::Mongo::Client) && connection.is_a?(::Mongo::Client))
+          raise ArgumentError, "the mongodb adapter reads through a Mongo::Client, got #{connection.class}"
+        end
+
         @state = {}
         @explain_placeholder = false
       end
@@ -279,7 +283,7 @@ module Exwiw
       # @param results [Enumerable<Hash>] the documents named by `primary_key_values`, as #execute returns them
       # @param config [Exwiw::MongodbCollectionConfig] collection to mask
       # @param primary_key_values [Array<String>] the given primary keys (at most MaskUpdateRunner::CHUNK_SIZE)
-      # @param extra_assignments [Hash{String => Object}] top-level fields set to a fixed value on every document, unless masked
+      # @param extra_assignments [Hash{String => Object}] top-level fields set to a fixed value on every document found, unless masked
       # @return [Array(Array<MaskUpdateBulkWrite>, Integer, Array<String>)] the bulk write (none when nothing is set), documents found, given keys with no document
       def mask_update_statements(results, config, primary_key_values, extra_assignments = {})
         plan = mask_plan(config)
@@ -290,9 +294,9 @@ module Exwiw
           found_ids << doc[config.primary_key]
           sets = {}
           apply_mask_plan!(doc, plan, sets)
+          sets.merge!(extras)
           next if sets.empty?
 
-          sets.merge!(extras)
           { "updateOne" => { "filter" => { config.primary_key => doc[config.primary_key] }, "update" => { "$set" => sets } } }
         end
         statements = operations.empty? ? [] : [MaskUpdateBulkWrite.new(collection_name: config.name, operations: operations)]

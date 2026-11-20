@@ -715,6 +715,28 @@ module Exwiw
         expect(db.execute("SELECT email FROM accounts ORDER BY id")).to eq([["a@x"], ["b@x"]])
       end
 
+      it "writes a Time in extra_assignments in its own zone, without an offset" do
+        db = SQLite3::Database.new(":memory:")
+        db.execute("CREATE TABLE accounts (id INTEGER PRIMARY KEY, email TEXT, updated_at TEXT)")
+        db.execute("INSERT INTO accounts VALUES (1, 'a@x', 'old')")
+
+        _, statements = apply(
+          DataSource.given("sqlite", db), [accounts], [1], extra_assignments: { "updated_at" => Time.utc(2026, 1, 2, 3, 4, 5, 678_901) },
+        )
+
+        expect(statements).to eq(["UPDATE accounts SET email = 'masked1', updated_at = '2026-01-02 03:04:05.678901' WHERE accounts.id = 1;"])
+      end
+
+      it "refuses a MongoDB connection that is not a Mongo::Client" do
+        config = database_config(:mongodb)
+        client = Mongo::Client.new(["#{config[:host]}:#{config[:port]}"], database: "exwiw_mask_update_given_spec")
+
+        expect { DataSource.given("mongodb", client.database).build_adapter(logger) }
+          .to raise_error(ArgumentError, /reads through a Mongo::Client, got Mongo::Database/)
+      ensure
+        client&.close
+      end
+
       it "leaves a column with a declared mask to the mask, not to extra_assignments" do
         db = SQLite3::Database.new(":memory:")
         db.execute("CREATE TABLE accounts (id INTEGER PRIMARY KEY, email TEXT, updated_at TEXT)")
@@ -762,7 +784,7 @@ module Exwiw
         client = Mongo::Client.new(["#{config[:host]}:#{config[:port]}"], database: "exwiw_mask_update_given_spec")
         collection = client[:accounts]
         collection.drop
-        collection.insert_many([{ _id: "0012", email: "a@x" }, { _id: 12, email: "b@x" }])
+        collection.insert_many([{ _id: "0012", email: "a@x" }, { _id: 12, email: "b@x" }, { _id: "bare" }])
         lsids = []
         subscriber = Object.new
         subscriber.define_singleton_method(:started) { |event| lsids << event.command["lsid"] if event.command_name == "find" }
@@ -772,16 +794,16 @@ module Exwiw
         config_hash = { name: "accounts", primary_key: "_id", belongs_tos: [], fields: [{ name: "_id" }, { name: "email", replace_with: "masked{_id}" }] }
 
         summary, bulk_writes = apply(
-          DataSource.given("mongodb", client.database, session: session), [MongodbCollectionConfig.from_symbol_keys(config_hash)],
-          ["0012"], extra_assignments: { "touched" => true },
+          DataSource.given("mongodb", client, session: session), [MongodbCollectionConfig.from_symbol_keys(config_hash)],
+          ["0012", "bare"], extra_assignments: { "touched" => true },
         )
         expect(bulk_writes.size).to eq(1)
         collection.bulk_write(bulk_writes.first.driver_operations)
 
         expect(lsids).to all(eq(session.session_id)).and(be_any)
-        expect(summary.target_count).to eq(2)
-        expect(collection.find.sort(email: 1).map { |d| [d["_id"], d["email"], d["touched"]] })
-          .to contain_exactly(["0012", "masked0012", true], [12, "masked12", true])
+        expect(summary.target_count).to eq(3)
+        expect(collection.find.map { |d| [d["_id"], d["email"], d["touched"]] })
+          .to contain_exactly(["0012", "masked0012", true], [12, "masked12", true], ["bare", nil, true])
       ensure
         session&.end_session
         collection&.drop

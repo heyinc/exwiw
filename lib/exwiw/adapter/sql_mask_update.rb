@@ -42,13 +42,13 @@ module Exwiw
       # @param results [Enumerable<Array>] rows of the query #build_query builds, already through the RowTransformer
       # @param table [Exwiw::TableConfig] table to mask
       # @param primary_key_values [Array<Integer, String>] the given primary keys (at most MaskUpdateRunner::CHUNK_SIZE)
-      # @param extra_assignments [Hash{String => Object}] columns set to a fixed value on every row, unless masked
+      # @param extra_assignments [Hash{String => Object}] columns set to a fixed value on every row found, unless masked
       # @return [Array(Array<String>, Integer, Array)] the UPDATE statements, rows found, given keys with no row
       # @raise [Exwiw::MaskUpdateRunner::Error] for a row the database matched only after converting a given key, or a mask value an UPDATE cannot hold
       def mask_update_statements(results, table, primary_key_values, extra_assignments = {})
         masked = masked_columns(table)
         extras = extra_assignments.reject { |name, _| masked.any? { |c| c.name == name } }.map do |name, value|
-          "#{quote_identifier(name)} = #{escape_value(value)}"
+          "#{quote_identifier(name)} = #{extra_literal(table, name, value)}"
         end
         pk_index = table.columns.index { |c| c.name == table.primary_key }
         masked_indexes = masked.map { |c| table.columns.index(c) }
@@ -104,6 +104,19 @@ module Exwiw
           match = pattern.match(sql)
           match && (match.names.empty? || RANDOM_BYTES_RANGE.cover?(match[:bytes].to_i))
         end
+      end
+
+      # A Time is written in its own zone without an offset (pass it in the zone the column stores), a Date as a date.
+      private def extra_literal(table, name, value)
+        value =
+          case value
+          when Time then value.strftime("%Y-%m-%d %H:%M:%S.%6N")
+          when Date then value.strftime("%Y-%m-%d")
+          else value
+          end
+        escape_value(value)
+      rescue UnsupportedValueError => e
+        raise MaskUpdateRunner::Error, "'#{table.name}.#{name}' cannot be set to this value: #{e.message}"
       end
 
       private def literal_for(table, column, value)

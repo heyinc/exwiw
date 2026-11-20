@@ -27,7 +27,8 @@ module Exwiw
     # @param logger [Logger]
     # @param io [#puts] where #run writes the statements
     # @param allow_constant_columns [Array<String>] credential-looking "table.column"s the caller accepts masking to non-NULL
-    # @param extra_assignments [Hash{String => Object}] columns (fields) set to a fixed value on every masked row, unless masked, e.g. updated_at
+    # @param extra_assignments [Hash{String => Object}] columns (fields) set to a fixed value on every row found, unless
+    #   masked, e.g. updated_at (for SQL a Time is written in its own zone without an offset)
     def initialize(
       source:,
       schema:,
