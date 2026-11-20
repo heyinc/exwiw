@@ -244,6 +244,19 @@ module Exwiw
       describe "#execute" do
         # #execute returns a lazy StreamingResult (cursor-backed); drain it with
         # .to_a to compare the materialized rows.
+        context "through a given database opened with results_as_hash, as ActiveRecord opens it" do
+          let(:adapter) do
+            described_class.new(connection_config, logger, connection: SQLite3::Database.new("tmp/test.sqlite3", results_as_hash: true))
+          end
+
+          it "counts and reads the rows as arrays" do
+            result = adapter.execute(build_select_shops_ast)
+
+            expect(result.size).to eq(1)
+            expect(result.to_a).to eq([[1, "Shop 1", "2025-01-01 00:00:00", "2025-01-01 00:00:00"]])
+          end
+        end
+
         context "simple select query" do
           let(:results) { adapter.execute(build_select_shops_ast).to_a }
 
