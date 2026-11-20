@@ -8,7 +8,7 @@ module Exwiw
   # ApplicationRecord); nothing is added to a model that does not include one.
   module Maskable
     # What `mask_with_exwiw!` returns: the runner's summary, and the statements it executed (or, with `dry_run`, would
-    # execute): SQL UPDATEs, or the lines `mask-update` prints for MongoDB.
+    # execute): SQL UPDATEs, or MongodbAdapter::MaskUpdateBulkWrite for MongoDB.
     Result = Data.define(:summary, :statements)
 
     # The schema for a model, from the process-wide cache. A model (or its base class or concern) may define the class

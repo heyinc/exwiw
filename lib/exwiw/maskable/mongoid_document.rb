@@ -49,7 +49,8 @@ module Exwiw
         # @param profile [String, nil] the schema profile to apply. The schema is found through the class methods
         #   `exwiw_config_path` and `exwiw_schema_dir` when the class defines them (see Exwiw::Maskable.schema_for)
         # @param allow_constant_columns [Array<String>] credential-looking "collection.path"s accepted as constant masks
-        # @return [Exwiw::Maskable::Result] statements are `[collection, operations]` as canonical Extended JSON
+        # @return [Exwiw::Maskable::Result] statements are Exwiw::Adapter::MongodbAdapter::MaskUpdateBulkWrite
+        #   (`#to_extended_json` gives the line `mask-update` prints)
         # @raise [Exwiw::MaskUpdateRunner::Error] when nothing narrows the documents, the class is embedded, or the documents
         #   cannot be masked as declared; nothing is written then
         def mask_with_exwiw!(touch: true, dry_run: false, profile: nil, allow_constant_columns: [])
@@ -82,7 +83,7 @@ module Exwiw
               client[bulk_write.collection_name].bulk_write(bulk_write.driver_operations, session ? { session: session } : {})
             end
           end
-          Result.new(summary: summary, statements: bulk_writes.map(&:to_extended_json))
+          Result.new(summary: summary, statements: bulk_writes)
         end
 
         # The default scope's lambda calls `where` on the class, which would chain onto the current criteria, so the

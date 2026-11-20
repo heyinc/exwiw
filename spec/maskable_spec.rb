@@ -422,10 +422,10 @@ module Exwiw
         result = model.where(name: "a").mask_with_exwiw!(**options)
 
         expect(result.summary).to have_attributes(target_count: 1, columns: %w[email token])
-        expect(JSON.parse(result.statements.sole)).to match([
-          "maskable_spec_users",
-          [{ "updateOne" => { "filter" => { "_id" => { "$oid" => a._id.to_s } }, "update" => { "$set" => hash_including("updated_at") } } }],
-        ])
+        expect(result.statements.sole).to have_attributes(
+          collection_name: "maskable_spec_users",
+          operations: [{ "updateOne" => { "filter" => { "_id" => a._id }, "update" => { "$set" => hash_including("updated_at") } } }],
+        )
         a.reload
         expect(a).to have_attributes(name: "a", email: "masked#{a._id}@example.com", token: "fixed")
         expect(a.updated_at).to be > long_ago
@@ -446,7 +446,7 @@ module Exwiw
         result = model.where(name: "a").mask_with_exwiw!(dry_run: true, **options)
 
         expect(result.statements.size).to eq(1)
-        expect(BSON::ExtJSON.parse(result.statements.sole).first).to eq("maskable_spec_users")
+        expect(BSON::ExtJSON.parse(result.statements.sole.to_extended_json).first).to eq("maskable_spec_users")
         expect(a.reload.email).to eq("a@x")
       end
 
