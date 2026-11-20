@@ -78,19 +78,25 @@ module Exwiw
   # Array is taken as the values of the `default` space. Single-target mode and
   # the mongodb adapter use the `default` space only.
   #
-  # `ids_by` says what `ids` are: :primary_key (the target table's primary keys; single-target
-  # mode even if the table declares a `scope_column`) or :scope_column ([scope-column mode]).
-  # nil leaves it to the schema, as before: scope-column mode when the target table declares a
-  # `scope_column`, and the primary key otherwise.
+  # `mode` is :primary_key or :scope_column.
   #
-  # `recursive` (default true) extracts the tables related to `table_name` too; false
-  # extracts only `table_name`'s own rows. false needs a `table_name` and no scope-column mode.
+  # - :primary_key starts from `table_name` (required): `ids` are its primary keys, and the
+  #   tables related to it are followed unless `recursive` is false (only `table_name`'s rows).
+  # - :scope_column filters every table by its own `scope_column`, and `ids` are values of
+  #   those columns ([scope-column mode]). `table_name` has no meaning here, and `recursive`
+  #   must not be given.
+  #
+  # With `mode` nil the target decides, as before: scope-column mode when `table_name` declares
+  # a `scope_column`, when there is no `table_name` but `ids` are given, or when the deprecated
+  # global `scope_column` is set; the primary key otherwise.
+  #
+  # `recursive` is nil (not given, which follows related tables) or a Boolean; see #recursive?.
   DEFAULT_ID_SPACE = "default"
   ID_SPACE_NAME_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
-  IDS_BY = %i[primary_key scope_column].freeze
+  MODES = %i[primary_key scope_column].freeze
 
-  DumpTarget = Struct.new(:table_name, :ids, :ids_field, :scope_column, :recursive, :ids_by, keyword_init: true) do
+  DumpTarget = Struct.new(:table_name, :ids, :ids_field, :scope_column, :recursive, :mode, keyword_init: true) do
     def self.normalize_ids(ids)
       case ids
       when nil then {}
@@ -102,11 +108,15 @@ module Exwiw
     def initialize(**kwargs)
       super
       self.ids = ids
-      self.recursive = true if recursive.nil?
-      self.ids_by = ids_by&.to_sym
-      return if ids_by.nil? || IDS_BY.include?(ids_by)
+      self.mode = mode&.to_sym
+      return if mode.nil? || MODES.include?(mode)
 
-      raise ArgumentError, "ids_by must be one of #{IDS_BY.join(', ')}, got #{ids_by.inspect}"
+      raise ArgumentError, "mode must be one of #{MODES.join(', ')}, got #{mode.inspect}"
+    end
+
+    # @return [Boolean] whether the tables related to the target are followed (unless `recursive` is false)
+    def recursive?
+      recursive != false
     end
 
     def ids=(value)

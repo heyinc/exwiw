@@ -129,7 +129,7 @@ module Exwiw
 
         expect do
           Runner.new(connection_config: connection_config, output_dir: output_dir, schema_dir: schema_dir, dump_target: target, logger: ::Logger.new(nil)).run
-        end.to raise_error(ArgumentError, /--no-recursive extracts only the target table/)
+        end.to raise_error(ArgumentError, /--recursive\/--no-recursive need --target-table/)
       end
     end
 

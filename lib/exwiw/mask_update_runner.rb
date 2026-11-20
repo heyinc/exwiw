@@ -147,12 +147,12 @@ module Exwiw
     end
 
     private def reject_unsupported_target!
-      case @dump_target.ids_by
+      case @dump_target.mode
       when :primary_key then nil
-      when :scope_column then raise Error, "ids_by: :scope_column is not supported: the ids must be primary keys"
-      else raise Error, "ids_by is required: set ids_by: :primary_key (--ids-by=primary-key) to say the ids are primary keys"
+      when :scope_column then raise Error, "mode: :scope_column is not supported: the ids must be primary keys"
+      else raise Error, "mode is required: set mode: :primary_key (--mode=primary-key) to say the ids are primary keys"
       end
-      if @dump_target.recursive
+      if @dump_target.recursive?
         raise Error, "recursion is not supported yet: only the target table's rows are masked, so set recursive: false (--no-recursive)"
       end
       raise Error, "ids_field is not supported: rows are addressed by primary key" if @dump_target.ids_field

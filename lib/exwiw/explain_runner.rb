@@ -39,7 +39,7 @@ module Exwiw
       adapter.validate_as_dump_target!(target) if target
 
       dumpable_configs = configs.select { |c| adapter.dumpable?(c) }
-      dumpable_configs = dumpable_configs.select { |c| c.name == @dump_target.table_name } unless @dump_target.recursive
+      dumpable_configs = dumpable_configs.select { |c| c.name == @dump_target.table_name } unless @dump_target.recursive?
       QueryAstBuilder.validate_scope!(dumpable_configs, table_by_name, @dump_target, @logger)
 
       @logger.debug("Determining table processing order...")
