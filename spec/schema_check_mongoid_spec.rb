@@ -43,6 +43,7 @@ module Exwiw
     def report
       described_class.new(
         schema_dir: schema_dir, regenerator: described_class.mongoid_regenerator(models),
+        config_class: MongodbCollectionConfig,
       ).run
     end
 
@@ -126,6 +127,7 @@ module Exwiw
       checker = described_class.new(
         schema_dir: schema_dir,
         regenerator: described_class.mongoid_regenerator([MongoidDummy::PolymorphicAddress]),
+        config_class: MongodbCollectionConfig,
       )
 
       expect { checker.run }.to raise_error(

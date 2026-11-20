@@ -661,10 +661,9 @@ module Exwiw
       }.each do |adapter_name, expressions|
         expressions.each do |expression|
           it "accepts #{expression.inspect} on #{adapter_name}" do
-            adapter = Adapter.build(connection_config(adapter_name), logger)
             column = TableColumn.from_symbol_keys(name: "api_token", raw_sql: expression)
 
-            expect(adapter.send(:safe_for_credential?, column)).to be(true)
+            expect(Adapter.class_for(adapter_name).safe_for_credential?(column)).to be(true)
           end
         end
       end

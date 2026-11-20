@@ -92,10 +92,20 @@ module Exwiw
         raise NotImplementedError
       end
 
+      # Describes a loaded table (collection) for Exwiw::MaskRules, without a connection: what #check_mask_update and
+      # the schema check judge.
+      #
+      # @param _table [Exwiw::TableConfig, Exwiw::MongodbCollectionConfig] a loaded table (collection)
+      # @param _table_by_name [Hash{String => Object}] every declared table by name
+      # @return [Exwiw::MaskRules::Table]
+      def self.describe_masks(_table, _table_by_name)
+        raise NotImplementedError, "#{name} does not implement .describe_masks"
+      end
+
       # Checks that the table (collection) can be masked as declared, before any row is read. Exwiw::MaskUpdateRunner
-      # calls this after validating the table and the primary key values. An implementation leaves `ignore: true`
-      # members alone, raises for a table that declares no mask or masks its primary key, and passes what it masks to
-      # Exwiw::MaskUpdateRunner.check_credential_columns!.
+      # calls this after validating the table and the primary key values. An implementation judges what
+      # .describe_masks returns with Exwiw::MaskRules: it raises for a table that declares no mask or masks its primary
+      # key, and passes the description to Exwiw::MaskUpdateRunner.check_credential_columns!.
       #
       # @param _table [Exwiw::TableConfig, Exwiw::MongodbCollectionConfig] the table (collection) to mask
       # @param _table_by_name [Hash{String => Object}] every declared table by name, as for #build_query

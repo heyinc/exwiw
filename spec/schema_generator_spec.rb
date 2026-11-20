@@ -406,6 +406,21 @@ module Exwiw
         )
       end
 
+      it "preserves allow_unmasked and allow_guessable_credential on rerun" do
+        existing_path = File.join(output_dir, "users.json")
+        described_class.new(models: [User], output_dir: output_dir, safe_new_columns: false).generate!
+        existing = JSON.parse(File.read(existing_path))
+        existing["columns"].find { |c| c["name"] == "email" }["allow_unmasked"] = true
+        existing["columns"].find { |c| c["name"] == "name" }.merge!("replace_with" => "x", "allow_guessable_credential" => true)
+        File.write(existing_path, JSON.pretty_generate(existing))
+
+        described_class.new(models: [User], output_dir: output_dir).generate!
+
+        columns = JSON.parse(File.read(existing_path))["columns"]
+        expect(columns.find { |c| c["name"] == "email" }).to eq("name" => "email", "allow_unmasked" => true)
+        expect(columns.find { |c| c["name"] == "name" }).to include("allow_guessable_credential" => true)
+      end
+
       it "preserves user-customized filter on rerun" do
         existing_path = File.join(output_dir, "shops.json")
         existing = {

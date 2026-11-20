@@ -107,5 +107,29 @@ module Exwiw
         expect(ConfigFile.profiles(config(""))).to eq([])
       end
     end
+
+    describe '.check' do
+      def config(yaml)
+        File.join(@tmpdir, 'exwiw.yml').tap { |path| File.write(path, yaml) }
+      end
+
+      it 'reads the check section against the declared profiles' do
+        path = config("profiles: [dev]\ncheck:\n  masks:\n    profiles: [dev]\n")
+
+        checks = ConfigFile.check(path, profiles: ConfigFile.profiles(path))
+        expect(checks.profiles_by_check).to eq('integrity' => [nil, 'dev'], 'masks' => ['dev'])
+      end
+
+      it 'returns the defaults without a config file or a check section' do
+        Dir.chdir(@tmpdir) { expect(ConfigFile.check.enabled).to eq(%w[integrity]) }
+        expect(ConfigFile.check(config("schema_dir: s\n")).enabled).to eq(%w[integrity])
+      end
+
+      it 'raises on an invalid check section, naming the file' do
+        path = config("check:\n  masks:\n    profiles: [staging]\n")
+
+        expect { ConfigFile.check(path) }.to raise_error(ArgumentError, /undeclared profile\(s\) staging in #{Regexp.escape(path)}/)
+      end
+    end
   end
 end

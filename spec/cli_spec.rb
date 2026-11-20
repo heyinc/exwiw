@@ -749,6 +749,53 @@ module Exwiw
           expect(JSON.parse(@stdout)['needs_mask_decision']).to eq(['users.email'])
         end
 
+        describe 'with check: in the config file' do
+          def check_argv(yaml, extra = [])
+            config_path = File.join(schema_dir, 'exwiw.yml')
+            File.write(config_path, yaml)
+            schema_argv('check', ["--config=#{config_path}", *extra])
+          end
+
+          it 'exits 1 on a finding alone, saying regenerating does not fix it' do
+            generate_plain
+
+            expect do
+              expect { capture_stdout { run_cli(check_argv("check:\n  masks: true\n")) } }
+                .to raise_error(SystemExit) { |error| expect(error.status).to eq(CLI::SCHEMA_CHECK_DIRTY_EXIT) }
+            end.to output(/\Aexwiw: the masks check\(s\) found problems in the config, which regenerating does not fix[^\n]*\n\z/).to_stderr
+            expect(JSON.parse(@stdout)['masks']).to include(start_with('users.email [base]: looks sensitive'))
+          end
+
+          it 'exits 0 under --fail-on=stale when only a check finds something' do
+            generate_plain
+
+            expect do
+              expect { capture_stdout { run_cli(check_argv("check:\n  masks: true\n", ['--fail-on=stale'])) } }
+                .not_to raise_error
+            end.to output(/the masks check\(s\) found problems, but nothing the extraction reads is stale/).to_stderr
+          end
+
+          it 'exits 0 when the checks find nothing' do
+            generate_plain
+
+            expect { capture_stdout { run_cli(check_argv("check:\n  credentials: true\n")) } }.not_to raise_error
+            expect(JSON.parse(@stdout)).to include('integrity' => [], 'credentials' => [])
+          end
+
+          it 'exits with the error status on an invalid check section' do
+            generate_plain
+
+            expect { capture_stdout { run_cli(check_argv("check:\n  masks:\n    patterns: ['kana(']\n")) } }
+              .to raise_error(SystemExit) { |error| expect(error.status).to eq(CLI::SCHEMA_CHECK_ERROR_EXIT) }
+              .and output(/could not run the schema check.*invalid regular expression "kana\("/).to_stderr
+          end
+
+          it 'is ignored by the other verbs' do
+            expect { run_cli(check_argv("check:\n  masks: 1\n").tap { |argv| argv[1] = 'generate' }) }
+              .to output(/wrote the schema config/).to_stdout
+          end
+        end
+
         it 'writes the report to EXWIW_SCHEMA_CHECK_OUTPUT as well as stdout' do
           generate_plain
           output_path = File.join(schema_dir, 'report.json')

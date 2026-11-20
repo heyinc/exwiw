@@ -52,6 +52,7 @@ module Exwiw
       explain_verbosity
       mongodb_query_timeout_ms
       profiles
+      check
     ].freeze
 
     # MongoDB explain verbosity levels (passed through to the server's explain
@@ -138,6 +139,9 @@ module Exwiw
       @profile = nil
       # `schema show` only: print one table instead of all.
       @show_table = nil
+      # `schema check` only: the config file's raw `check` section, and the file it is in.
+      @check_config = nil
+      @check_config_source = nil
       # nil (not :info) so we can tell "user passed --log-level" from the default,
       # letting a config-file value fill in; the :info default is applied later.
       @log_level = nil
@@ -329,7 +333,9 @@ module Exwiw
 
       report =
         begin
-          SchemaCheck.new(schema_dir: @schema_dir, regenerator: regenerator, profiles: @profiles).run
+          checks = CheckConfig.parse(@check_config, profiles: @profiles, source: @check_config_source || "the config file")
+          SchemaCheck.new(schema_dir: @schema_dir, regenerator: regenerator, profiles: @profiles,
+                          checks: checks, adapter: @database_adapter).run
         rescue StandardError => e
           # See SCHEMA_CHECK_ERROR_EXIT: not being able to run the check is a
           # different answer from "the config is out of date".
@@ -344,11 +350,21 @@ module Exwiw
 
       return if SchemaCheck.clean?(report)
 
+      failed_checks = SchemaCheck.failed_checks(report)
+      checks_hint = "exwiw: the #{failed_checks.join(', ')} check(s) found problems in the config, which regenerating " \
+                    "does not fix; resolve each entry as it says."
+
       # --fail-on=stale: a pre-extraction gate stops only on the drift that
       # would break the export itself; the report above still carries the rest.
       if @fail_on == "stale" && !SchemaCheck.stale?(report)
-        $stderr.puts "exwiw: the schema config has drifted, but nothing the extraction reads is stale " \
-                     "(--fail-on=stale); run `exwiw schema generate --from-db` at your leisure."
+        if SchemaCheck.drifted?(report)
+          $stderr.puts "exwiw: the schema config has drifted, but nothing the extraction reads is stale " \
+                       "(--fail-on=stale); run `exwiw schema generate --from-db` at your leisure."
+        end
+        unless failed_checks.empty?
+          $stderr.puts "exwiw: the #{failed_checks.join(', ')} check(s) found problems, but nothing the extraction " \
+                       "reads is stale (--fail-on=stale); resolve them at your leisure."
+        end
         return
       end
 
@@ -363,14 +379,20 @@ module Exwiw
                      "so an extraction SELECT would fail on them; " \
                      "run `exwiw schema generate --from-db` (then `exwiw schema tidy --from-db`) to drop them."
         # The default (CI) mode is a one-shot report; the gate deliberately
-        # stays quiet about mask decisions.
-        if @fail_on != "stale" && report.fetch("needs_mask_decision", []).any?
-          $stderr.puts "exwiw: the report also lists `needs_mask_decision` columns; resolve those too."
+        # stays quiet about mask decisions and the static checks.
+        if @fail_on != "stale"
+          if report.fetch("needs_mask_decision", []).any?
+            $stderr.puts "exwiw: the report also lists `needs_mask_decision` columns; resolve those too."
+          end
+          $stderr.puts checks_hint unless failed_checks.empty?
         end
       else
-        $stderr.puts "exwiw: the schema config is out of date or has undecided masking; " \
-                     "run `exwiw schema generate --from-db` (then `exwiw schema tidy --from-db`) " \
-                     "and resolve every `needs_mask_decision` column."
+        if SchemaCheck.drifted?(report)
+          $stderr.puts "exwiw: the schema config is out of date or has undecided masking; " \
+                       "run `exwiw schema generate --from-db` (then `exwiw schema tidy --from-db`) " \
+                       "and resolve every `needs_mask_decision` column."
+        end
+        $stderr.puts checks_hint unless failed_checks.empty?
       end
       exit SCHEMA_CHECK_DIRTY_EXIT
     end
@@ -612,6 +634,9 @@ module Exwiw
         $stderr.puts e.message
         exit 1
       end
+      # Parsed by `schema check` itself, so a mistake there is "could not run the check", not an error elsewhere.
+      @check_config = config["check"]
+      @check_config_source = path
     end
 
     # A profile applies only when --profile names it, and only to export,

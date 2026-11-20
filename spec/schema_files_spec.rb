@@ -34,6 +34,13 @@ module Exwiw
       end
     end
 
+    describe ".validate_profiles!" do
+      it "reserves base for the base config" do
+        expect { described_class.validate_profiles!(%w[dev base], source: "exwiw.yml") }
+          .to raise_error(ArgumentError, /profile name 'base' is reserved for the base config \(no overlay\) in exwiw.yml/)
+      end
+    end
+
     describe ".ensure_base_name!" do
       it "rejects a table whose file name would read as an overlay" do
         expect { described_class.ensure_base_name!("users.dev", ["dev"]) }.to raise_error(ArgumentError, /overlay of profile 'dev'/)

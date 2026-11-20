@@ -32,6 +32,11 @@ module Exwiw
         end
       end
 
+      if value.include?(CheckConfig::BASE_PROFILE)
+        raise ArgumentError,
+              "profile name '#{CheckConfig::BASE_PROFILE}' is reserved for the base config (no overlay) in #{source}"
+      end
+
       duplicates = value.tally.select { |_, count| count > 1 }.keys
       unless duplicates.empty?
         raise ArgumentError, "profile(s) #{duplicates.join(', ')} declared more than once in #{source}"

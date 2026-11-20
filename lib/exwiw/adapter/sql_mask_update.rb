@@ -8,31 +8,76 @@ module Exwiw
       # A `random_bytes` of fewer bytes is guessable; more than the maximum is just wasteful.
       RANDOM_BYTES_RANGE = (16..1024)
 
+      def self.included(base)
+        base.extend(ClassMethods)
+      end
+
+      # Class-level so the schema check can describe a table without an adapter instance.
+      module ClassMethods
+        # @param table [Exwiw::TableConfig] a loaded table
+        # @param _table_by_name [Hash{String => Exwiw::TableConfig}] every declared table by name
+        # @return [Exwiw::MaskRules::Table]
+        def describe_masks(table, _table_by_name)
+          foreign_keys = table.belongs_tos.map(&:foreign_key)
+          columns = table.columns.map do |c|
+            MaskRules::Column.new(
+              path: c.name, name: c.name, masked: mask_declared?(c), safe: safe_for_credential?(c),
+              allow_guessable_credential: c.allow_guessable_credential == true, allow_unmasked: c.allow_unmasked == true,
+              exempt: c.name == table.primary_key || foreign_keys.include?(c.name),
+            )
+          end
+          MaskRules::Table.new(
+            name: table.name, primary_key: table.primary_key,
+            selects_primary_key: table.columns.any? { |c| c.name == table.primary_key }, columns: columns,
+          )
+        end
+
+        # @param column [Exwiw::TableColumn]
+        # @return [Boolean]
+        def mask_declared?(column)
+          !!(column.raw_sql || !column.replace_with.nil? || column.map || column.replace_with_fake_data)
+        end
+
+        # NULL, or one of the adapter's RANDOM_SECRET_PATTERNS (evaluated per row by the SELECT, then written as a literal).
+        #
+        # @param column [Exwiw::TableColumn]
+        # @return [Boolean]
+        def safe_for_credential?(column)
+          sql = column.raw_sql.to_s.strip
+          sql.casecmp?("NULL") || random_secret_expression?(sql)
+        end
+
+        private def random_secret_expression?(sql)
+          self::RANDOM_SECRET_PATTERNS.any? do |pattern|
+            match = pattern.match(sql)
+            match && (match.names.empty? || RANDOM_BYTES_RANGE.cover?(match[:bytes].to_i))
+          end
+        end
+      end
+
       # Checks that `table` can be masked as declared, before any row is read.
       #
       # @param table [Exwiw::TableConfig] table to mask
-      # @param _table_by_name [Hash{String => Exwiw::TableConfig}] every declared table by name
+      # @param table_by_name [Hash{String => Exwiw::TableConfig}] every declared table by name
       # @return [Exwiw::MaskUpdateRunner::Checked]
       # @raise [Exwiw::MaskUpdateRunner::Error] when the table declares no mask, masks or does not select its primary key, or for an unaccepted credential-looking column
-      def check_mask_update(table, _table_by_name)
-        masked = masked_columns(table)
-        if masked.empty?
+      def check_mask_update(table, table_by_name)
+        described = self.class.describe_masks(table, table_by_name)
+        unless MaskRules.masked?(described)
           raise MaskUpdateRunner::Error,
                 "table '#{table.name}' declares no mask (replace_with / raw_sql / map / replace_with_fake_data) on any column"
         end
-        if masked.any? { |c| c.name == table.primary_key }
+        if MaskRules.masks_primary_key?(described)
           raise MaskUpdateRunner::Error,
                 "table '#{table.name}' masks its primary key '#{table.primary_key}', which selects the rows to update"
         end
-        unless table.columns.any? { |c| c.name == table.primary_key }
+        unless described.selects_primary_key
           raise MaskUpdateRunner::Error,
                 "table '#{table.name}' does not select its primary key '#{table.primary_key}' (is it ignored?), so its rows cannot be addressed"
         end
 
-        masks = masked.map { |c| [c.name, safe_for_credential?(c)] }
-        allowed = MaskUpdateRunner.check_credential_columns!(table.name, masks, table.columns.select(&:allow_guessable_credential).map(&:name))
-
-        MaskUpdateRunner::Checked.new(columns: masked.map(&:name), allowed_guessable_columns: allowed)
+        allowed = MaskUpdateRunner.check_credential_columns!(described)
+        MaskUpdateRunner::Checked.new(columns: masked_columns(table).map(&:name), allowed_guessable_columns: allowed)
       end
 
       # Builds one UPDATE per row of `results`, setting every masked column to the value `results` holds for it.
@@ -85,24 +130,7 @@ module Exwiw
       end
 
       private def masked_columns(table)
-        table.columns.select { |c| mask_declared?(c) }
-      end
-
-      private def mask_declared?(column)
-        column.raw_sql || !column.replace_with.nil? || column.map || column.replace_with_fake_data
-      end
-
-      # NULL, or one of the adapter's RANDOM_SECRET_PATTERNS (evaluated per row by the SELECT, then written as a literal).
-      private def safe_for_credential?(column)
-        sql = column.raw_sql.to_s.strip
-        sql.casecmp?("NULL") || random_secret_expression?(sql)
-      end
-
-      private def random_secret_expression?(sql)
-        self.class::RANDOM_SECRET_PATTERNS.any? do |pattern|
-          match = pattern.match(sql)
-          match && (match.names.empty? || RANDOM_BYTES_RANGE.cover?(match[:bytes].to_i))
-        end
+        table.columns.select { |c| self.class.mask_declared?(c) }
       end
 
       # A Time is written in its own zone without an offset (pass it in the zone the column stores), a Date as a date.

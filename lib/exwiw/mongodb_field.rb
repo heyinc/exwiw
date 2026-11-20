@@ -29,6 +29,10 @@ module Exwiw
     # `mask-update` only: accepts a mask other than NULL or a random raw_sql on a credential-looking column (see
     # MaskUpdateRunner.check_credential_columns!).
     attribute :allow_guessable_credential, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
+    # Declares that this field is exported unmasked on purpose, though its name looks sensitive (see
+    # MaskRules.unmasked_sensitive). Part of the mask group, so an overlay can un-mask a field or mask it again.
+    attribute :allow_unmasked, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true,
+                               merge: { exclusive: :mask }
     # See TableColumn#needs_mask_decision.
     attribute :needs_mask_decision,
               Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)),

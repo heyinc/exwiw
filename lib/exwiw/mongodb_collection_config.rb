@@ -168,6 +168,7 @@ module Exwiw
           pf.comment = receiver.comment
           pf.ignore = receiver.ignore
           pf.allow_guessable_credential = receiver.allow_guessable_credential
+          pf.allow_unmasked = receiver.allow_unmasked
           pf.needs_mask_decision = receiver.needs_mask_decision
           pf
         end
