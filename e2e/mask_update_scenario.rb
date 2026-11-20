@@ -266,7 +266,7 @@ tables.each { |t| File.write(File.join(schema_dir, "#{t.name}.json"), JSON.dump(
 io = StringIO.new
 summary = Exwiw::MaskUpdateRunner.new(
   connection_config: connection_config(DBS[:apply]), schema_dir: schema_dir, logger: LOGGER, io: io,
-  dump_target: Exwiw::DumpTarget.new(table_name: "accounts", ids: SELECTED),
+  dump_target: Exwiw::DumpTarget.new(table_name: "accounts", ids: SELECTED, recursive: false),
 ).run
 plan = Struct.new(:script, :summary).new(io.string.delete_suffix("\n"), summary)
 FileUtils.remove_entry(schema_dir)
