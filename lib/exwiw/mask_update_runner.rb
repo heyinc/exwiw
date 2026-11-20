@@ -14,11 +14,11 @@ module Exwiw
     CREDENTIAL_NAME = /password|digest|salt|secret|token|credential|encrypted|passcode|api_key|access_key/i
 
     # What `MaskUpdateRunner#run` returns: the rows found (`target_count`), the columns (MongoDB: field paths) the
-    # statements set, the given primary keys with no row, and the credential-looking columns accepted by `allow_guessable_mask`.
+    # statements set, the given primary keys with no row, and the credential-looking columns accepted by `allow_guessable_credential`.
     Summary = Data.define(:table_name, :target_count, :columns, :missing_primary_key_values, :allowed_guessable_columns)
 
     # What an adapter's `check_mask_update` returns: the columns (MongoDB: field paths) the statements will set, and the
-    # credential-looking ones accepted by `allow_guessable_mask`.
+    # credential-looking ones accepted by `allow_guessable_credential`.
     Checked = Data.define(:columns, :allowed_guessable_columns)
 
     # @param source [Exwiw::DataSource] the database to read
@@ -115,9 +115,9 @@ module Exwiw
     #
     # @param table_name [String] table (collection) being masked
     # @param masks [Array<Array(String, Boolean)>] each masked column or field path, and whether its mask is safe (raw_sql NULL, or a random-bytes expression)
-    # @param allowed [Array<String>] the columns or field paths that set `allow_guessable_mask`, masked or not
-    # @return [Array<String>] the "table.column" entries that needed `allow_guessable_mask`
-    # @raise [Exwiw::MaskUpdateRunner::Error] for an unaccepted credential-looking column, or an `allow_guessable_mask` that guards nothing
+    # @param allowed [Array<String>] the columns or field paths that set `allow_guessable_credential`, masked or not
+    # @return [Array<String>] the "table.column" entries that needed `allow_guessable_credential`
+    # @raise [Exwiw::MaskUpdateRunner::Error] for an unaccepted credential-looking column, or an `allow_guessable_credential` that guards nothing
     def self.check_credential_columns!(table_name, masks, allowed)
       qualify = ->(paths) { paths.map { |path| "#{table_name}.#{path}" } }
       guarded = masks.select { |path, safe| path.match?(CREDENTIAL_NAME) && !safe }.map(&:first)
@@ -126,14 +126,14 @@ module Exwiw
         raise Error,
               "#{qualify.(unaccepted).join(', ')} look like credentials but are not masked to NULL or a random value, so the value written would be " \
               "guessable; mask them with raw_sql \"NULL\" or a random expression such as gen_random_uuid()::text (PostgreSQL), " \
-              "HEX(RANDOM_BYTES(16)) (MySQL) or hex(randomblob(16)) (SQLite), or set allow_guessable_mask: true on them"
+              "HEX(RANDOM_BYTES(16)) (MySQL) or hex(randomblob(16)) (SQLite), or set allow_guessable_credential: true on them"
       end
 
       stray = allowed - guarded
       return qualify.(guarded) if stray.empty?
 
       raise Error,
-            "#{qualify.(stray).join(', ')} set allow_guessable_mask, but are not credential-looking " \
+            "#{qualify.(stray).join(', ')} set allow_guessable_credential, but are not credential-looking " \
             "columns masked to a guessable value; remove it"
     end
 

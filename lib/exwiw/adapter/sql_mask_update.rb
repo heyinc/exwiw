@@ -30,7 +30,7 @@ module Exwiw
         end
 
         masks = masked.map { |c| [c.name, safe_for_credential?(c)] }
-        allowed = MaskUpdateRunner.check_credential_columns!(table.name, masks, table.columns.select(&:allow_guessable_mask).map(&:name))
+        allowed = MaskUpdateRunner.check_credential_columns!(table.name, masks, table.columns.select(&:allow_guessable_credential).map(&:name))
 
         MaskUpdateRunner::Checked.new(columns: masked.map(&:name), allowed_guessable_columns: allowed)
       end

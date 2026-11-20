@@ -251,7 +251,7 @@ module Exwiw
         end
         # A MongoDB mask can neither say NULL nor draw random bytes, so a credential-looking path always needs an allowance.
         safe_paths = names.map { |n| [n, false] }
-        allowed = MaskUpdateRunner.check_credential_columns!(config.name, safe_paths, allow_guessable_mask_paths(config))
+        allowed = MaskUpdateRunner.check_credential_columns!(config.name, safe_paths, allow_guessable_credential_paths(config))
 
         MaskUpdateRunner::Checked.new(columns: names, allowed_guessable_columns: allowed)
       end
@@ -313,11 +313,11 @@ module Exwiw
         io.puts statement.to_extended_json
       end
 
-      # Paths (in mask_target_names' form) of the fields that set `allow_guessable_mask`, embedded collections included.
-      private def allow_guessable_mask_paths(config, prefix = nil)
-        own = config.fields.select(&:allow_guessable_mask).map { |f| [prefix, f.name].compact.join(".") }
+      # Paths (in mask_target_names' form) of the fields that set `allow_guessable_credential`, embedded collections included.
+      private def allow_guessable_credential_paths(config, prefix = nil)
+        own = config.fields.select(&:allow_guessable_credential).map { |f| [prefix, f.name].compact.join(".") }
         own + embedded_children_of(config).flat_map do |child|
-          allow_guessable_mask_paths(child, [prefix, child.embedded_in.path].compact.join("."))
+          allow_guessable_credential_paths(child, [prefix, child.embedded_in.path].compact.join("."))
         end
       end
 

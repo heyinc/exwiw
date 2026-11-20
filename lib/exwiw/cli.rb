@@ -237,7 +237,7 @@ module Exwiw
         lines << "primary key values not found: #{summary.missing_primary_key_values.join(', ')}"
       end
       unless summary.allowed_guessable_columns.empty?
-        lines << "credential-looking columns masked to a guessable value (allow_guessable_mask): #{summary.allowed_guessable_columns.join(', ')}"
+        lines << "credential-looking columns masked to a guessable value (allow_guessable_credential): #{summary.allowed_guessable_columns.join(', ')}"
       end
       lines
     end
@@ -1094,7 +1094,7 @@ module Exwiw
                       declared in the schema config. The database is only read; apply
                       the output yourself. A column whose name looks like a credential
                       may only be masked to NULL (raw_sql "NULL") or a random raw_sql
-                      such as hex(randomblob(16)), unless it sets allow_guessable_mask: true.
+                      such as hex(randomblob(16)), unless it sets allow_guessable_credential: true.
             schema    Maintain the schema config (generate | check | tidy) by
                       reading a live database, for applications that cannot be
                       loaded to generate it from their models. Requires --from-db;

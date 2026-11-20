@@ -138,8 +138,8 @@ module Exwiw
           .to raise_error(MaskUpdateRunner::Error, /mask_update_credential_spec\.api_token look like credentials/)
       end
 
-      context "when the field sets allow_guessable_mask" do
-        let(:allowance) { { allow_guessable_mask: true } }
+      context "when the field sets allow_guessable_credential" do
+        let(:allowance) { { allow_guessable_credential: true } }
 
         it "accepts it and reports it" do
           plan = build(adapter, [tokens], [1], table_name: "mask_update_credential_spec")
@@ -149,7 +149,7 @@ module Exwiw
         it "reads the allowance of an embedded collection's field under its path" do
           keys = MongodbCollectionConfig.from_symbol_keys(
             name: "mask_update_credential_spec_keys", primary_key: "_id", belongs_tos: [],
-            fields: [{ name: "secret", replace_with: "KNOWN", allow_guessable_mask: true }],
+            fields: [{ name: "secret", replace_with: "KNOWN", allow_guessable_credential: true }],
             embedded_in: { collection_name: "mask_update_credential_spec", path: "keys" },
           )
           plan = build(adapter, [tokens, keys], [1], table_name: "mask_update_credential_spec")
@@ -459,12 +459,12 @@ module Exwiw
       end
 
       it "rejects an allowance for a column masked by a random expression" do
-        expect { build(adapter, [accounts(api_token: { raw_sql: "hex(randomblob(16))", allow_guessable_mask: true })]) }
-          .to raise_error(MaskUpdateRunner::Error, /accounts\.api_token set allow_guessable_mask/)
+        expect { build(adapter, [accounts(api_token: { raw_sql: "hex(randomblob(16))", allow_guessable_credential: true })]) }
+          .to raise_error(MaskUpdateRunner::Error, /accounts\.api_token set allow_guessable_credential/)
       end
 
-      it "writes the mask to a column that sets allow_guessable_mask, and reports it" do
-        plan = build(adapter, [accounts(api_token: { replace_with: "KNOWN", allow_guessable_mask: true })])
+      it "writes the mask to a column that sets allow_guessable_credential, and reports it" do
+        plan = build(adapter, [accounts(api_token: { replace_with: "KNOWN", allow_guessable_credential: true })])
         db.execute_batch(plan.script)
 
         expect(db.execute("SELECT api_token FROM accounts")).to eq([["KNOWN"]])
@@ -472,9 +472,9 @@ module Exwiw
       end
 
       it "rejects an allowance that guards nothing, even on an unmasked column" do
-        tables = [accounts(password_digest: { raw_sql: "NULL", allow_guessable_mask: true }, city: { allow_guessable_mask: true })]
+        tables = [accounts(password_digest: { raw_sql: "NULL", allow_guessable_credential: true }, city: { allow_guessable_credential: true })]
         expect { build(adapter, tables) }
-          .to raise_error(MaskUpdateRunner::Error, /accounts\.password_digest, accounts\.city set allow_guessable_mask/)
+          .to raise_error(MaskUpdateRunner::Error, /accounts\.password_digest, accounts\.city set allow_guessable_credential/)
       end
 
       it "treats passcode, api_key and access_key names as credentials too" do
