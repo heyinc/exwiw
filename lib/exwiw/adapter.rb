@@ -12,11 +12,11 @@ module Exwiw
     # and a Rails app's `connection.adapter_name` (e.g. "Mysql2", "SQLite") is
     # absorbed — lookup is case-insensitive (see .normalize_name).
     #
-    # NOTE: this only normalizes the *name*; exwiw always connects with the
-    # `mysql2` gem (see MysqlAdapter#connection). It is deliberately not aliased
-    # from `trilogy`: a source app using the trilogy driver still needs the
-    # `mysql2` gem available for exwiw to connect, so accepting `--adapter=trilogy`
-    # would falsely imply trilogy support. Use `--adapter=mysql` in that case.
+    # NOTE: this only normalizes the *name*; the driver is chosen separately: a
+    # connection exwiw opens uses mysql2 unless EXWIW_MYSQL_DRIVER=trilogy (see
+    # MysqlClient.detect_driver), and a given connection keeps its own driver.
+    # `trilogy` is deliberately not aliased, as `--adapter=trilogy` would suggest
+    # it picks the driver; use `--adapter=mysql` (with EXWIW_MYSQL_DRIVER=trilogy).
     ADAPTER_ALIASES = {
       "mysql2" => "mysql",
       "sqlite3" => "sqlite",

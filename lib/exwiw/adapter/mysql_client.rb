@@ -148,8 +148,7 @@ module Exwiw
       #
       # trilogy has no streaming cursor (no QUERY_FLAGS_STREAMING), so it buffers
       # the result and yields from it — parity, but without the memory win (the
-      # same situation as the sqlite adapter). trilogy is a test-only driver;
-      # production connects via mysql2.
+      # same situation as the sqlite adapter).
       #
       # @param sql [String]
       # @yieldparam row [Array<String|nil>]
