@@ -5,15 +5,17 @@ module Exwiw
     # Mask-update generation for MongoDB: reads the documents by primary key, masks a copy with
     # the same mask plan export uses, and emits a mongosh bulkWrite of `$set`s for what changed.
     module MongodbMaskUpdate
+      # Checks that `config` can be masked as declared, before any document is read.
+      #
       # @param config [Exwiw::MongodbCollectionConfig] collection to mask
-      # @param dump_target [Exwiw::DumpTarget] names the documents to mask by their primary keys (`default_ids`)
+      # @param config_by_name [Hash{String => Exwiw::MongodbCollectionConfig}] every declared collection by name
       # @param allow_constant_columns [Array<String>] credential-looking "collection.path"s accepted as non-NULL masks
-      # @return [Exwiw::MaskUpdateRunner::Generated]
-      def build_mask_update(config, dump_target, config_by_name, allow_constant_columns: [])
+      # @return [Exwiw::MaskUpdateRunner::Checked]
+      # @raise [Exwiw::MaskUpdateRunner::Error] when the collection declares no mask or masks its primary key, or for an unaccepted credential-looking path
+      def check_mask_update(config, config_by_name, allow_constant_columns: [])
         @embedded_children_by_parent = index_embedded_children(config_by_name)
 
-        plan = build_mask_plan(config)
-        names = mask_target_names(plan)
+        names = mask_target_names(mask_plan(config))
         if names.empty?
           raise MaskUpdateRunner::Error, "collection '#{config.name}' declares no mask (replace_with / replace_with_fake_data) on any field"
         end
@@ -24,9 +26,21 @@ module Exwiw
         safe_paths = names.map { |n| [n, false] }
         allowed = MaskUpdateRunner.check_credential_columns!(config.name, safe_paths, allow_constant_columns)
 
-        primary_key_values = dump_target.default_ids
+        MaskUpdateRunner::Checked.new(columns: names, allowed_constant_columns: allowed)
+      end
+
+      # Writes one `bulkWrite` of `$set`s for the documents in `results` whose masked copy differs, masking a copy
+      # with the same plan #to_bulk_insert uses. Counterpart of #write_inserts; call #build_query first.
+      #
+      # @param io [#puts] where the mongosh script is written
+      # @param results [Enumerable<Hash>] the documents named by `primary_key_values`, as #execute returns them
+      # @param config [Exwiw::MongodbCollectionConfig] collection to mask
+      # @param primary_key_values [Array<String>] the given primary keys (at most MaskUpdateRunner::CHUNK_SIZE)
+      # @return [Array(Integer, Integer, Array<String>)] statements written, documents found, given keys with no document
+      def write_mask_updates(io, results, config, primary_key_values)
+        plan = mask_plan(config)
+        docs = results.to_a
         ids = coerce_ids(primary_key_values)
-        docs = find_for_mask_update(config, dump_target, config_by_name)
         found_ids = docs.to_set { |doc| doc[config.primary_key] }
         missing = primary_key_values.zip(ids).reject { |_, id| found_ids.include?(id) }.map(&:first)
 
@@ -39,29 +53,15 @@ module Exwiw
           "  { updateOne: { filter: { #{js_literal(config.primary_key)}: #{js_literal(doc[config.primary_key])} }, " \
             "update: { \"$set\": { #{sets.map { |path, value| "#{js_literal(path)}: #{js_literal(value)}" }.join(', ')} } } } }"
         end
-        statements = operations.each_slice(MaskUpdateRunner::CHUNK_SIZE).map do |chunk|
-          "db.getCollection(#{js_literal(config.name)}).bulkWrite([\n#{chunk.join(",\n")}\n]);"
-        end
+        return [0, docs.size, missing] if operations.empty?
 
-        MaskUpdateRunner::Generated.new(
-          statements: statements,
-          target_count: docs.size,
-          columns: names,
-          missing_primary_key_values: missing,
-          allowed_constant_columns: allowed,
-        )
+        io.puts "db.getCollection(#{js_literal(config.name)}).bulkWrite([\n#{operations.join(",\n")}\n]);"
+        [1, docs.size, missing]
       end
 
       private def mask_target_names(plan, prefix = nil)
         own = (plan.masked_fields.map(&:first) + plan.faked_fields.map(&:first)).map { |n| [prefix, n].compact.join(".") }
         own + plan.embedded.flat_map { |e| mask_target_names(e.plan, [prefix, *e.prefix, e.last].compact.join(".")) }
-      end
-
-      private def find_for_mask_update(config, dump_target, config_by_name)
-        dump_target.default_ids.each_slice(MaskUpdateRunner::CHUNK_SIZE).flat_map do |chunk|
-          target = dump_target.dup.tap { |t| t.ids = chunk }
-          execute(build_query(config, target, config_by_name, self_ancestors: false)).to_a
-        end
       end
 
       private def copy_containers(value)

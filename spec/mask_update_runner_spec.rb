@@ -27,7 +27,7 @@ module Exwiw
         tables.each { |t| File.write(File.join(schema_dir, "#{t.name}.json"), JSON.dump(t.to_hash)) }
         allow(Adapter).to receive(:build).and_call_original
         allow(Adapter).to receive(:build).with(adapter.connection_config, anything).and_return(adapter)
-        io = StringIO.new
+        io = options.delete(:io) || StringIO.new
         summary = MaskUpdateRunner.new(
           connection_config: adapter.connection_config, schema_dir: schema_dir, logger: logger, io: io,
           dump_target: DumpTarget.new(table_name: table_name, ids: values, recursive: false, **target), **options,
@@ -256,6 +256,15 @@ module Exwiw
 
         expect(plan.summary).to have_attributes(target_count: 1, missing_primary_key_values: [])
         expect(db.execute("SELECT id, email FROM accounts ORDER BY id")).to eq([[1, "root@x"], [2, "child@x"], [3, "masked-3"]])
+      end
+
+      it "writes nothing when a later row cannot be masked, so no script masks only some rows" do
+        columns = [{ name: "id" }, { name: "email", map: "->(r) { r['id'] == 2 ? Object.new : 'x' }" }]
+        io = StringIO.new
+
+        expect { build(adapter, [table(columns: columns)], [1, 2], io: io) }
+          .to raise_error(MaskUpdateRunner::Error, /was masked to #<Object/)
+        expect(io.string).to be_empty
       end
 
       it "reads the given values as primary keys even when the table declares a scope_column" do

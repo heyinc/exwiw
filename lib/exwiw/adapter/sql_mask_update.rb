@@ -2,21 +2,21 @@
 
 module Exwiw
   module Adapter
-    # Mask-UPDATE generation shared by the SQL adapters. Rows are read with the adapter's
-    # #execute, as export does, so the only statements issued are the SELECTs of #build_query.
+    # Mask-UPDATE output shared by the SQL adapters, the counterpart of SqlBulkInsert: it formats the rows
+    # MaskUpdateRunner reads with #build_query and #execute as UPDATE statements.
     module SqlMaskUpdate
       # A `random_bytes` of fewer bytes is guessable; more than the maximum is just wasteful.
       RANDOM_BYTES_RANGE = (16..1024)
 
+      # Checks that `table` can be masked as declared, before any row is read.
+      #
       # @param table [Exwiw::TableConfig] table to mask
-      # @param dump_target [Exwiw::DumpTarget] names the rows to mask by their primary keys (`default_ids`)
+      # @param _table_by_name [Hash{String => Exwiw::TableConfig}] every declared table by name
       # @param allow_constant_columns [Array<String>] credential-looking "table.column"s accepted as non-NULL masks
-      # @return [Exwiw::MaskUpdateRunner::Generated]
-      def build_mask_update(table, dump_target, table_by_name, allow_constant_columns: [])
-        # ids are primary keys here even if the table declares a scope_column
-        table = table.dup.tap { |t| t.scope_column = nil }
-        columns = table.columns
-        masked = columns.select { |c| mask_declared?(c) }
+      # @return [Exwiw::MaskUpdateRunner::Checked]
+      # @raise [Exwiw::MaskUpdateRunner::Error] when the table declares no mask, masks or does not select its primary key, or for an unaccepted credential-looking column
+      def check_mask_update(table, _table_by_name, allow_constant_columns: [])
+        masked = masked_columns(table)
         if masked.empty?
           raise MaskUpdateRunner::Error,
                 "table '#{table.name}' declares no mask (replace_with / raw_sql / map / replace_with_fake_data) on any column"
@@ -25,21 +25,62 @@ module Exwiw
           raise MaskUpdateRunner::Error,
                 "table '#{table.name}' masks its primary key '#{table.primary_key}', which selects the rows to update"
         end
+        unless table.columns.any? { |c| c.name == table.primary_key }
+          raise MaskUpdateRunner::Error,
+                "table '#{table.name}' does not select its primary key '#{table.primary_key}' (is it ignored?), so its rows cannot be addressed"
+        end
 
         masks = masked.map { |c| [c.name, safe_for_credential?(c)] }
         allowed = MaskUpdateRunner.check_credential_columns!(table.name, masks, allow_constant_columns)
 
-        primary_key_values = dump_target.default_ids
-        matched, statements = lookup_rows(table, dump_target, table_by_name.merge(table.name => table), masked, primary_key_values)
-        found = matched.to_set { |v| v.to_s.downcase }
+        MaskUpdateRunner::Checked.new(columns: masked.map(&:name), allowed_constant_columns: allowed)
+      end
 
-        MaskUpdateRunner::Generated.new(
-          statements: statements,
-          target_count: matched.size,
-          columns: masked.map(&:name),
-          missing_primary_key_values: primary_key_values.reject { |v| found.include?(v.to_s.downcase) },
-          allowed_constant_columns: allowed,
-        )
+      # Writes one UPDATE per row of `results`, setting every masked column to the value `results` holds for it.
+      # Counterpart of #write_inserts. Rows are matched by what the database returns (a case-insensitive collation
+      # can return "abc" for "ABC").
+      #
+      # @param io [#puts] where the statements are written
+      # @param results [Enumerable<Array>] rows of the query #build_query builds, already through the RowTransformer
+      # @param table [Exwiw::TableConfig] table to mask
+      # @param primary_key_values [Array<Integer, String>] the given primary keys (at most MaskUpdateRunner::CHUNK_SIZE)
+      # @return [Array(Integer, Integer, Array)] statements written, rows found, given keys with no row
+      # @raise [Exwiw::MaskUpdateRunner::Error] for a row the database matched only after converting a given key, or a mask value an UPDATE cannot hold
+      def write_mask_updates(io, results, table, primary_key_values)
+        masked = masked_columns(table)
+        pk_index = table.columns.index { |c| c.name == table.primary_key }
+        masked_indexes = masked.map { |c| table.columns.index(c) }
+        computed = masked.map { |c| c.map || c.replace_with_fake_data }
+        given_by_key = primary_key_values.to_h { |v| [v.to_s, v] }
+        given_folded = primary_key_values.to_set { |v| v.to_s.downcase }
+
+        found = Set.new
+        statement_count = 0
+        results.each do |row|
+          returned = row[pk_index]
+          # MySQL converts a string like '12x' to 12 when comparing with an integer key, so such a row is not the one asked for.
+          unless given_by_key.key?(returned.to_s) || given_folded.include?(returned.to_s.downcase)
+            raise MaskUpdateRunner::Error,
+                  "'#{table.name}' row with primary key #{returned.inspect} matched none of the given values exactly " \
+                  "(#{primary_key_values.map(&:to_s).first(5).join(', ')}#{primary_key_values.size > 5 ? ', ...' : ''}); " \
+                  "the database converted one of them, so pass the exact primary key values"
+          end
+
+          found << returned.to_s.downcase
+          assignments = masked.each_with_index.map do |c, i|
+            value = row[masked_indexes[i]]
+            value = writable_value(table, c, value) if computed[i]
+            "#{quote_identifier(c.name)} = #{escape_value(value)}"
+          end
+          io.puts update_statement(table, assignments, [given_by_key.fetch(returned.to_s, returned)])
+          statement_count += 1
+        end
+
+        [statement_count, statement_count, primary_key_values.reject { |v| found.include?(v.to_s.downcase) }]
+      end
+
+      private def masked_columns(table)
+        table.columns.select { |c| mask_declared?(c) }
       end
 
       private def mask_declared?(column)
@@ -57,51 +98,6 @@ module Exwiw
           match = pattern.match(sql)
           match && (match.names.empty? || RANDOM_BYTES_RANGE.cover?(match[:bytes].to_i))
         end
-      end
-
-      # Selects with the query export builds for the target table, minus the ancestors it keeps for a
-      # self-referencing table. Rows are matched by what the database returns (a case-insensitive
-      # collation can return "abc" for "ABC").
-      private def lookup_rows(table, dump_target, table_by_name, masked, primary_key_values)
-        pk = table.primary_key
-        transformer = RowTransformer.build(table)
-        masked_indexes = masked.map { |c| table.columns.index(c) }
-        computed = masked.map { |c| c.map || c.replace_with_fake_data }
-        given_by_key = primary_key_values.to_h { |v| [v.to_s, v] }
-        given_folded = primary_key_values.to_set { |v| v.to_s.downcase }
-
-        matched = []
-        statements = []
-        primary_key_values.each_slice(MaskUpdateRunner::CHUNK_SIZE) do |chunk|
-          target = dump_target.dup.tap { |t| t.ids = chunk }
-          ast = build_query(table, target, table_by_name, self_ancestors: false)
-          # The key goes after the table's columns, so the transformer's indexes still hold.
-          ast.columns << QueryAst::ColumnValue::Plain.new(name: pk, value: pk) unless ast.columns.any? { |c| c.name == pk }
-          pk_index = ast.columns.index { |c| c.name == pk }
-
-          execute(ast).each do |row|
-            returned = row[pk_index]
-            # MySQL converts a string like '12x' to 12 when comparing with an integer key, so such a row is not the one asked for.
-            unless given_by_key.key?(returned.to_s) || given_folded.include?(returned.to_s.downcase)
-              raise MaskUpdateRunner::Error,
-                    "'#{table.name}' row with primary key #{returned.inspect} matched none of the given values exactly " \
-                    "(#{primary_key_values.map(&:to_s).first(5).join(', ')}#{primary_key_values.size > 5 ? ', ...' : ''}); " \
-                    "the database converted one of them, so pass the exact primary key values"
-            end
-
-            pk_value = given_by_key.fetch(returned.to_s, returned)
-            matched << pk_value
-
-            row = transformer.transform(row) if transformer
-            assignments = masked.each_with_index.map do |c, i|
-              value = row[masked_indexes[i]]
-              value = writable_value(table, c, value) if computed[i]
-              "#{quote_identifier(c.name)} = #{escape_value(value)}"
-            end
-            statements << update_statement(table, assignments, [pk_value])
-          end
-        end
-        [matched.uniq, statements]
       end
 
       # escape_value embeds anything but a String verbatim, so a map must not return another type.

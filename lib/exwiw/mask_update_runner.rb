@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "stringio"
+
 module Exwiw
   # Writes the statements (SQL UPDATEs, or a mongosh script for MongoDB) that mask chosen rows of
   # one table in place with the masks declared for export. Only reads the database.
@@ -14,9 +16,9 @@ module Exwiw
     # statements set, the given primary keys with no row, and the credential-looking columns that needed an allowance.
     Summary = Data.define(:table_name, :target_count, :columns, :missing_primary_key_values, :allowed_constant_columns)
 
-    # What an adapter's `build_mask_update` returns: `statements` are the UPDATEs, one per row (MongoDB: `bulkWrite`
-    # calls), and the other fields are what `Summary` reports.
-    Generated = Data.define(:statements, :target_count, :columns, :missing_primary_key_values, :allowed_constant_columns)
+    # What an adapter's `check_mask_update` returns: the columns (MongoDB: field paths) the statements will set, and the
+    # credential-looking ones that needed an allowance.
+    Checked = Data.define(:columns, :allowed_constant_columns)
 
     # @param connection_config [Exwiw::ConnectionConfig] the database to read
     # @param schema_dir [String] directory of the schema config files
@@ -59,17 +61,35 @@ module Exwiw
       raise Error, "table '#{@dump_target.table_name}' is not declared in the schema (#{@schema_dir})" if table.nil?
 
       validate_table!(table)
-      target = @dump_target.dup.tap { |t| t.ids = normalize_primary_key_values(table, @dump_target.default_ids) }
+      primary_key_values = normalize_primary_key_values(table, @dump_target.default_ids)
+      # the ids are primary keys here even if the table declares a scope_column
+      table = table.dup.tap { |t| t.scope_column = nil } if table.respond_to?(:scope_column=)
+      table_by_name = table_by_name.merge(table.name => table)
+      checked = adapter.check_mask_update(table, table_by_name, allow_constant_columns: @allow_constant_columns)
 
-      generated = adapter.build_mask_update(table, target, table_by_name, allow_constant_columns: @allow_constant_columns)
-      @io.puts(generated.statements.join("\n")) unless generated.statements.empty?
+      row_transformer = RowTransformer.build(table)
+      # Nothing reaches `io` unless every row is written, so a failure never leaves a script that masks only some rows.
+      output = StringIO.new
+      record_count = 0
+      missing = []
+      primary_key_values.each_slice(CHUNK_SIZE) do |chunk|
+        target = @dump_target.dup.tap { |t| t.ids = chunk }
+        query_ast = adapter.build_query(table, target, table_by_name, self_ancestors: false)
+        results = adapter.execute(query_ast)
+        results = row_transformer.wrap(results) if row_transformer
+
+        _statement_count, found, not_found = adapter.write_mask_updates(output, results, table, chunk)
+        record_count += found
+        missing.concat(not_found)
+      end
+      @io.write(output.string)
 
       Summary.new(
         table_name: table.name,
-        target_count: generated.target_count,
-        columns: generated.columns,
-        missing_primary_key_values: generated.missing_primary_key_values,
-        allowed_constant_columns: generated.allowed_constant_columns,
+        target_count: record_count,
+        columns: checked.columns,
+        missing_primary_key_values: missing,
+        allowed_constant_columns: checked.allowed_constant_columns,
       )
     end
 
