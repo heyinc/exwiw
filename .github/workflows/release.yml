@@ -24,11 +24,16 @@ jobs:
         id: check_tag
         run: |
           VERSION=$(grep -E 'VERSION\s*=' lib/exwiw/version.rb | sed -E 's/.*"([^"]+)".*/\1/')
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.(alpha|beta|rc)[0-9]+)?$ ]]; then
             echo "::error::Invalid version extracted: $VERSION"
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [[ "$VERSION" =~ \.(alpha|beta|rc)[0-9]+$ ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
           if git rev-parse "v$VERSION" >/dev/null 2>&1; then
             echo "Tag v$VERSION already exists; skipping release."
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -52,11 +57,14 @@ jobs:
         id: notes
         env:
           VERSION: ${{ steps.check_tag.outputs.version }}
+          PRERELEASE: ${{ steps.check_tag.outputs.prerelease }}
         run: |
           NOTES=$(ruby <<'RUBY'
           version = ENV["VERSION"]
+          # A prerelease has no section of its own; its changes are still under [Unreleased]
+          heading = ENV["PRERELEASE"] == "true" ? "Unreleased" : version
           content = File.read("CHANGELOG.md")
-          if content =~ /^## \[#{Regexp.escape(version)}\][^\n]*\n(.*?)(?=^## \[|\z)/m
+          if content =~ /^## \[#{Regexp.escape(heading)}\][^\n]*\n(.*?)(?=^## \[|\z)/m && !$1.strip.empty?
             print $1.strip
           else
             print "Release v#{version}"
@@ -75,7 +83,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.check_tag.outputs.version }}
           NOTES: ${{ steps.notes.outputs.notes }}
+          PRERELEASE: ${{ steps.check_tag.outputs.prerelease }}
         run: |
+          FLAGS=()
+          if [[ "$PRERELEASE" == "true" ]]; then
+            FLAGS=(--prerelease --latest=false)
+          fi
           gh release create "v$VERSION" \
             --title "v$VERSION" \
-            --notes "$NOTES"
+            --notes "$NOTES" \
+            "${FLAGS[@]}"

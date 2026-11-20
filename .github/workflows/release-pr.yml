@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'New version (e.g., 0.1.9)'
+        description: 'New version (e.g., 0.1.9, or 1.3.0.beta1 for a prerelease)'
         required: true
         type: string
 
@@ -22,8 +22,9 @@ jobs:
 
       - name: Validate version format
         run: |
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Invalid version: $VERSION (expected X.Y.Z)"
+          # Prereleases use RubyGems' dotted form (1.3.0.beta1), not SemVer's 1.3.0-beta.1
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.(alpha|beta|rc)[0-9]+)?$ ]]; then
+            echo "::error::Invalid version: $VERSION (expected X.Y.Z or X.Y.Z.{alpha,beta,rc}N)"
             exit 1
           fi
 
@@ -45,6 +46,11 @@ jobs:
           unless content.include?("## [Unreleased]")
             warn "## [Unreleased] section not found in #{path}"
             exit 1
+          end
+          # A prerelease keeps [Unreleased] so the final release lists every change
+          if version.match?(/\.(alpha|beta|rc)\d+\z/)
+            puts "Prerelease: leaving #{path} unchanged"
+            exit 0
           end
           new_section = "## [Unreleased]\n\n## [#{version}] - #{date}"
           File.write(path, content.sub("## [Unreleased]", new_section))
@@ -70,11 +76,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh pr create \
-            --base main \
-            --head "release/$VERSION" \
-            --title "chore(release): バージョンを $VERSION に bump" \
-            --body "$(cat <<EOF
+          if [[ "$VERSION" =~ \.(alpha|beta|rc)[0-9]+$ ]]; then
+            BODY=$(cat <<EOF
+          自動生成されたプレリリース PR です。
+
+          - \`lib/exwiw/version.rb\`: \`VERSION\` を \`$VERSION\` に更新
+          - \`CHANGELOG.md\`: 変更しません（\`[Unreleased]\` は正式リリースまで残します）
+
+          このPRをmergeすると \`Release\` workflow が走り、\`v$VERSION\` タグを打って rubygems に prerelease として publish し、GitHub Release を pre-release として作ります。
+          \`gem install exwiw\` や \`~> 1.x\` の依存では選ばれず、\`--pre\` か \`"$VERSION"\` の明示指定でのみ入ります。
+          リリースノートには CHANGELOG の \`[Unreleased]\` 配下の項目が使われます。
+          EOF
+            )
+          else
+            BODY=$(cat <<EOF
           自動生成されたリリース PR です。
 
           - \`lib/exwiw/version.rb\`: \`VERSION\` を \`$VERSION\` に更新
@@ -83,4 +98,10 @@ jobs:
           このPRをmergeすると \`Release\` workflow が走り、\`v$VERSION\` タグを打って rubygems に publish します。
           CHANGELOG の \`[Unreleased]\` 配下の項目が今回のリリース内容として反映されているか、merge 前に確認してください。
           EOF
-          )"
+            )
+          fi
+          gh pr create \
+            --base main \
+            --head "release/$VERSION" \
+            --title "chore(release): バージョンを $VERSION に bump" \
+            --body "$BODY"
