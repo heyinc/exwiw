@@ -30,7 +30,7 @@ module Exwiw
         io = StringIO.new
         summary = MaskUpdateRunner.new(
           connection_config: adapter.connection_config, schema_dir: schema_dir, logger: logger, io: io,
-          dump_target: DumpTarget.new(table_name: table_name, ids: values, **target), **options,
+          dump_target: DumpTarget.new(table_name: table_name, ids: values, recursive: false, **target), **options,
         ).run
         Result.new(io.string.delete_suffix("\n"), summary)
       end
@@ -88,6 +88,11 @@ module Exwiw
         mongo = Adapter.build(connection_config(:mongodb), logger)
         expect { build(mongo, [embedded], table_name: "addresses") }
           .to raise_error(MaskUpdateRunner::Error, /embedded in 'accounts'/)
+      end
+
+      it "rejects a recursive target, which is not supported yet" do
+        expect { build(adapter, [table(columns: masked_columns)], [1], target: { recursive: true }) }
+          .to raise_error(MaskUpdateRunner::Error, /recursion is not supported yet.*--no-recursive/)
       end
 
       it "rejects ids_field, scope_column and another ID space" do

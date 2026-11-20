@@ -130,6 +130,9 @@ module Exwiw
     end
 
     private def reject_unsupported_target!
+      if @dump_target.recursive
+        raise Error, "recursion is not supported yet: only the target table's rows are masked, so set recursive: false (--no-recursive)"
+      end
       raise Error, "ids_field is not supported: rows are addressed by primary key" if @dump_target.ids_field
       raise Error, "scope_column is not supported: only one table's rows can be masked" if @dump_target.scope_column
       return if @dump_target.named_id_spaces.empty?

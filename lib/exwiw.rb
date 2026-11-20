@@ -77,10 +77,13 @@ module Exwiw
   # groups of tables keyed by unrelated kinds of id can be scoped in one run. An
   # Array is taken as the values of the `default` space. Single-target mode and
   # the mongodb adapter use the `default` space only.
+  #
+  # `recursive` (default true) extracts the tables related to `table_name` too; false
+  # extracts only `table_name`'s own rows. false needs a `table_name` and no scope-column mode.
   DEFAULT_ID_SPACE = "default"
   ID_SPACE_NAME_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
-  DumpTarget = Struct.new(:table_name, :ids, :ids_field, :scope_column, keyword_init: true) do
+  DumpTarget = Struct.new(:table_name, :ids, :ids_field, :scope_column, :recursive, keyword_init: true) do
     def self.normalize_ids(ids)
       case ids
       when nil then {}
@@ -92,6 +95,7 @@ module Exwiw
     def initialize(**kwargs)
       super
       self.ids = ids
+      self.recursive = true if recursive.nil?
     end
 
     def ids=(value)

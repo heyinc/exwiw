@@ -64,6 +64,15 @@ module Exwiw
       end
     end
 
+    describe '#run with --target-table and recursive: false' do
+      it 'explains the target table only' do
+        target = DumpTarget.new(table_name: 'shops', ids: ['1'], recursive: false)
+        ExplainRunner.new(connection_config: connection_config, schema_dir: 'e2e/sqlite-schema', dump_target: target, logger: logger, io: io).run
+
+        expect(io.string.scan(/^-- \[\d+\/\d+\] (\w+)/).flatten).to eq(%w[shops])
+      end
+    end
+
     describe '#run without --target-table (dump-all mode)' do
       let(:runner) do
         ExplainRunner.new(

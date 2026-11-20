@@ -55,6 +55,22 @@ module Exwiw
       end
     end
 
+    # `--no-recursive` extracts only the named target table, so it needs one, and it has no meaning
+    # in scope-column mode, where no single table anchors the run.
+    def self.validate_non_recursive_allowed!(table_by_name, dump_target)
+      return if dump_target.recursive
+
+      if dump_target.table_name.nil?
+        raise ArgumentError, "--no-recursive extracts only the target table, so it needs --target-table."
+      end
+      return unless scope_mode?(table_by_name, dump_target)
+
+      raise ArgumentError,
+            "--no-recursive cannot be combined with scope-column mode: --target-table " \
+            "'#{dump_target.table_name}' declares a scope_column (or a scope column is given), so --ids select by it " \
+            "across tables."
+    end
+
     # `--ids` without `--target-table` (and without the deprecated flag) selects
     # scope-column mode, which needs a declared `scope_column` to start from.
     def self.validate_ids_anchor!(table_by_name, dump_target)
@@ -74,6 +90,7 @@ module Exwiw
     # (both modes) — before any output is written. `tables` is the set of
     # dumpable configs (ignore:true tables are skipped — they are not extracted).
     def self.validate_scope!(tables, table_by_name, dump_target, logger)
+      validate_non_recursive_allowed!(table_by_name, dump_target)
       validate_ids_anchor!(table_by_name, dump_target)
       validate_named_id_spaces_allowed!(tables, table_by_name, dump_target)
 
