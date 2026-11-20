@@ -618,6 +618,8 @@ To release a new version:
 1. Run the **Release PR** workflow from the Actions tab with the new version number (e.g. `0.2.3`). This creates a PR that bumps `version.rb` and `CHANGELOG.md`.
 2. Merge the PR. The **Release** workflow runs automatically, creating a git tag and publishing the gem to [rubygems.org](https://rubygems.org).
 
+To publish a prerelease, give a version in RubyGems' prerelease form, `X.Y.Z.alphaN`, `X.Y.Z.betaN` or `X.Y.Z.rcN` (e.g. `1.3.0.beta1`). The flow is the same, except that `CHANGELOG.md` is left unchanged (its `[Unreleased]` items become the release notes and stay there for the final release) and the GitHub Release is marked as a pre-release. RubyGems installs a prerelease only with `gem install exwiw --pre` or an explicit version requirement.
+
 ## Contributing
 
 Bug reports and pull requests are welcome on GitHub at https://github.com/heyinc/exwiw.
