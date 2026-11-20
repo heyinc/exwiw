@@ -253,8 +253,9 @@ module Exwiw
         MaskUpdateRunner::Checked.new(columns: names, allowed_constant_columns: allowed)
       end
 
-      # Writes one `bulkWrite` of `$set`s for the documents in `results` whose masked copy differs, masking a copy
-      # with the same plan #to_bulk_insert uses. Counterpart of #write_inserts; call #build_query first.
+      # Writes one `bulkWrite` that `$set`s every masked leaf of the documents in `results`, masking them with the
+      # same plan #to_bulk_insert uses and recording what it assigns. Counterpart of #write_inserts; call
+      # #build_query first. Keys the plan drops are never assigned, so they are neither set nor unset.
       #
       # @param io [#puts] where the mongosh script is written
       # @param results [Enumerable<Hash>] the documents named by `primary_key_values`, as #execute returns them
@@ -263,52 +264,26 @@ module Exwiw
       # @return [Array(Integer, Integer, Array<String>)] statements written, documents found, given keys with no document
       def write_mask_updates(io, results, config, primary_key_values)
         plan = mask_plan(config)
-        docs = results.to_a
-        ids = coerce_ids(primary_key_values)
-        found_ids = docs.to_set { |doc| doc[config.primary_key] }
-        missing = primary_key_values.zip(ids).reject { |_, id| found_ids.include?(id) }.map(&:first)
-
-        operations = docs.filter_map do |doc|
-          masked = copy_containers(doc)
-          apply_mask_plan!(masked, plan)
-          sets = changed_paths(doc, masked)
+        found_ids = Set.new
+        operations = results.filter_map do |doc|
+          found_ids << doc[config.primary_key]
+          sets = {}
+          apply_mask_plan!(doc, plan, sets)
           next if sets.empty?
 
           "  { updateOne: { filter: { #{js_literal(config.primary_key)}: #{js_literal(doc[config.primary_key])} }, " \
             "update: { \"$set\": { #{sets.map { |path, value| "#{js_literal(path)}: #{js_literal(value)}" }.join(', ')} } } } }"
         end
-        return [0, docs.size, missing] if operations.empty?
+        io.puts "db.getCollection(#{js_literal(config.name)}).bulkWrite([\n#{operations.join(",\n")}\n]);" unless operations.empty?
 
-        io.puts "db.getCollection(#{js_literal(config.name)}).bulkWrite([\n#{operations.join(",\n")}\n]);"
-        [1, docs.size, missing]
+        ids = coerce_ids(primary_key_values)
+        missing = primary_key_values.zip(ids).reject { |_, id| found_ids.include?(id) }.map(&:first)
+        [operations.empty? ? 0 : 1, found_ids.size, missing]
       end
 
       private def mask_target_names(plan, prefix = nil)
         own = (plan.masked_fields.map(&:first) + plan.faked_fields.map(&:first)).map { |n| [prefix, n].compact.join(".") }
         own + plan.embedded.flat_map { |e| mask_target_names(e.plan, [prefix, *e.prefix, e.last].compact.join(".")) }
-      end
-
-      private def copy_containers(value)
-        case value
-        when Hash then value.to_h { |k, v| [k, copy_containers(v)] }
-        when Array then value.map { |v| copy_containers(v) }
-        else value
-        end
-      end
-
-      # Dotted path => new value for every changed leaf; keys export drops are absent from `masked`, so never $set or $unset.
-      private def changed_paths(original, masked, prefix = nil, out = {})
-        case masked
-        when Hash
-          masked.each { |k, v| changed_paths(original.is_a?(Hash) ? original[k] : nil, v, [prefix, k].compact.join("."), out) }
-        when Array
-          masked.each_with_index do |v, i|
-            changed_paths(original.is_a?(Array) ? original[i] : nil, v, [prefix, i].compact.join("."), out)
-          end
-        else
-          out[prefix] = masked unless original == masked
-        end
-        out
       end
 
       private def js_literal(value)
@@ -901,7 +876,8 @@ module Exwiw
       # Dropping comes first so an ignored field is invisible to the masking that
       # follows, as on a top-level collection — normally not fetched, and dropped
       # here when the projection pulled it in as a propagation key.
-      private def apply_mask_plan!(doc, plan)
+      # With `sets` (a Hash), also records each masked leaf as dotted path => new value, for #write_mask_updates.
+      private def apply_mask_plan!(doc, plan, sets = nil, path = nil)
         plan.dropped_fields.each { |name| doc.delete(name) }
         plan.masked_fields.each do |name, mask|
           # Preserve a NULL / absent source value instead of clobbering it into a
@@ -910,6 +886,7 @@ module Exwiw
           next if doc[name].nil?
 
           doc[name] = mask.is_a?(Array) ? render_template(mask, doc) : mask
+          sets[[path, name].compact.join(".")] = doc[name] if sets
         end
         plan.faked_fields.each do |name, deriver, seed_field|
           # NULL-preserving like replace_with (an absent key stays absent). The
@@ -918,14 +895,19 @@ module Exwiw
           next if doc[name].nil?
 
           doc[name] = deriver.call(doc[seed_field])
+          sets[[path, name].compact.join(".")] = doc[name] if sets
         end
         plan.embedded.each do |child|
           container = child.prefix.reduce(doc) { |acc, seg| acc.is_a?(Hash) ? acc[seg] : nil }
           next unless container.is_a?(Hash)
 
+          child_path = [path, *child.prefix, child.last]
           case (value = container[child.last])
-          when Array then value.each { |sub| apply_mask_plan!(sub, child.plan) if sub.is_a?(Hash) }
-          when Hash  then apply_mask_plan!(value, child.plan)
+          when Array
+            value.each_with_index do |sub, i|
+              apply_mask_plan!(sub, child.plan, sets, [*child_path, i].compact.join(".")) if sub.is_a?(Hash)
+            end
+          when Hash then apply_mask_plan!(value, child.plan, sets, child_path.compact.join("."))
           end
         end
       end
