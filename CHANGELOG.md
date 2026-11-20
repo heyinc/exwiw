@@ -12,6 +12,7 @@
 
 ### Fixed
 
+- **`--ids` without `--target-table` is accepted when no table has anything to narrow.** A database whose tables are all `ignore: true`, `scope_exempt` or Rails-managed declares no `scope_column`, so such a run stopped with "no table in the schema declares `scope_column`", and the deprecated global `scope_column` had to be set only to get past the check. It now runs in scope-column mode, exports those tables in full and logs the warning 1.2.1 added for this case. `--mode=scope-column` is accepted on such a schema too. When some exported table could be narrowed but none declares a `scope_column`, the error is unchanged.
 - **A value with no SQL literal form is refused instead of being written as its `to_s`.** `INSERT`s (and the new `UPDATE`s) put a `map` or `replace_with_fake_data` result that was not a String or `nil` into the SQL as it was, so `NaN`, `Infinity`, a `Rational`, an Array or a Hash gave a broken or misleading statement. Strings, `nil`, numbers (finite Floats included) and `true`/`false` are written as before; any other value raises `Exwiw::Adapter::UnsupportedValueError`. COPY output is unchanged.
 
 ## [1.2.1] - 2026-11-19
