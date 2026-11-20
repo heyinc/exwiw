@@ -336,6 +336,22 @@ module Exwiw
           expect { runner.run }.to raise_error(ArgumentError, /no table in the schema declares `scope_column`/)
           expect(Dir[File.join(output_dir, '*')]).to be_empty
         end
+
+        it 'exports every table in full, warning, when every extracted table is scope_exempt' do
+          orders = JSON.parse(File.read(File.join(schema_dir, 'orders.json')))
+          orders.delete('scope_column')
+          orders['scope_exempt'] = true
+          File.write(File.join(schema_dir, 'orders.json'), JSON.dump(orders))
+          order_items = JSON.parse(File.read(File.join(schema_dir, 'order_items.json')))
+          order_items['ignore'] = true
+          File.write(File.join(schema_dir, 'order_items.json'), JSON.dump(order_items))
+
+          runner.run
+
+          expect(Dir[File.join(output_dir, 'insert-*-orders.sql')]).not_to be_empty
+          expect(Dir[File.join(output_dir, 'insert-*-order_items.sql')]).to be_empty
+          expect(log_io.string).to include('no table is filtered by a scope_column, so --ids narrows nothing')
+        end
       end
 
       it 'aborts pre-flight, before any output, when the scope shape cannot be sliced' do

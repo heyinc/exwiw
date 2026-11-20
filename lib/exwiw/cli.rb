@@ -1132,7 +1132,7 @@ module Exwiw
         opts.on("--ssl-mode=MODE", "TLS mode for the connection and mysqldump: #{Adapter::MysqlClient::SSL_MODES.join(', ')}. mysql adapter only; defaults to the client library's behavior.") { |v| @ssl_mode = v }
         opts.on("--ssl-ca=PATH", "CA certificate file used to verify the server. mysql adapter only.") { |v| @ssl_ca = v }
         opts.on("--database=DATABASE", "Target database name") { |v| @database_name = v }
-        opts.on("--target-table=[TABLE]", "Target table for extraction. If omitted with --ids, run in scope-column mode (SQL adapters; the schema must declare `scope_column:`). If omitted without --ids, dump all tables.") { |v| @target_table_name = v }
+        opts.on("--target-table=[TABLE]", "Target table for extraction. If omitted with --ids, run in scope-column mode (SQL adapters; the schema must declare `scope_column:` unless every table is scope_exempt, Rails-managed or ignored). If omitted without --ids, dump all tables.") { |v| @target_table_name = v }
         opts.on("--target-collection=[COLLECTION]", "Alias of --target-table for the mongodb adapter.") { |v| @target_collection_name = v }
         opts.on("--ids=[IDS]", "Comma-separated list of identifiers. Required when --target-table is given. Prefix with `<id_space>=` (e.g. --ids=org=a,b) to give the values of a named ID space; may be repeated, once per ID space. An id containing `=` is passed as --ids=default=<ids>.") { |v| add_ids_option(v) }
         opts.on("--ids-field=[FIELD]", "Field on the target collection that --ids is matched against. Defaults to the primary key. (mongodb adapter only)") { |v| @ids_field = v }

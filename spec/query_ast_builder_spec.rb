@@ -1077,6 +1077,38 @@ RSpec.describe Exwiw::QueryAstBuilder do
           )
         end
       end
+
+      context 'when every extracted table is scope_exempt or Rails-managed' do
+        before do
+          orders.scope_column = nil
+          [orders, order_items, legacy_orders, widgets].each { |table| table.ignore = true }
+        end
+
+        it 'runs in scope-column mode, warning that the ids narrow nothing' do
+          logger = instance_double(Logger, warn: nil, info: nil, debug: nil)
+
+          expect(described_class.scope_mode?(table_by_name, dump_target)).to eq(true)
+          expect {
+            described_class.validate_scope!(all_tables, table_by_name, dump_target, logger)
+          }.not_to raise_error
+          expect(logger).to have_received(:warn).with(/no table is filtered by a scope_column/)
+          expect(build('countries').where_clauses).to eq([])
+        end
+
+        it 'accepts ids for a named ID space too' do
+          named = Exwiw::DumpTarget.new(ids: { 'org' => ['o1'] })
+          expect {
+            described_class.validate_scope!(all_tables, table_by_name, named, logger)
+          }.not_to raise_error
+        end
+
+        it 'accepts --mode=scope-column' do
+          explicit = Exwiw::DumpTarget.new(ids: ['t1'], mode: :scope_column)
+          expect {
+            described_class.validate_scope!(all_tables, table_by_name, explicit, logger)
+          }.not_to raise_error
+        end
+      end
     end
 
     def sqlite_adapter

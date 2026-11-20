@@ -52,7 +52,7 @@ This exports the `shops` rows with id 1 and 2 and the rows of other tables relat
 | `--target-table` | `--ids` | What is exported |
 |---|---|---|
 | given | given | The target rows by primary key, and their related rows. If the table declares a `scope_column`, [scope-column mode](#scope-column-mode) is used instead |
-| omitted | given | [Scope-column mode](#scope-column-mode). An error if no table declares a `scope_column` (SQL adapters only) |
+| omitted | given | [Scope-column mode](#scope-column-mode). An error if no table declares a `scope_column`, unless every exported table is `scope_exempt` or Rails-managed (SQL adapters only) |
 | omitted | omitted | Every table in full |
 
 `--mode` chooses how the target is read, and the options depend on it:
@@ -400,6 +400,8 @@ exwiw \
 Here `42,43` are `tenant_id` values, not shop ids. Passing `--target-table=shops` gives the same result.
 
 Tables without a `scope_column` are narrowed by the rules above. A table that none of them can narrow stops the run before anything is exported, and the error lists those tables. For each, declare a `scope_column`, add a `belongs_to`, set `ignore: true`, or set `scope_exempt: true`.
+
+When every table that is not `ignore: true` is `scope_exempt` or Rails-managed, there is nothing for `--ids` to narrow: no table needs to declare a `scope_column`, the tables are exported in full, and a warning is logged. So a run that passes the same `--ids` to several databases also works for one with no tenant data.
 
 Scope-column mode is for the SQL adapters only. Use `exwiw explain` to check the queries first.
 

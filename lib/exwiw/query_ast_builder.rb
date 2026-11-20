@@ -29,7 +29,8 @@ module Exwiw
     # Scope-column mode is active when the named `--target-table` declares a
     # per-table `scope_column` (the target is then scoped like any other table,
     # and its `--ids` are scope-column values, not primary keys); when no target is
-    # named but `--ids` are given and some table declares a `scope_column`; or when
+    # named but `--ids` are given and some table declares a `scope_column` (or no
+    # table has anything to narrow, see nothing_to_scope?); or when
     # the deprecated `--scope-column` flag is set (a global column with no target).
     # In each case every table is filtered by a shared column instead of being
     # anchored on one named target's primary key. An explicit `mode` overrides all of
@@ -39,7 +40,7 @@ module Exwiw
       return true if dump_target.mode == :scope_column
       return true unless dump_target.scope_column.nil?
       if dump_target.table_name.nil?
-        return ids_given?(dump_target) && scope_column_declared?(table_by_name)
+        return ids_given?(dump_target) && (scope_column_declared?(table_by_name) || nothing_to_scope?(table_by_name))
       end
 
       target = table_by_name[dump_target.table_name]
@@ -58,6 +59,18 @@ module Exwiw
       end
     end
 
+    # Every extracted table is exported in full anyway (`scope_exempt` or Rails-managed), so
+    # `--ids` have nothing to narrow and need no declared `scope_column` to start from. A run
+    # that passes the same `--ids` to every database can then export such a database too.
+    def self.nothing_to_scope?(table_by_name)
+      table_by_name.each_value.all? do |table|
+        next true if table.ignore
+        next false unless table.respond_to?(:scope_exempt) && table.respond_to?(:rails_managed?)
+
+        table.scope_exempt || table.rails_managed?
+      end
+    end
+
     # An explicit `--mode` must match the rest of the target: `primary-key` names the table whose
     # keys `--ids` are and cannot meet the global `--scope-column`, and `scope-column` needs a column
     # to filter by.
@@ -72,6 +85,7 @@ module Exwiw
         end
       when :scope_column
         return unless dump_target.scope_column.nil? && !scope_column_declared?(table_by_name)
+        return if nothing_to_scope?(table_by_name)
 
         raise ArgumentError,
               "--mode=scope-column was given, but no table in the schema declares `scope_column` " \
@@ -95,11 +109,12 @@ module Exwiw
     end
 
     # `--ids` without `--target-table` (and without the deprecated flag) selects
-    # scope-column mode, which needs a declared `scope_column` to start from.
+    # scope-column mode, which needs a declared `scope_column` to start from
+    # unless no table has anything to narrow.
     def self.validate_ids_anchor!(table_by_name, dump_target)
       return unless dump_target.table_name.nil? && dump_target.scope_column.nil?
       return unless ids_given?(dump_target)
-      return if scope_column_declared?(table_by_name)
+      return if scope_column_declared?(table_by_name) || nothing_to_scope?(table_by_name)
 
       raise ArgumentError,
             "--ids was given without --target-table, but no table in the schema declares " \
