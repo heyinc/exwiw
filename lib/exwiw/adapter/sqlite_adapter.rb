@@ -266,7 +266,7 @@ module Exwiw
           qv = escape_single_quote(value)
           "'#{qv}'"
         else
-          value
+          non_string_literal(value)
         end
       end
 

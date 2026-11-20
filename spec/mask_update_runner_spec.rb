@@ -274,7 +274,7 @@ module Exwiw
         io = StringIO.new
 
         expect { build(adapter, [table(columns: columns)], [1, 2], io: io) }
-          .to raise_error(MaskUpdateRunner::Error, /was masked to #<Object/)
+          .to raise_error(MaskUpdateRunner::Error, /'accounts.email' cannot be masked to this value: cannot write #<Object/)
         expect(io.string).to be_empty
       end
 
@@ -472,9 +472,9 @@ module Exwiw
       end
 
       it "rejects a map returning a value an UPDATE cannot hold" do
-        ["->(r) { true }", "->(r) { :sym }", "->(r) { {} }", "->(r) { 1.0 / 0 }"].each do |code|
+        ["->(r) { :sym }", "->(r) { {} }", "->(r) { 1.0 / 0 }"].each do |code|
           expect { build(adapter, [accounts(city: { map: code })]) }
-            .to raise_error(MaskUpdateRunner::Error, /can be written into an UPDATE/)
+            .to raise_error(MaskUpdateRunner::Error, /'accounts.city' cannot be masked to this value: cannot write/)
         end
       end
     end

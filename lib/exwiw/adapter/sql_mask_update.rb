@@ -50,7 +50,6 @@ module Exwiw
         masked = masked_columns(table)
         pk_index = table.columns.index { |c| c.name == table.primary_key }
         masked_indexes = masked.map { |c| table.columns.index(c) }
-        computed = masked.map { |c| c.map || c.replace_with_fake_data }
         given_by_key = primary_key_values.to_h { |v| [v.to_s, v] }
         given_folded = primary_key_values.to_set { |v| v.to_s.downcase }
 
@@ -68,9 +67,7 @@ module Exwiw
 
           found << returned.to_s.downcase
           assignments = masked.each_with_index.map do |c, i|
-            value = row[masked_indexes[i]]
-            value = writable_value(table, c, value) if computed[i]
-            "#{quote_identifier(c.name)} = #{escape_value(value)}"
+            "#{quote_identifier(c.name)} = #{literal_for(table, c, row[masked_indexes[i]])}"
           end
           io.puts update_statement(table, assignments, [given_by_key.fetch(returned.to_s, returned)])
           statement_count += 1
@@ -100,13 +97,10 @@ module Exwiw
         end
       end
 
-      # escape_value embeds anything but a String verbatim, so a map must not return another type.
-      private def writable_value(table, column, value)
-        return value if value.nil? || value.is_a?(String) || value.is_a?(Integer) || (value.is_a?(Float) && value.finite?)
-
-        raise MaskUpdateRunner::Error,
-              "'#{table.name}.#{column.name}' was masked to #{value.inspect} (#{value.class}); " \
-              "only a String, Integer, finite Float or nil can be written into an UPDATE"
+      private def literal_for(table, column, value)
+        escape_value(value)
+      rescue UnsupportedValueError => e
+        raise MaskUpdateRunner::Error, "'#{table.name}.#{column.name}' cannot be masked to this value: #{e.message}"
       end
 
       private def update_statement(table, assignments, primary_key_values)

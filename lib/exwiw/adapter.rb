@@ -32,6 +32,12 @@ module Exwiw
       ADAPTER_ALIASES.fetch(key, key)
     end
 
+    # A value that has no SQL literal form (see Base#non_string_literal).
+    class UnsupportedValueError < ArgumentError; end
+
+    # What a number's text must look like to be written into SQL as it is.
+    NUMERIC_LITERAL = /\A-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\z/
+
     class Base
       # Gives every adapter #qualified_name & co. so shared helpers below
       # (#null_preserving) can use them; the quote-char/reserved-word hooks
@@ -40,6 +46,22 @@ module Exwiw
       include IdentifierQuoting
 
       attr_reader :connection_config
+
+      # The SQL text of a value that is neither nil nor a String (those are #escape_value's own cases): an
+      # Integer, a finite Float or another number whose text is a plain numeric literal, or true / false.
+      # Writing anything else as it is would put its `to_s` into the SQL, e.g. `NaN`, `1/3` or `[1, 2]`.
+      #
+      # @param value [Object] the value to write
+      # @return [String]
+      # @raise [Exwiw::Adapter::UnsupportedValueError] when the value has no SQL literal form
+      private def non_string_literal(value)
+        text = value.to_s
+        return text if value == true || value == false || (value.is_a?(Numeric) && text.match?(NUMERIC_LITERAL))
+
+        raise UnsupportedValueError,
+              "cannot write #{value.inspect} (#{value.class}) as an SQL literal; " \
+              "only a String, a number, true, false or nil can be written"
+      end
 
       def initialize(connection_config, logger)
         @connection_config = connection_config
