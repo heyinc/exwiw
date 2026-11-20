@@ -12,11 +12,11 @@ module Exwiw
     # and a Rails app's `connection.adapter_name` (e.g. "Mysql2", "SQLite") is
     # absorbed — lookup is case-insensitive (see .normalize_name).
     #
-    # NOTE: this only normalizes the *name*; exwiw always connects with the
-    # `mysql2` gem (see MysqlAdapter#connection). It is deliberately not aliased
-    # from `trilogy`: a source app using the trilogy driver still needs the
-    # `mysql2` gem available for exwiw to connect, so accepting `--adapter=trilogy`
-    # would falsely imply trilogy support. Use `--adapter=mysql` in that case.
+    # NOTE: this only normalizes the *name*; the driver is chosen separately: a
+    # connection exwiw opens uses mysql2 unless EXWIW_MYSQL_DRIVER=trilogy (see
+    # MysqlClient.detect_driver), and a given connection keeps its own driver.
+    # `trilogy` is deliberately not aliased, as `--adapter=trilogy` would suggest
+    # it picks the driver; use `--adapter=mysql` (with EXWIW_MYSQL_DRIVER=trilogy).
     ADAPTER_ALIASES = {
       "mysql2" => "mysql",
       "sqlite3" => "sqlite",
@@ -63,9 +63,16 @@ module Exwiw
               "only a String, a number, true, false or nil can be written"
       end
 
-      def initialize(connection_config, logger)
+      # @param connection_config [Exwiw::ConnectionConfig] how to connect when `connection` is nil
+      # @param logger [Logger]
+      # @param connection [Object, nil] a driver connection the caller holds and keeps owning, read through instead
+      #   of opening one: PG::Connection, Mysql2::Client or Trilogy, SQLite3::Database, or Mongo::Client
+      # @param session [Mongo::Session, nil] mongodb only: the caller's session (e.g. a transaction's) to read in
+      def initialize(connection_config, logger, connection: nil, session: nil)
         @connection_config = connection_config
         @logger = logger
+        @given_connection = connection
+        @given_session = session
       end
 
       # The config class that this adapter consumes. Runner uses this to
@@ -99,18 +106,28 @@ module Exwiw
         raise NotImplementedError, "#{self.class.name} does not implement #check_mask_update"
       end
 
-      # Writes the statements that mask the rows of `results` in place, with no header or transaction control: the
-      # counterpart of #write_inserts for Exwiw::MaskUpdateRunner, which reads `results` with #build_query (called
+      # Builds the statements that mask the rows of `results` in place, with no header or transaction control: the
+      # counterpart of #to_bulk_insert for Exwiw::MaskUpdateRunner, which reads `results` with #build_query (called
       # first) and #execute. Never writes to the database.
       #
-      # @param _io [#puts] where the statements are written
       # @param _results [Enumerable] the rows (documents) named by `_primary_key_values`, masked by the RowTransformer where one applies
       # @param _table [Exwiw::TableConfig, Exwiw::MongodbCollectionConfig] the table (collection) to mask
       # @param _primary_key_values [Array<Integer, String>] the given primary keys, checked and unique
-      # @return [Array(Integer, Integer, Array)] statements written, rows found, given keys with no row
+      # @param _extra_assignments [Hash{String => Object}] columns (fields) set to a fixed value on every row found, unless
+      #   masked; for SQL a Time is written in its own zone without an offset
+      # @return [Array(Array, Integer, Array)] the statements (an SQL String, or a MongodbAdapter::MaskUpdateBulkWrite), rows found, given keys with no row
       # @raise [Exwiw::MaskUpdateRunner::Error] when a row cannot be masked as declared
-      def write_mask_updates(_io, _results, _table, _primary_key_values)
-        raise NotImplementedError, "#{self.class.name} does not implement #write_mask_updates"
+      def mask_update_statements(_results, _table, _primary_key_values, _extra_assignments = {})
+        raise NotImplementedError, "#{self.class.name} does not implement #mask_update_statements"
+      end
+
+      # Writes a statement of #mask_update_statements as `mask-update` prints it (SQL, or a line of Extended JSON).
+      #
+      # @param _io [#puts] where the statement is written
+      # @param _statement [Object] a statement #mask_update_statements returned
+      # @return [void]
+      def write_mask_update(_io, _statement)
+        raise NotImplementedError, "#{self.class.name} does not implement #write_mask_update"
       end
 
       # File extension used for dump output (e.g. 'sql' for SQL, 'jsonl' for MongoDB).
@@ -415,8 +432,13 @@ module Exwiw
       raise NotImplementedError
     end
 
-    def self.build(connection_config, logger)
-      class_for(connection_config.adapter).new(connection_config, logger)
+    # @param connection_config [Exwiw::ConnectionConfig]
+    # @param logger [Logger]
+    # @param connection [Object, nil] a driver connection to read through (see Base#initialize)
+    # @param session [Mongo::Session, nil] mongodb only: the session to read in (see Base#initialize)
+    # @return [Exwiw::Adapter::Base]
+    def self.build(connection_config, logger, connection: nil, session: nil)
+      class_for(connection_config.adapter).new(connection_config, logger, connection: connection, session: session)
     end
 
     # @param name [String] an adapter name or alias

@@ -43,8 +43,16 @@ module Exwiw
           @count_sql = count_sql
         end
 
+        # Counted through a prepared statement, as the rows are read: Database#execute returns Hashes on a database
+        # opened with results_as_hash (as ActiveRecord opens it), where `dig(0, 0)` would read 0.
         def size
-          @size ||= @connection.execute(@count_sql).dig(0, 0).to_i
+          @size ||=
+            begin
+              statement = @connection.prepare(@count_sql)
+              statement.step.first.to_i
+            ensure
+              statement&.close
+            end
         end
         alias length size
 
@@ -295,7 +303,7 @@ module Exwiw
       end
 
       private def connection
-        @connection ||=
+        @connection ||= @given_connection ||
           begin
             require 'sqlite3'
             SQLite3::Database.new(File.expand_path(@connection_config.database_name))

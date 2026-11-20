@@ -51,9 +51,8 @@ module Exwiw
       expect(Adapter::MysqlClient.new(connection_config).driver).to eq(:trilogy)
 
       runner = Runner.new(
-        connection_config: connection_config,
+        **runner_inputs(connection_config: connection_config, schema_dir: "e2e/mysql-schema"),
         output_dir: @output_dir,
-        schema_dir: "e2e/mysql-schema",
         dump_target: DumpTarget.new(table_name: "shops", ids: ["1"]),
         output_format: "insert",
         logger: ::Logger.new(nil),

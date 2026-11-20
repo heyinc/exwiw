@@ -444,7 +444,7 @@ module Exwiw
                        '--mongodb-query-timeout-ms=30000'])
         captured = nil
         allow(Runner).to receive(:new) do |**kwargs|
-          captured = kwargs[:connection_config]
+          captured = kwargs[:source].connection_config
           instance_double(Runner, run: nil)
         end
         allow($stdin).to receive(:tty?).and_return(false)

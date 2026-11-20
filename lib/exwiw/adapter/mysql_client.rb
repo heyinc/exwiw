@@ -104,11 +104,12 @@ module Exwiw
       attr_reader :driver
 
       # `driver:` is mainly a test seam to force a specific driver; in normal use
-      # it is auto-detected.
-      def initialize(connection_config, driver: nil)
+      # it is auto-detected. `raw:` wraps a client the caller already holds, and its class decides the driver.
+      def initialize(connection_config, driver: nil, raw: nil)
         @connection_config = connection_config
-        @driver = (driver || self.class.detect_driver).to_sym
+        @driver = (driver || (raw && driver_of(raw)) || self.class.detect_driver).to_sym
         ensure_driver_loaded!
+        @raw = raw
       end
 
       # @param sql [String]
@@ -147,8 +148,7 @@ module Exwiw
       #
       # trilogy has no streaming cursor (no QUERY_FLAGS_STREAMING), so it buffers
       # the result and yields from it — parity, but without the memory win (the
-      # same situation as the sqlite adapter). trilogy is a test-only driver;
-      # production connects via mysql2.
+      # same situation as the sqlite adapter).
       #
       # @param sql [String]
       # @yieldparam row [Array<String|nil>]
@@ -174,6 +174,13 @@ module Exwiw
           raise "Unsupported MySQL driver: #{@driver.inspect}"
         end
         self
+      end
+
+      private def driver_of(raw)
+        if defined?(::Mysql2::Client) && raw.is_a?(::Mysql2::Client) then :mysql2
+        elsif defined?(::Trilogy) && raw.is_a?(::Trilogy) then :trilogy
+        else raise ArgumentError, "Unsupported MySQL client: #{raw.class}"
+        end
       end
 
       private def ensure_driver_loaded!

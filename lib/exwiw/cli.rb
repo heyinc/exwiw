@@ -182,29 +182,27 @@ module Exwiw
       case @subcommand
       when "export"
         confirm_output_dir_clear!
+        source = DataSource.connect(connection_config)
         Runner.new(
-          connection_config: connection_config,
-          output_dir: @output_dir,
-          schema_dir: @schema_dir,
+          source: source,
+          schema: load_schema(source),
           dump_target: dump_target,
+          logger: logger,
+          output_dir: @output_dir,
           output_format: @output_format,
           after_insert_hook_path: @after_insert_hook_path,
           parallel_workers: @parallel_workers,
           cli_options: build_cli_options_hash,
-          logger: logger,
-          profiles: @profiles,
-          profile: @profile,
         ).run
       when "explain"
+        source = DataSource.connect(connection_config)
         ExplainRunner.new(
-          connection_config: connection_config,
-          schema_dir: @schema_dir,
+          source: source,
+          schema: load_schema(source),
           dump_target: dump_target,
           logger: logger,
           io: $stdout,
           explain_verbosity: @explain_verbosity,
-          profiles: @profiles,
-          profile: @profile,
         ).run
       when "schema"
         run_schema(connection_config)
@@ -216,21 +214,24 @@ module Exwiw
     # Prints the UPDATEs (canonical Extended JSON lines for mongodb) that mask the given rows of one table
     # on stdout and a summary on stderr; the database is only read.
     private def run_mask_update(connection_config, dump_target, logger)
+      source = DataSource.connect(connection_config)
       summary = MaskUpdateRunner.new(
-        connection_config: connection_config,
-        schema_dir: @schema_dir,
+        source: source,
+        schema: load_schema(source),
         dump_target: dump_target,
         logger: logger,
         io: $stdout,
         allow_constant_columns: @allow_constant_columns,
-        profiles: @profiles,
-        profile: @profile,
       ).run
 
       $stderr.puts mask_update_summary(summary)
     rescue MaskUpdateRunner::Error => e
       $stderr.puts e.message
       exit 1
+    end
+
+    private def load_schema(source)
+      Schema.load(dir: @schema_dir, config_class: source.adapter_class.table_config_class, profiles: @profiles, profile: @profile)
     end
 
     private def mask_update_summary(summary)

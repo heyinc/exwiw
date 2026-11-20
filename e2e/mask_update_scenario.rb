@@ -266,8 +266,11 @@ original = read_all(DBS[:source])
 schema_dir = Dir.mktmpdir("mask_update_schema")
 tables.each { |t| File.write(File.join(schema_dir, "#{t.name}.json"), JSON.dump(t.to_hash)) }
 io = StringIO.new
+source = Exwiw::DataSource.connect(connection_config(DBS[:apply]))
 summary = Exwiw::MaskUpdateRunner.new(
-  connection_config: connection_config(DBS[:apply]), schema_dir: schema_dir, logger: LOGGER, io: io,
+  source: source,
+  schema: Exwiw::Schema.load(dir: schema_dir, config_class: source.adapter_class.table_config_class),
+  logger: LOGGER, io: io,
   dump_target: Exwiw::DumpTarget.new(table_name: "accounts", ids: SELECTED, recursive: false, mode: :primary_key),
 ).run
 plan = Struct.new(:script, :summary).new(io.string.delete_suffix("\n"), summary)

@@ -464,7 +464,7 @@ module Exwiw
       end
 
       private def connection
-        @connection ||= MysqlClient.new(@connection_config)
+        @connection ||= MysqlClient.new(@connection_config, raw: @given_connection)
       end
     end
   end

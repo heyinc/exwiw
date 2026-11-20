@@ -1377,9 +1377,7 @@ module Exwiw
         dump_target = Exwiw::DumpTarget.new(table_name: "users", ids: ["5f5e7c1e1c9d440000000001"])
 
         query = adapter.build_query(users, dump_target, config_by_name)
-        coerced = query.filter.fetch("_id").fetch("$in").first
-        expect(coerced).to be_a(BSON::ObjectId)
-        expect(coerced.to_s).to eq("5f5e7c1e1c9d440000000001")
+        expect(query.filter.fetch("_id").fetch("$in")).to include(BSON::ObjectId.from_string("5f5e7c1e1c9d440000000001"))
       end
 
       it "constrains a child by the parent's referenced non-_id field (generated references)" do

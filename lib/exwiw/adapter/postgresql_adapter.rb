@@ -60,6 +60,8 @@ module Exwiw
             while (result = @connection.get_result)
               begin
                 result.check
+                # A given connection (see Base#initialize) may decode types, e.g. ActiveRecord's; keep libpq's text.
+                result.type_map = PG::TypeMapAllStrings.new
                 result.each_row { |row| yield row }
               ensure
                 result.clear
@@ -628,7 +630,7 @@ module Exwiw
       end
 
       private def connection
-        @connection ||=
+        @connection ||= @given_connection ||
           begin
             require 'pg'
             PG.connect(

@@ -5,6 +5,7 @@ require 'logger'
 require 'exwiw'
 
 require_relative 'support/table_loader'
+require_relative 'support/runner_inputs'
 require_relative 'support/bootstrap_databases'
 require_relative 'support/ast_factory'
 require_relative 'support/self_referencing_tree'
@@ -21,6 +22,7 @@ RSpec.configure do |config|
   end
 
   config.include(TableLoader)
+  config.include(RunnerInputs)
   config.include(AstFactory)
 
   config.before(:suite) do

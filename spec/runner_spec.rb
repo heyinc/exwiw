@@ -21,9 +21,8 @@ module Exwiw
     let(:dump_target) { DumpTarget.new(table_name: nil, ids: []) }
     let(:runner) do
       Runner.new(
-        connection_config: connection_config,
+        **runner_inputs(connection_config: connection_config, schema_dir: schema_dir),
         output_dir: output_dir,
-        schema_dir: schema_dir,
         dump_target: dump_target,
         logger: ::Logger.new(nil),
       )
@@ -70,9 +69,8 @@ module Exwiw
       it 'creates the output dir when it does not exist' do
         missing = File.join(output_dir, 'nested', 'out')
         runner_for_missing = Runner.new(
-          connection_config: connection_config,
+          **runner_inputs(connection_config: connection_config, schema_dir: schema_dir),
           output_dir: missing,
-          schema_dir: schema_dir,
           dump_target: dump_target,
           logger: ::Logger.new(nil),
         )
@@ -118,7 +116,7 @@ module Exwiw
 
       it 'writes the target table only' do
         DumpTarget.new(table_name: 'shops', ids: ['1'], recursive: false).then do |target|
-          Runner.new(connection_config: connection_config, output_dir: output_dir, schema_dir: schema_dir, dump_target: target, logger: ::Logger.new(nil)).run
+          Runner.new(**runner_inputs(connection_config: connection_config, schema_dir: schema_dir), output_dir: output_dir, dump_target: target, logger: ::Logger.new(nil)).run
         end
 
         expect(Dir[File.join(output_dir, 'insert-*.sql')].map { |f| File.basename(f) }).to eq(%w[insert-000-schema.sql insert-001-shops.sql])
@@ -128,7 +126,7 @@ module Exwiw
         target = DumpTarget.new(table_name: nil, ids: [], recursive: false)
 
         expect do
-          Runner.new(connection_config: connection_config, output_dir: output_dir, schema_dir: schema_dir, dump_target: target, logger: ::Logger.new(nil)).run
+          Runner.new(**runner_inputs(connection_config: connection_config, schema_dir: schema_dir), output_dir: output_dir, dump_target: target, logger: ::Logger.new(nil)).run
         end.to raise_error(ArgumentError, /--recursive\/--no-recursive need --target-table/)
       end
     end
@@ -201,9 +199,8 @@ module Exwiw
       let(:log_io) { StringIO.new }
       let(:runner) do
         Runner.new(
-          connection_config: connection_config,
+          **runner_inputs(connection_config: connection_config, schema_dir: 'e2e/sqlite-schema'),
           output_dir: output_dir,
-          schema_dir: 'e2e/sqlite-schema',
           dump_target: dump_target,
           logger: ::Logger.new(log_io),
         )
@@ -230,9 +227,8 @@ module Exwiw
       let(:dump_target) { DumpTarget.new(table_name: nil, ids: []) }
       let(:runner) do
         Runner.new(
-          connection_config: connection_config,
+          **runner_inputs(connection_config: connection_config, schema_dir: 'e2e/sqlite-schema'),
           output_dir: output_dir,
-          schema_dir: 'e2e/sqlite-schema',
           dump_target: dump_target,
           logger: ::Logger.new(nil),
         )
@@ -251,9 +247,8 @@ module Exwiw
       let(:log_io) { StringIO.new }
       let(:runner) do
         Runner.new(
-          connection_config: connection_config,
+          **runner_inputs(connection_config: connection_config, schema_dir: schema_dir),
           output_dir: output_dir,
-          schema_dir: schema_dir,
           dump_target: dump_target,
           logger: ::Logger.new(log_io),
         )
@@ -281,9 +276,8 @@ module Exwiw
       let(:log_io) { StringIO.new }
       let(:runner) do
         Runner.new(
-          connection_config: connection_config,
+          **runner_inputs(connection_config: connection_config, schema_dir: schema_dir),
           output_dir: output_dir,
-          schema_dir: schema_dir,
           dump_target: dump_target,
           logger: ::Logger.new(log_io),
         )
@@ -369,9 +363,8 @@ module Exwiw
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1', '2']) }
       let(:runner) do
         Runner.new(
-          connection_config: connection_config,
+          **runner_inputs(connection_config: connection_config, schema_dir: schema_dir),
           output_dir: output_dir,
-          schema_dir: schema_dir,
           dump_target: dump_target,
           after_insert_hook_path: hook_path,
           cli_options: { ids: ['1', '2'], target_table: 'shops' },
@@ -418,9 +411,8 @@ module Exwiw
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['a00100000000000000000001']) }
       let(:runner) do
         Runner.new(
-          connection_config: connection_config,
+          **runner_inputs(connection_config: connection_config, schema_dir: 'e2e/mongodb-schema'),
           output_dir: output_dir,
-          schema_dir: 'e2e/mongodb-schema',
           dump_target: dump_target,
           after_insert_hook_path: hook_path,
           cli_options: { ids: ['a00100000000000000000001'], target_table: 'shops' },
@@ -540,9 +532,8 @@ module Exwiw
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1']) }
       let(:runner) do
         Runner.new(
-          connection_config: connection_config,
+          **runner_inputs(connection_config: connection_config, schema_dir: 'e2e/postgresql-schema'),
           output_dir: output_dir,
-          schema_dir: 'e2e/postgresql-schema',
           dump_target: dump_target,
           output_format: 'copy',
           logger: ::Logger.new(nil),
