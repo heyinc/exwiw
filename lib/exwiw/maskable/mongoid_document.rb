@@ -64,10 +64,11 @@ module Exwiw
           end
 
           # Read from the primary: a secondary may not have the documents yet, or hold older values to mask from.
-          database = collection.client.with(read: { mode: :primary }).database
+          # The collection's client points at the model's database (its persistence context included).
+          client = collection.client.with(read: { mode: :primary })
           # Mongoid keeps an open session (a transaction's) per thread; reading and writing in it joins the transaction.
           session = ::Mongoid::Threaded.get_session(client: mongo_client)
-          source = DataSource.given("mongodb", database, session: session)
+          source = DataSource.given("mongodb", client, session: session)
           summary, bulk_writes = Maskable.plan(
             source: source,
             schema: Maskable.schema_for(self, source, profile),
@@ -78,7 +79,7 @@ module Exwiw
           )
           unless dry_run
             bulk_writes.each do |bulk_write|
-              database[bulk_write.collection_name].bulk_write(bulk_write.driver_operations, session ? { session: session } : {})
+              client[bulk_write.collection_name].bulk_write(bulk_write.driver_operations, session ? { session: session } : {})
             end
           end
           Result.new(summary: summary, statements: bulk_writes.map(&:to_extended_json))
