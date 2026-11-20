@@ -210,6 +210,44 @@ module Exwiw
       end
     end
 
+    describe "against a table that references itself or declares a scope_column" do
+      let(:dir) { Dir.mktmpdir }
+      let(:path) { File.join(dir, "mask.sqlite3") }
+      let(:adapter) { Adapter.build(ConnectionConfig.new(adapter: "sqlite", database_name: path), logger) }
+      let(:db) { SQLite3::Database.new(path) }
+
+      before do
+        db.execute("CREATE TABLE accounts (id INTEGER PRIMARY KEY, parent_id INTEGER, org_id INTEGER, email TEXT)")
+        db.execute("INSERT INTO accounts VALUES (1, NULL, 10, 'root@x'), (2, 1, 10, 'child@x'), (3, 2, 10, 'leaf@x')")
+      end
+
+      after { FileUtils.remove_entry(dir) }
+
+      def tree_table(**attributes)
+        table(
+          belongs_tos: [{ table_name: "accounts", foreign_key: "parent_id", references: "id" }],
+          columns: [{ name: "id" }, { name: "parent_id" }, { name: "org_id" }, { name: "email", replace_with: "masked-{id}" }],
+          **attributes,
+        )
+      end
+
+      it "masks only the given rows, not the ancestors export keeps for them" do
+        plan = build(adapter, [tree_table], [3])
+        db.execute_batch(plan.script)
+
+        expect(plan.summary).to have_attributes(target_count: 1, missing_primary_key_values: [])
+        expect(db.execute("SELECT id, email FROM accounts ORDER BY id")).to eq([[1, "root@x"], [2, "child@x"], [3, "masked-3"]])
+      end
+
+      it "reads the given values as primary keys even when the table declares a scope_column" do
+        plan = build(adapter, [tree_table(scope_column: "org_id")], [3])
+        db.execute_batch(plan.script)
+
+        expect(plan.summary).to have_attributes(target_count: 1, missing_primary_key_values: [])
+        expect(db.execute("SELECT id, email FROM accounts ORDER BY id")).to eq([[1, "root@x"], [2, "child@x"], [3, "masked-3"]])
+      end
+    end
+
     describe "against a case-insensitive text primary key" do
       let(:dir) { Dir.mktmpdir }
       let(:path) { File.join(dir, "mask.sqlite3") }
@@ -297,7 +335,7 @@ module Exwiw
 
         plan = build(adapter, tables, (1..1001).to_a)
 
-        expect(selects.grep(/mask-update/).uniq.size).to eq(2)
+        expect(selects.grep(/FROM .?accounts/).uniq.size).to eq(2)
         expect(plan.script.lines.size).to eq(1001)
         db.execute_batch(plan.script)
         expect(db.execute("SELECT COUNT(*) FROM accounts WHERE email LIKE 'masked%' AND label = 'L'")).to eq([[1001]])
@@ -421,8 +459,10 @@ module Exwiw
         when Adapter::PostgresqlAdapter
           allow(target).to receive(:exec).and_wrap_original { |m, sql, *r| issued << sql; m.call(sql, *r) }
           allow(target).to receive(:exec_params).and_wrap_original { |m, sql, *r| issued << sql; m.call(sql, *r) }
+          allow(target).to receive(:send_query).and_wrap_original { |m, sql, *r| issued << sql; m.call(sql, *r) }
         when Adapter::MysqlAdapter
           allow(target).to receive(:query).and_wrap_original { |m, sql, *r| issued << sql; m.call(sql, *r) }
+          allow(target).to receive(:stream_rows).and_wrap_original { |m, sql, *r, &b| issued << sql; m.call(sql, *r, &b) }
         end
         issued
       end
@@ -463,18 +503,6 @@ module Exwiw
           target_count: 2, columns: %w[name email], missing_primary_key_values: ["a0ffffffffffffffffffffff"]
         )
         expect(plan.script).to match(/\Adb\.getCollection\("users"\)\.bulkWrite\(\[\n  \{ updateOne: \{ filter: \{ "_id": ObjectId\("#{ids[0]}"\) \}/)
-      end
-    end
-
-    describe Exwiw::DumpTarget do
-      let(:accounts) { table(columns: [{ name: "id" }]) }
-
-      it "builds the target condition on ids_field when set and on the primary key otherwise" do
-        by_key = DumpTarget.new(table_name: "accounts", ids: [1, 2]).target_where_clause(accounts)
-        by_field = DumpTarget.new(table_name: "accounts", ids: [1, 2], ids_field: "email").target_where_clause(accounts, ids: ["a"])
-
-        expect(by_key).to have_attributes(column_name: "id", operator: :eq, value: [1, 2])
-        expect(by_field).to have_attributes(column_name: "email", operator: :eq, value: ["a"])
       end
     end
 

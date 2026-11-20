@@ -110,15 +110,6 @@ module Exwiw
     def named_id_spaces
       ids.keys - [DEFAULT_ID_SPACE]
     end
-
-    # The condition selecting the target table's rows: `ids_field` when set, else the primary key.
-    #
-    # @param table [Exwiw::TableConfig, Exwiw::MongodbCollectionConfig] the target table
-    # @param ids [Array] values to match
-    # @return [Exwiw::QueryAst::WhereClause]
-    def target_where_clause(table, ids: default_ids)
-      QueryAst::WhereClause.new(column_name: ids_field || table.primary_key, operator: :eq, value: ids)
-    end
   end
   # `uri` is an optional full connection string (currently only honored by the
   # mongodb adapter, e.g. `mongodb+srv://...`). When present it is the source of

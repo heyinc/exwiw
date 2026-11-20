@@ -130,7 +130,7 @@ module Exwiw
               "specify a top-level collection instead."
       end
 
-      def build_query(config, dump_target, config_by_name)
+      def build_query(config, dump_target, config_by_name, self_ancestors: true)
         if config.embedded?
           raise NotImplementedError,
                 "MongodbAdapter#build_query was called with embedded config '#{config.name}'. " \
@@ -173,7 +173,7 @@ module Exwiw
           else
             related_collection_filter(config, config_by_name, dump_target)
           end
-        warn_missing_self_ancestors(config) unless filter.empty?
+        warn_missing_self_ancestors(config) if self_ancestors && !filter.empty?
 
         Exwiw::MongoQuery::Find.new(
           collection: config.name,

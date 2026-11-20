@@ -61,8 +61,8 @@ module Exwiw
         end
       end
 
-      def build_query(table, dump_target, table_by_name)
-        Exwiw::QueryAstBuilder.run(table.name, table_by_name, dump_target, @logger)
+      def build_query(table, dump_target, table_by_name, self_ancestors: true)
+        Exwiw::QueryAstBuilder.run(table.name, table_by_name, dump_target, @logger, self_ancestors: self_ancestors)
       end
 
       def execute(query_ast)
@@ -461,10 +461,6 @@ module Exwiw
           else ["--ssl", "--ssl-verify-server-cert"]
           end
         ca_flags + mode_flags
-      end
-
-      private def fetch_rows(sql)
-        connection.query(sql).rows
       end
 
       private def connection

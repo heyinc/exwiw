@@ -2,8 +2,8 @@
 
 module Exwiw
   class QueryAstBuilder
-    def self.run(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_declared_reverse: true, forward_path: [], reverse_path: [], deep_chain_warned: nil, batch_ids: nil)
-      new(table_name, table_by_name, dump_target, logger, allow_reverse: allow_reverse, allow_declared_reverse: allow_declared_reverse, forward_path: forward_path, reverse_path: reverse_path, deep_chain_warned: deep_chain_warned, batch_ids: batch_ids).run
+    def self.run(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_declared_reverse: true, forward_path: [], reverse_path: [], deep_chain_warned: nil, batch_ids: nil, self_ancestors: true)
+      new(table_name, table_by_name, dump_target, logger, allow_reverse: allow_reverse, allow_declared_reverse: allow_declared_reverse, forward_path: forward_path, reverse_path: reverse_path, deep_chain_warned: deep_chain_warned, batch_ids: batch_ids, self_ancestors: self_ancestors).run
     end
 
     # The self-referencing foreign keys whose ancestors a narrowed `table` also
@@ -203,7 +203,7 @@ module Exwiw
 
     attr_reader :narrowed_by_automatic_reverse
 
-    def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_declared_reverse: true, forward_path: [], reverse_path: [], deep_chain_warned: nil, batch_ids: nil)
+    def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_declared_reverse: true, forward_path: [], reverse_path: [], deep_chain_warned: nil, batch_ids: nil, self_ancestors: true)
       @table_name = table_name
       @table_by_name = table_by_name
       @dump_target = dump_target
@@ -213,6 +213,8 @@ module Exwiw
       # BatchedExtraction. Deliberately not threaded into the recursive builds
       # below, which compile other tables' queries.
       @batch_ids = batch_ids
+      # false selects only the rows the scope names, without a self-referencing table's ancestors.
+      @self_ancestors = self_ancestors
       # @forward_path is the chain of tables currently being forward-resolved by
       # the "scope via an indirectly-scoped belongs_to parent" rescue
       # (build_belongs_to_scoped_clause). Each forward hop appends the table it is
@@ -334,7 +336,7 @@ module Exwiw
     # not held to the table's filter or scope, since valid foreign keys win. A
     # batched table is left alone: every batch would repeat the ancestors.
     private def with_self_ancestors(table, ast)
-      return ast unless @batch_ids.nil?
+      return ast unless @batch_ids.nil? && @self_ancestors
       return ast if ast.where_clauses.empty? && ast.join_clauses.empty?
 
       links = self.class.self_ancestor_links(table)
@@ -720,7 +722,11 @@ module Exwiw
         # column on the target table; otherwise fall back to the primary key.
         # Only the target table's filter changes — downstream foreign-key
         # propagation still keys off the primary key.
-        clauses.push dump_target.target_where_clause(table)
+        clauses.push Exwiw::QueryAst::WhereClause.new(
+          column_name: dump_target.ids_field || table.primary_key,
+          operator: :eq,
+          value: dump_target.default_ids
+        )
 
         return clauses
       end

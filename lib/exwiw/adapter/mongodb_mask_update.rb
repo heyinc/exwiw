@@ -9,8 +9,8 @@ module Exwiw
       # @param dump_target [Exwiw::DumpTarget] names the documents to mask by their primary keys (`default_ids`)
       # @param allow_constant_columns [Array<String>] credential-looking "collection.path"s accepted as non-NULL masks
       # @return [Exwiw::MaskUpdatePlan::Generated]
-      def build_mask_update(config, dump_target, config_by_name = nil, allow_constant_columns: [])
-        config_by_name = (config_by_name || { config.name => config }).transform_values { |c| c.dup.reject_ignored_members! }
+      def build_mask_update(config, dump_target, config_by_name, allow_constant_columns: [])
+        config_by_name = config_by_name.transform_values { |c| c.dup.reject_ignored_members! }
         config = config_by_name.fetch(config.name)
         @embedded_children_by_parent = index_embedded_children(config_by_name)
 
@@ -28,7 +28,7 @@ module Exwiw
 
         primary_key_values = dump_target.default_ids
         ids = coerce_ids(primary_key_values)
-        docs = find_for_mask_update(config, ids)
+        docs = find_for_mask_update(config, dump_target, config_by_name)
         found_ids = docs.to_set { |doc| doc[config.primary_key] }
         missing = primary_key_values.zip(ids).reject { |_, id| found_ids.include?(id) }.map(&:first)
 
@@ -59,13 +59,10 @@ module Exwiw
         own + plan.embedded.flat_map { |e| mask_target_names(e.plan, [prefix, *e.prefix, e.last].compact.join(".")) }
       end
 
-      private def find_for_mask_update(config, ids)
-        opts = config.query_timeout_ms ? { timeout_ms: config.query_timeout_ms } : {}
-        ids.each_slice(MaskUpdatePlan::CHUNK_SIZE).flat_map do |chunk|
-          db[config.name].find({ config.primary_key => { "$in" => chunk } }, opts)
-            .projection(build_projection(config))
-            .comment(query_comment_text("mask-update collection=#{config.name}"))
-            .to_a
+      private def find_for_mask_update(config, dump_target, config_by_name)
+        dump_target.default_ids.each_slice(MaskUpdatePlan::CHUNK_SIZE).flat_map do |chunk|
+          target = dump_target.dup.tap { |t| t.ids = chunk }
+          execute(build_query(config, target, config_by_name, self_ancestors: false)).to_a
         end
       end
 

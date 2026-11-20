@@ -85,8 +85,8 @@ module Exwiw
         end
       end
 
-      def build_query(table, dump_target, table_by_name)
-        Exwiw::QueryAstBuilder.run(table.name, table_by_name, dump_target, @logger)
+      def build_query(table, dump_target, table_by_name, self_ancestors: true)
+        Exwiw::QueryAstBuilder.run(table.name, table_by_name, dump_target, @logger, self_ancestors: self_ancestors)
       end
 
       def execute(query_ast)
@@ -625,10 +625,6 @@ module Exwiw
         string_types = %w[varchar text bpchar name].freeze
         (type_a == 'uuid' && string_types.include?(type_b)) ||
           (type_b == 'uuid' && string_types.include?(type_a))
-      end
-
-      private def fetch_rows(sql)
-        connection.exec(sql).values
       end
 
       private def connection

@@ -2,11 +2,9 @@
 
 module Exwiw
   module Adapter
-    # Mask-UPDATE generation shared by the SQL adapters. Including adapters provide
-    # #fetch_rows(sql) (rows as arrays) plus the usual compile_* / escape_value helpers.
+    # Mask-UPDATE generation shared by the SQL adapters. Rows are read with the adapter's
+    # #execute, as export does, so the only statements issued are the SELECTs of #build_query.
     module SqlMaskUpdate
-      SELECT_ONLY = %r{\A\s*(?:/\*.*?\*/\s*)*SELECT\b}mi
-
       # A `random_bytes` of fewer bytes is guessable; more than the maximum is just wasteful.
       RANDOM_BYTES_RANGE = (16..1024)
 
@@ -14,8 +12,13 @@ module Exwiw
       # @param dump_target [Exwiw::DumpTarget] names the rows to mask by their primary keys (`default_ids`)
       # @param allow_constant_columns [Array<String>] credential-looking "table.column"s accepted as non-NULL masks
       # @return [Exwiw::MaskUpdatePlan::Generated]
-      def build_mask_update(table, dump_target, _table_by_name = nil, allow_constant_columns: [])
-        columns = table.columns.reject(&:ignore)
+      def build_mask_update(table, dump_target, table_by_name, allow_constant_columns: [])
+        # ids are primary keys here even if the table declares a scope_column
+        table = table.dup.tap do |t|
+          t.columns = t.columns.reject(&:ignore)
+          t.scope_column = nil
+        end
+        columns = table.columns
         masked = columns.select { |c| mask_declared?(c) }
         if masked.empty?
           raise MaskUpdatePlan::Error,
@@ -30,8 +33,7 @@ module Exwiw
         allowed = MaskUpdatePlan.check_credential_columns!(table.name, masks, allow_constant_columns)
 
         primary_key_values = dump_target.default_ids
-        effective = table.dup.tap { |t| t.columns = columns }
-        matched, statements = lookup_rows(effective, dump_target, columns, masked, primary_key_values)
+        matched, statements = lookup_rows(table, dump_target, table_by_name.merge(table.name => table), masked, primary_key_values)
         found = matched.to_set { |v| v.to_s.downcase }
 
         MaskUpdatePlan::Generated.new(
@@ -60,14 +62,13 @@ module Exwiw
         end
       end
 
-      # Rows are matched by what the database returns (a case-insensitive collation can return "abc" for "ABC").
-      private def lookup_rows(effective, dump_target, columns, masked, primary_key_values)
-        pk = effective.primary_key
-        pk_column = columns.find { |c| c.name == pk } || TableColumn.from_symbol_keys(name: pk)
-        select_columns = columns.include?(pk_column) ? columns : columns + [pk_column]
-        pk_index = select_columns.index(pk_column)
-        transformer = RowTransformer.build(effective)
-        masked_indexes = masked.map { |c| columns.index(c) }
+      # Selects with the query export builds for the target table, minus the ancestors it keeps for a
+      # self-referencing table. Rows are matched by what the database returns (a case-insensitive
+      # collation can return "abc" for "ABC").
+      private def lookup_rows(table, dump_target, table_by_name, masked, primary_key_values)
+        pk = table.primary_key
+        transformer = RowTransformer.build(table)
+        masked_indexes = masked.map { |c| table.columns.index(c) }
         computed = masked.map { |c| c.map || c.replace_with_fake_data }
         given_by_key = primary_key_values.to_h { |v| [v.to_s, v] }
         given_folded = primary_key_values.to_set { |v| v.to_s.downcase }
@@ -75,19 +76,18 @@ module Exwiw
         matched = []
         statements = []
         primary_key_values.each_slice(MaskUpdatePlan::CHUNK_SIZE) do |chunk|
-          ast = QueryAst::Select.new
-          ast.from(effective.name)
-          ast.select(select_columns)
-          ast.where(dump_target.target_where_clause(effective, ids: chunk))
-          label = query_comment_text("mask-update table=#{effective.name}")
-          rows = select_rows("/* #{label} */ #{compile_ast(ast)}")
+          target = dump_target.dup.tap { |t| t.ids = chunk }
+          ast = build_query(table, target, table_by_name, self_ancestors: false)
+          # The key goes after the table's columns, so the transformer's indexes still hold.
+          ast.columns << QueryAst::ColumnValue::Plain.new(name: pk, value: pk) unless ast.columns.any? { |c| c.name == pk }
+          pk_index = ast.columns.index { |c| c.name == pk }
 
-          rows.each do |row|
+          execute(ast).each do |row|
             returned = row[pk_index]
             # MySQL converts a string like '12x' to 12 when comparing with an integer key, so such a row is not the one asked for.
             unless given_by_key.key?(returned.to_s) || given_folded.include?(returned.to_s.downcase)
               raise MaskUpdatePlan::Error,
-                    "'#{effective.name}' row with primary key #{returned.inspect} matched none of the given values exactly " \
+                    "'#{table.name}' row with primary key #{returned.inspect} matched none of the given values exactly " \
                     "(#{primary_key_values.map(&:to_s).first(5).join(', ')}#{primary_key_values.size > 5 ? ', ...' : ''}); " \
                     "the database converted one of them, so pass the exact primary key values"
             end
@@ -98,10 +98,10 @@ module Exwiw
             row = transformer.transform(row) if transformer
             assignments = masked.each_with_index.map do |c, i|
               value = row[masked_indexes[i]]
-              value = writable_value(effective, c, value) if computed[i]
+              value = writable_value(table, c, value) if computed[i]
               "#{quote_identifier(c.name)} = #{escape_value(value)}"
             end
-            statements << update_statement(effective, assignments, [pk_value])
+            statements << update_statement(table, assignments, [pk_value])
           end
         end
         [matched.uniq, statements]
@@ -120,12 +120,6 @@ module Exwiw
         where = QueryAst::WhereClause.new(column_name: table.primary_key, operator: :eq, value: primary_key_values)
         "UPDATE #{quote_table_name(table.name)} SET #{assignments.join(', ')} " \
           "WHERE #{compile_where_condition(where, table.name)};"
-      end
-
-      private def select_rows(sql)
-        raise MaskUpdatePlan::Error, "refusing to run a non-SELECT statement: #{sql[0, 40]}" unless sql.match?(SELECT_ONLY)
-
-        fetch_rows(sql)
       end
     end
   end
