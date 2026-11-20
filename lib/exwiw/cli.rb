@@ -138,8 +138,6 @@ module Exwiw
       @profile = nil
       # `schema show` only: print one table instead of all.
       @show_table = nil
-      # `mask-update` only: credential-looking columns accepted as non-NULL masks.
-      @allow_constant_columns = []
       # nil (not :info) so we can tell "user passed --log-level" from the default,
       # letting a config-file value fill in; the :info default is applied later.
       @log_level = nil
@@ -221,7 +219,6 @@ module Exwiw
         dump_target: dump_target,
         logger: logger,
         io: $stdout,
-        allow_constant_columns: @allow_constant_columns,
       ).run
 
       $stderr.puts mask_update_summary(summary)
@@ -239,8 +236,8 @@ module Exwiw
       unless summary.missing_primary_key_values.empty?
         lines << "primary key values not found: #{summary.missing_primary_key_values.join(', ')}"
       end
-      unless summary.allowed_constant_columns.empty?
-        lines << "credential-looking columns masked on request: #{summary.allowed_constant_columns.join(', ')}"
+      unless summary.allowed_guessable_columns.empty?
+        lines << "credential-looking columns masked to a guessable value (allow_guessable_mask): #{summary.allowed_guessable_columns.join(', ')}"
       end
       lines
     end
@@ -427,11 +424,6 @@ module Exwiw
 
       validate_no_export_options! if @subcommand == "explain" || @subcommand == "mask-update"
       resolve_explain_verbosity! if @subcommand == "explain"
-
-      if @allow_constant_columns.any? && @subcommand != "mask-update"
-        $stderr.puts "--allow-constant-column only applies to mask-update."
-        exit 1
-      end
 
       # `schema` shares only the connection options with the other subcommands:
       # it neither extracts rows nor reads a dump target, so every check below
@@ -1102,7 +1094,7 @@ module Exwiw
                       declared in the schema config. The database is only read; apply
                       the output yourself. A column whose name looks like a credential
                       may only be masked to NULL (raw_sql "NULL") or a random raw_sql
-                      such as hex(randomblob(16)), unless named in --allow-constant-column.
+                      such as hex(randomblob(16)), unless it sets allow_guessable_mask: true.
             schema    Maintain the schema config (generate | check | tidy) by
                       reading a live database, for applications that cannot be
                       loaded to generate it from their models. Requires --from-db;
@@ -1151,7 +1143,6 @@ module Exwiw
         opts.on("--mongodb-query-timeout-ms=N", Integer, "Global server-enforced timeout (ms) for every MongoDB query (mongodb only). Aborts an accidentally heavy/unscoped query past the deadline. Overridden per collection by `query_timeout_ms` in the schema config.") { |v| @mongodb_query_timeout_ms = v }
         opts.on("--fail-on=CATEGORY", "schema check only: what makes the exit code non-zero. 'any' (default) fails on any drift or undecided masking; 'stale' fails only when the committed config references tables/columns the schema no longer has - the drift that would break an export. The full report is printed either way.") { |v| @fail_on = v }
         opts.on("--profile=NAME", "Schema profile whose overlay files (<table>.<profile>.json) are merged into the base config (export, explain, mask-update and schema show). Must be declared under `profiles` in the config file. Without it, no profile applies.") { |v| @profile_option = v }
-        opts.on("--allow-constant-column=TABLE.COLUMN", "mask-update only: accept a column whose name looks like a credential (password, token, secret, ...) being masked to something other than NULL or a random raw_sql. Exact `table.column`; repeat for several.") { |v| @allow_constant_columns << v }
         opts.on("--table=TABLE", "schema show only: print the config of this table/collection only.") { |v| @show_table = v }
         opts.on("--log-level=LEVEL", "Log level (debug, info). default is info") { |v| @log_level = v.to_sym }
 

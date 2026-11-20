@@ -44,24 +44,23 @@ module Exwiw
         # @param dry_run [Boolean] only build the UPDATE statements, without executing them
         # @param profile [String, nil] the schema profile to apply. The schema is found through the class methods
         #   `exwiw_config_path` and `exwiw_schema_dir` when the class defines them (see Exwiw::Maskable.schema_for)
-        # @param allow_constant_columns [Array<String>] credential-looking "table.column"s accepted as non-NULL masks
         # @return [Exwiw::Maskable::Result] statements are SQL UPDATEs
         # @raise [Exwiw::MaskUpdateRunner::Error] when nothing narrows the rows, or they cannot be masked as declared; nothing is updated then
-        def mask_with_exwiw!(touch: true, dry_run: false, profile: nil, allow_constant_columns: [])
+        def mask_with_exwiw!(touch: true, dry_run: false, profile: nil)
           scope = current_scope
           if scope.nil? || scope.where_clause.empty? || scope.where_clause == default_scoped.where_clause
             raise MaskUpdateRunner::Error,
                   "#{name}.mask_with_exwiw! has no condition narrowing the rows, so it would mask every row; narrow it with where"
           end
 
-          options = { touch: touch, dry_run: dry_run, profile: profile, allow_constant_columns: allow_constant_columns }
+          options = { touch: touch, dry_run: dry_run, profile: profile }
           # with_connection appeared in ActiveRecord 7.2.
           return mask_with_connection(connection, **options) unless respond_to?(:with_connection)
 
           with_connection { |connection| mask_with_connection(connection, **options) }
         end
 
-        private def mask_with_connection(connection, touch:, dry_run:, profile:, allow_constant_columns:)
+        private def mask_with_connection(connection, touch:, dry_run:, profile:)
           ids = all.pluck(arel_table[primary_key])
           now = connection.quoted_date(current_time_from_proper_timezone) if touch
           source = DataSource.given(Maskable::ActiveRecordModel.exwiw_adapter_name(connection), connection.raw_connection)
@@ -70,7 +69,7 @@ module Exwiw
             schema: Maskable.schema_for(self, source, profile),
             table_name: table_name, ids: ids,
             extra_assignments: touch ? timestamp_attributes_for_update_in_model.to_h { |name| [name, now] } : {},
-            allow_constant_columns: allow_constant_columns, logger: logger,
+            logger: logger,
           )
           # Writes go through ActiveRecord, not the raw connection, so its transaction and query cache see them.
           statements.each { |sql| connection.execute(sql) } unless dry_run

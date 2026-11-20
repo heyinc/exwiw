@@ -36,14 +36,13 @@ module Exwiw
     # @param ids [Array<Integer, String>] primary keys of the rows to mask
     # @param extra_assignments [Hash{String => Object}] columns (fields) set to a fixed value on every masked row
     # @param schema [Exwiw::Schema] the loaded schema
-    # @param allow_constant_columns [Array<String>] credential-looking "table.column"s accepted as non-NULL masks
     # @param logger [Logger, nil]
     # @return [Array(Exwiw::MaskUpdateRunner::Summary, Array)] the summary and the statements, none executed
     # @raise [Exwiw::MaskUpdateRunner::Error] when the rows cannot be masked as declared
-    def self.plan(source:, schema:, table_name:, ids:, extra_assignments:, allow_constant_columns:, logger:)
+    def self.plan(source:, schema:, table_name:, ids:, extra_assignments:, logger:)
       if ids.empty?
         summary = MaskUpdateRunner::Summary.new(
-          table_name: table_name, target_count: 0, columns: [], missing_primary_key_values: [], allowed_constant_columns: [],
+          table_name: table_name, target_count: 0, columns: [], missing_primary_key_values: [], allowed_guessable_columns: [],
         )
         return [summary, []]
       end
@@ -54,7 +53,6 @@ module Exwiw
         schema: schema,
         dump_target: DumpTarget.new(table_name: table_name, ids: ids, mode: :primary_key, recursive: false),
         logger: logger || ::Logger.new(nil),
-        allow_constant_columns: allow_constant_columns,
         extra_assignments: extra_assignments,
       ).apply { |statement| statements << statement }
       [summary, statements]

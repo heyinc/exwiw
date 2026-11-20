@@ -26,6 +26,9 @@ module Exwiw
     # once the config is loaded (see MongodbCollectionConfig#reject_ignored_members!).
     attribute :comment, optional(String), skip_serializing_if_nil: true
     attribute :ignore, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
+    # `mask-update` only: accepts a mask other than NULL or a random raw_sql on a credential-looking column (see
+    # MaskUpdateRunner.check_credential_columns!).
+    attribute :allow_guessable_mask, Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)), skip_serializing_if_nil: true
     # See TableColumn#needs_mask_decision.
     attribute :needs_mask_decision,
               Serdes::OptionalType.new(Serdes::ConcreteType.new(Boolean)),

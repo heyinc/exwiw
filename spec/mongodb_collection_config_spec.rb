@@ -374,7 +374,7 @@ module Exwiw
           belongs_tos: [{ table_name: 'shops', foreign_key: 'shop_id', references: 'uuid', comment: 'bt note', ignore: true }],
           fields: [
             { name: '_id' },
-            { name: 'token', comment: 'secret', ignore: true, replace_with: 'X' },
+            { name: 'token', comment: 'secret', ignore: true, replace_with: 'X', allow_guessable_mask: true },
           ],
         )
       end
@@ -397,10 +397,10 @@ module Exwiw
         ])
       end
 
-      it 'preserves user-owned comment/ignore/replace_with on fields while tracking added fields' do
+      it 'preserves user-owned comment/ignore/replace_with/allow_guessable_mask on fields while tracking added fields' do
         merged = current.merge(passed)
         token = merged.fields.find { |f| f.name == 'token' }
-        expect(token.to_hash).to eq({ 'name' => 'token', 'replace_with' => 'X', 'comment' => 'secret', 'ignore' => true })
+        expect(token.to_hash).to eq({ 'name' => 'token', 'replace_with' => 'X', 'comment' => 'secret', 'ignore' => true, 'allow_guessable_mask' => true })
         expect(merged.fields.map(&:name)).to eq(['_id', 'token', 'extra'])
       end
 

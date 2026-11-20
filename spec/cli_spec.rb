@@ -1244,21 +1244,10 @@ module Exwiw
           .to raise_error(SystemExit).and output(/--ids with an <id_space>= prefix/).to_stderr
       end
 
-      it 'passes --allow-constant-column to the plan, which rejects one that guards nothing' do
-        expect { run_cli(mask_update_argv('--allow-constant-column=users.name')) }
-          .to raise_error(SystemExit).and output(/allow_constant_columns names users\.name/).to_stderr
-      end
-
       it 'lets explain take --no-recursive to cover the target table only' do
         argv = mask_update_argv(subcommand: 'explain', target: ['--target-table=shops', '--ids=1'])
 
         expect { run_cli(argv) }.to output(/-- \[1\/1\] shops/).to_stdout
-      end
-
-      it 'rejects --allow-constant-column outside mask-update' do
-        argv = mask_update_argv('--allow-constant-column=users.name', subcommand: 'explain', target: [])
-        expect { run_cli(argv) }
-          .to raise_error(SystemExit).and output(/--allow-constant-column only applies to mask-update/).to_stderr
       end
 
       it 'exits 1 with the reason for a credential-looking column masked to something guessable' do
