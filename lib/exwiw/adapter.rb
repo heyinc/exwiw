@@ -66,17 +66,17 @@ module Exwiw
       # Builds the statements that mask the rows named by `dump_target` in place. Only reads the database
       # (SELECT, or `find` for MongoDB) and never writes to it.
       #
-      # Exwiw::MaskUpdatePlan calls this after validating the table and the primary key values. An implementation masks
+      # Exwiw::MaskUpdateRunner calls this after validating the table and the primary key values. An implementation masks
       # only the columns (fields) that declare a mask, leaves `ignore: true` ones alone, raises for a table that declares
-      # no mask or masks its primary key, and passes what it masks to Exwiw::MaskUpdatePlan.check_credential_columns!.
+      # no mask or masks its primary key, and passes what it masks to Exwiw::MaskUpdateRunner.check_credential_columns!.
       #
       # @param _table [Exwiw::TableConfig, Exwiw::MongodbCollectionConfig] the table (collection) to mask
       # @param _dump_target [Exwiw::DumpTarget] `default_ids` are the primary keys of the rows to mask (checked and
       #   unique); `ids_field`, `scope_column` and other ID spaces are already rejected
       # @param _table_by_name [Hash{String => Object}] every declared table by name, as for #build_query
       # @param allow_constant_columns [Array<String>] "table.column"s whose credential-looking name the caller accepts masking to non-NULL
-      # @return [Exwiw::MaskUpdatePlan::Generated] the statements ready to apply, with no header or transaction control
-      # @raise [Exwiw::MaskUpdatePlan::Error] when the table cannot be masked as declared
+      # @return [Exwiw::MaskUpdateRunner::Generated] the statements ready to apply, with no header or transaction control
+      # @raise [Exwiw::MaskUpdateRunner::Error] when the table cannot be masked as declared
       def build_mask_update(_table, _dump_target, _table_by_name, allow_constant_columns: [])
         raise NotImplementedError, "#{self.class.name} does not implement #build_mask_update"
       end

@@ -4,7 +4,7 @@ require "tmpdir"
 require "sqlite3"
 
 module Exwiw
-  RSpec.describe MaskUpdatePlan do
+  RSpec.describe MaskUpdateRunner do
     let(:logger) { Logger.new(nil) }
 
     def connection_config(adapter, database_name: "exwiw_test")
@@ -19,8 +19,21 @@ module Exwiw
       TableConfig.from_symbol_keys({ name: "accounts", primary_key: "id", columns: [{ name: "id" }] }.merge(attributes))
     end
 
-    def build(adapter, tables, values = [1], table_name: "accounts", **options)
-      MaskUpdatePlan.build(adapter: adapter, tables: tables, dump_target: DumpTarget.new(table_name: table_name, ids: values), **options)
+    Result = Struct.new(:script, :summary)
+
+    # Runs the runner against a schema directory written from `tables`, reading through `adapter`.
+    def build(adapter, tables, values = [1], table_name: "accounts", target: {}, **options)
+      Dir.mktmpdir do |schema_dir|
+        tables.each { |t| File.write(File.join(schema_dir, "#{t.name}.json"), JSON.dump(t.to_hash)) }
+        allow(Adapter).to receive(:build).and_call_original
+        allow(Adapter).to receive(:build).with(adapter.connection_config, anything).and_return(adapter)
+        io = StringIO.new
+        summary = MaskUpdateRunner.new(
+          connection_config: adapter.connection_config, schema_dir: schema_dir, logger: logger, io: io,
+          dump_target: DumpTarget.new(table_name: table_name, ids: values, **target), **options,
+        ).run
+        Result.new(io.string.delete_suffix("\n"), summary)
+      end
     end
 
     describe "errors" do
@@ -29,42 +42,42 @@ module Exwiw
 
       it "rejects a table missing from the declaration" do
         expect { build(adapter, [table(columns: masked_columns)], table_name: "orders") }
-          .to raise_error(MaskUpdatePlan::Error, /table 'orders' is not declared/)
+          .to raise_error(MaskUpdateRunner::Error, /table 'orders' is not declared/)
       end
 
       it "rejects an ignore: true table" do
         expect { build(adapter, [table(columns: masked_columns, ignore: true)]) }
-          .to raise_error(MaskUpdatePlan::Error, /'accounts' is declared ignore: true/)
+          .to raise_error(MaskUpdateRunner::Error, /'accounts' is declared ignore: true/)
       end
 
       it "rejects a composite primary key table" do
         composite = table(primary_key: nil, ignore: true, type: TableConfig::UNSUPPORTED_COMPOSITE_PRIMARY_KEY)
-        expect { build(adapter, [composite]) }.to raise_error(MaskUpdatePlan::Error, /composite primary key/)
+        expect { build(adapter, [composite]) }.to raise_error(MaskUpdateRunner::Error, /composite primary key/)
       end
 
-      it "rejects a table without a primary key" do
+      it "rejects a table without a primary key when the schema is loaded" do
         keyless = TableConfig.from_symbol_keys(name: "accounts", primary_key: "id", columns: masked_columns)
         keyless.primary_key = nil
-        expect { build(adapter, [keyless]) }.to raise_error(MaskUpdatePlan::Error, /no primary key/)
+        expect { build(adapter, [keyless]) }.to raise_error(ArgumentError, /requires primary_key/)
       end
 
       it "rejects empty primary key values" do
         tables = [table(columns: masked_columns)]
-        expect { build(adapter, tables, []) }.to raise_error(MaskUpdatePlan::Error, /no primary key values/)
-        expect { build(adapter, tables, [1, ""]) }.to raise_error(MaskUpdatePlan::Error, /empty value/)
-        expect { build(adapter, tables, [nil]) }.to raise_error(MaskUpdatePlan::Error, /must be an Integer or a String/)
+        expect { build(adapter, tables, []) }.to raise_error(MaskUpdateRunner::Error, /no primary key values/)
+        expect { build(adapter, tables, [1, ""]) }.to raise_error(MaskUpdateRunner::Error, /empty value/)
+        expect { build(adapter, tables, [nil]) }.to raise_error(MaskUpdateRunner::Error, /must be an Integer or a String/)
       end
 
       it "rejects a table with no masked column, ignoring ignored columns and needs_mask_decision" do
         columns = [{ name: "id" }, { name: "email", needs_mask_decision: true }, { name: "note", ignore: true, replace_with: "x" }]
         expect { build(adapter, [table(columns: columns)]) }
-          .to raise_error(MaskUpdatePlan::Error, /declares no mask/)
+          .to raise_error(MaskUpdateRunner::Error, /declares no mask/)
       end
 
       it "rejects a masked primary key" do
         columns = [{ name: "id", replace_with: 0 }, { name: "email", replace_with: "x" }]
         expect { build(adapter, [table(columns: columns)]) }
-          .to raise_error(MaskUpdatePlan::Error, /masks its primary key 'id'/)
+          .to raise_error(MaskUpdateRunner::Error, /masks its primary key 'id'/)
       end
 
       it "rejects an embedded collection" do
@@ -74,17 +87,18 @@ module Exwiw
         )
         mongo = Adapter.build(connection_config(:mongodb), logger)
         expect { build(mongo, [embedded], table_name: "addresses") }
-          .to raise_error(MaskUpdatePlan::Error, /embedded in 'accounts'/)
+          .to raise_error(MaskUpdateRunner::Error, /embedded in 'accounts'/)
       end
 
       it "rejects ids_field, scope_column and another ID space" do
         tables = [table(columns: masked_columns)]
-        plan = ->(**target) { MaskUpdatePlan.build(adapter: adapter, tables: tables, dump_target: DumpTarget.new(table_name: "accounts", **target)) }
 
-        expect { plan.call(ids: [1], ids_field: "email") }.to raise_error(MaskUpdatePlan::Error, /ids_field is not supported/)
-        expect { plan.call(ids: [1], scope_column: "tenant_id") }.to raise_error(MaskUpdatePlan::Error, /scope_column is not supported/)
-        expect { plan.call(ids: { "default" => [1], "other" => [2] }) }
-          .to raise_error(MaskUpdatePlan::Error, /ID spaces other than default \(other\)/)
+        expect { build(adapter, tables, [1], target: { ids_field: "email" }) }
+          .to raise_error(MaskUpdateRunner::Error, /ids_field is not supported/)
+        expect { build(adapter, tables, [1], target: { scope_column: "tenant_id" }) }
+          .to raise_error(MaskUpdateRunner::Error, /scope_column is not supported/)
+        expect { build(adapter, tables, { "default" => [1], "other" => [2] }) }
+          .to raise_error(MaskUpdateRunner::Error, /ID spaces other than default \(other\)/)
       end
     end
 
@@ -104,7 +118,7 @@ module Exwiw
 
       it "always needs an allowance, since MongoDB has no NULL or random mask" do
         expect { build(adapter, [tokens], [1], table_name: "mask_update_credential_spec") }
-          .to raise_error(MaskUpdatePlan::Error, /mask_update_credential_spec\.api_token look like credentials/)
+          .to raise_error(MaskUpdateRunner::Error, /mask_update_credential_spec\.api_token look like credentials/)
 
         plan = build(adapter, [tokens], [1], table_name: "mask_update_credential_spec",
                                              allow_constant_columns: ["mask_update_credential_spec.api_token"])
@@ -148,7 +162,7 @@ module Exwiw
           "UPDATE accounts SET email = NULL, code = 'c2', phone = NULL, label = 'OSAKA' WHERE accounts.id = 2;",
         ])
         expect(plan.summary).to eq(
-          MaskUpdatePlan::Summary.new(
+          MaskUpdateRunner::Summary.new(
             table_name: "accounts", target_count: 2, columns: %w[email code phone label],
             missing_primary_key_values: [404], allowed_constant_columns: [],
           )
@@ -385,7 +399,7 @@ module Exwiw
       }.each do |label, mask|
         it "rejects #{label}" do
           expect { build(adapter, [accounts(api_token: mask)]) }
-            .to raise_error(MaskUpdatePlan::Error, /accounts\.api_token look like credentials/)
+            .to raise_error(MaskUpdateRunner::Error, /accounts\.api_token look like credentials/)
         end
       end
 
@@ -403,7 +417,7 @@ module Exwiw
 
       it "rejects an allowance for a column masked by a random expression" do
         expect { build(adapter, [accounts(api_token: { raw_sql: "hex(randomblob(16))" })], allow_constant_columns: ["accounts.api_token"]) }
-          .to raise_error(MaskUpdatePlan::Error, /allow_constant_columns names accounts\.api_token/)
+          .to raise_error(MaskUpdateRunner::Error, /allow_constant_columns names accounts\.api_token/)
       end
 
       it "writes the mask to a column the caller allows, and reports it" do
@@ -417,13 +431,13 @@ module Exwiw
       it "rejects an allowance that guards nothing" do
         tables = [accounts(password_digest: { raw_sql: "NULL" })]
         expect { build(adapter, tables, allow_constant_columns: ["accounts.password_digest", "accounts.city"]) }
-          .to raise_error(MaskUpdatePlan::Error, /allow_constant_columns names accounts\.password_digest, accounts\.city/)
+          .to raise_error(MaskUpdateRunner::Error, /allow_constant_columns names accounts\.password_digest, accounts\.city/)
       end
 
       it "treats passcode, api_key and access_key names as credentials too" do
         %i[shop_passcode google_api_key access_key_url].each do |name|
           expect { build(adapter, [accounts(name => { replace_with: "x" })]) }
-            .to raise_error(MaskUpdatePlan::Error, /accounts\.#{name} look like credentials/)
+            .to raise_error(MaskUpdateRunner::Error, /accounts\.#{name} look like credentials/)
         end
       end
 
@@ -435,7 +449,7 @@ module Exwiw
       it "rejects a map returning a value an UPDATE cannot hold" do
         ["->(r) { true }", "->(r) { :sym }", "->(r) { {} }", "->(r) { 1.0 / 0 }"].each do |code|
           expect { build(adapter, [accounts(city: { map: code })]) }
-            .to raise_error(MaskUpdatePlan::Error, /can be written into an UPDATE/)
+            .to raise_error(MaskUpdateRunner::Error, /can be written into an UPDATE/)
         end
       end
     end
@@ -448,7 +462,7 @@ module Exwiw
         mongo = Adapter.build(connection_config(:mongodb), logger)
 
         expect { build(mongo, [collection], table_name: "users") }
-          .to raise_error(MaskUpdatePlan::Error, /users\.services\.password\.bcrypt look like credentials/)
+          .to raise_error(MaskUpdateRunner::Error, /users\.services\.password\.bcrypt look like credentials/)
       end
     end
 
@@ -517,7 +531,7 @@ module Exwiw
 
         ["12x", " 12", "1e1", "007"].each do |given|
           expect { build(adapter, [accounts], [given]) }
-            .to raise_error(MaskUpdatePlan::Error, /matched none of the given values exactly/)
+            .to raise_error(MaskUpdateRunner::Error, /matched none of the given values exactly/)
         end
         expect(build(adapter, [accounts], [12]).summary).to have_attributes(target_count: 1, missing_primary_key_values: [])
       end
@@ -543,7 +557,7 @@ module Exwiw
 
       it "rejects them with a clear error instead of emitting a wrong literal" do
         [Time.utc(2026, 1, 1), BSON::Decimal128.new("1.5"), BSON::Binary.new("x"), 1.0 / 0, { "a" => 1 }].each do |value|
-          expect { adapter.send(:js_literal, value) }.to raise_error(MaskUpdatePlan::Error, /cannot express/)
+          expect { adapter.send(:js_literal, value) }.to raise_error(MaskUpdateRunner::Error, /cannot express/)
         end
       end
     end
@@ -595,7 +609,7 @@ module Exwiw
         expressions.each do |expression|
           it "rejects #{expression.inspect} on #{adapter_name}" do
             expect { guard(adapter_name, expression) }
-              .to raise_error(MaskUpdatePlan::Error, /accounts\.api_token look like credentials.*gen_random_uuid\(\)::text.*HEX\(RANDOM_BYTES\(16\)\).*hex\(randomblob\(16\)\)/)
+              .to raise_error(MaskUpdateRunner::Error, /accounts\.api_token look like credentials.*gen_random_uuid\(\)::text.*HEX\(RANDOM_BYTES\(16\)\).*hex\(randomblob\(16\)\)/)
           end
         end
       end
@@ -605,7 +619,7 @@ module Exwiw
         masks.each do |mask|
           adapter = Adapter.build(connection_config(:postgresql), logger)
           columns = [{ name: "id" }, { name: "api_token" }.merge(mask)]
-          expect { build(adapter, [table(columns: columns)]) }.to raise_error(MaskUpdatePlan::Error, /accounts\.api_token look like credentials/)
+          expect { build(adapter, [table(columns: columns)]) }.to raise_error(MaskUpdateRunner::Error, /accounts\.api_token look like credentials/)
         end
       end
     end

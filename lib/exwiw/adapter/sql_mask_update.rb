@@ -11,7 +11,7 @@ module Exwiw
       # @param table [Exwiw::TableConfig] table to mask
       # @param dump_target [Exwiw::DumpTarget] names the rows to mask by their primary keys (`default_ids`)
       # @param allow_constant_columns [Array<String>] credential-looking "table.column"s accepted as non-NULL masks
-      # @return [Exwiw::MaskUpdatePlan::Generated]
+      # @return [Exwiw::MaskUpdateRunner::Generated]
       def build_mask_update(table, dump_target, table_by_name, allow_constant_columns: [])
         # ids are primary keys here even if the table declares a scope_column
         table = table.dup.tap do |t|
@@ -21,22 +21,22 @@ module Exwiw
         columns = table.columns
         masked = columns.select { |c| mask_declared?(c) }
         if masked.empty?
-          raise MaskUpdatePlan::Error,
+          raise MaskUpdateRunner::Error,
                 "table '#{table.name}' declares no mask (replace_with / raw_sql / map / replace_with_fake_data) on any column"
         end
         if masked.any? { |c| c.name == table.primary_key }
-          raise MaskUpdatePlan::Error,
+          raise MaskUpdateRunner::Error,
                 "table '#{table.name}' masks its primary key '#{table.primary_key}', which selects the rows to update"
         end
 
         masks = masked.map { |c| [c.name, safe_for_credential?(c)] }
-        allowed = MaskUpdatePlan.check_credential_columns!(table.name, masks, allow_constant_columns)
+        allowed = MaskUpdateRunner.check_credential_columns!(table.name, masks, allow_constant_columns)
 
         primary_key_values = dump_target.default_ids
         matched, statements = lookup_rows(table, dump_target, table_by_name.merge(table.name => table), masked, primary_key_values)
         found = matched.to_set { |v| v.to_s.downcase }
 
-        MaskUpdatePlan::Generated.new(
+        MaskUpdateRunner::Generated.new(
           statements: statements,
           target_count: matched.size,
           columns: masked.map(&:name),
@@ -75,7 +75,7 @@ module Exwiw
 
         matched = []
         statements = []
-        primary_key_values.each_slice(MaskUpdatePlan::CHUNK_SIZE) do |chunk|
+        primary_key_values.each_slice(MaskUpdateRunner::CHUNK_SIZE) do |chunk|
           target = dump_target.dup.tap { |t| t.ids = chunk }
           ast = build_query(table, target, table_by_name, self_ancestors: false)
           # The key goes after the table's columns, so the transformer's indexes still hold.
@@ -86,7 +86,7 @@ module Exwiw
             returned = row[pk_index]
             # MySQL converts a string like '12x' to 12 when comparing with an integer key, so such a row is not the one asked for.
             unless given_by_key.key?(returned.to_s) || given_folded.include?(returned.to_s.downcase)
-              raise MaskUpdatePlan::Error,
+              raise MaskUpdateRunner::Error,
                     "'#{table.name}' row with primary key #{returned.inspect} matched none of the given values exactly " \
                     "(#{primary_key_values.map(&:to_s).first(5).join(', ')}#{primary_key_values.size > 5 ? ', ...' : ''}); " \
                     "the database converted one of them, so pass the exact primary key values"
@@ -111,7 +111,7 @@ module Exwiw
       private def writable_value(table, column, value)
         return value if value.nil? || value.is_a?(String) || value.is_a?(Integer) || (value.is_a?(Float) && value.finite?)
 
-        raise MaskUpdatePlan::Error,
+        raise MaskUpdateRunner::Error,
               "'#{table.name}.#{column.name}' was masked to #{value.inspect} (#{value.class}); " \
               "only a String, Integer, finite Float or nil can be written into an UPDATE"
       end

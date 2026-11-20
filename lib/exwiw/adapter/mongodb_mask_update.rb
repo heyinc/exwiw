@@ -8,7 +8,7 @@ module Exwiw
       # @param config [Exwiw::MongodbCollectionConfig] collection to mask
       # @param dump_target [Exwiw::DumpTarget] names the documents to mask by their primary keys (`default_ids`)
       # @param allow_constant_columns [Array<String>] credential-looking "collection.path"s accepted as non-NULL masks
-      # @return [Exwiw::MaskUpdatePlan::Generated]
+      # @return [Exwiw::MaskUpdateRunner::Generated]
       def build_mask_update(config, dump_target, config_by_name, allow_constant_columns: [])
         config_by_name = config_by_name.transform_values { |c| c.dup.reject_ignored_members! }
         config = config_by_name.fetch(config.name)
@@ -17,14 +17,14 @@ module Exwiw
         plan = build_mask_plan(config)
         names = mask_target_names(plan)
         if names.empty?
-          raise MaskUpdatePlan::Error, "collection '#{config.name}' declares no mask (replace_with / replace_with_fake_data) on any field"
+          raise MaskUpdateRunner::Error, "collection '#{config.name}' declares no mask (replace_with / replace_with_fake_data) on any field"
         end
         if names.include?(config.primary_key)
-          raise MaskUpdatePlan::Error, "collection '#{config.name}' masks '#{config.primary_key}', which is immutable in MongoDB"
+          raise MaskUpdateRunner::Error, "collection '#{config.name}' masks '#{config.primary_key}', which is immutable in MongoDB"
         end
         # A MongoDB mask can neither say NULL nor draw random bytes, so a credential-looking path always needs an allowance.
         safe_paths = names.map { |n| [n, false] }
-        allowed = MaskUpdatePlan.check_credential_columns!(config.name, safe_paths, allow_constant_columns)
+        allowed = MaskUpdateRunner.check_credential_columns!(config.name, safe_paths, allow_constant_columns)
 
         primary_key_values = dump_target.default_ids
         ids = coerce_ids(primary_key_values)
@@ -41,11 +41,11 @@ module Exwiw
           "  { updateOne: { filter: { #{js_literal(config.primary_key)}: #{js_literal(doc[config.primary_key])} }, " \
             "update: { \"$set\": { #{sets.map { |path, value| "#{js_literal(path)}: #{js_literal(value)}" }.join(', ')} } } } }"
         end
-        statements = operations.each_slice(MaskUpdatePlan::CHUNK_SIZE).map do |chunk|
+        statements = operations.each_slice(MaskUpdateRunner::CHUNK_SIZE).map do |chunk|
           "db.getCollection(#{js_literal(config.name)}).bulkWrite([\n#{chunk.join(",\n")}\n]);"
         end
 
-        MaskUpdatePlan::Generated.new(
+        MaskUpdateRunner::Generated.new(
           statements: statements,
           target_count: docs.size,
           columns: names,
@@ -60,7 +60,7 @@ module Exwiw
       end
 
       private def find_for_mask_update(config, dump_target, config_by_name)
-        dump_target.default_ids.each_slice(MaskUpdatePlan::CHUNK_SIZE).flat_map do |chunk|
+        dump_target.default_ids.each_slice(MaskUpdateRunner::CHUNK_SIZE).flat_map do |chunk|
           target = dump_target.dup.tap { |t| t.ids = chunk }
           execute(build_query(config, target, config_by_name, self_ancestors: false)).to_a
         end
@@ -95,12 +95,12 @@ module Exwiw
         when true, false then value.to_s
         when Integer then value.between?(-2**31, 2**31 - 1) ? value.to_s : "NumberLong(\"#{value}\")"
         when Float
-          raise MaskUpdatePlan::Error, "cannot express #{value} in a mongosh script" unless value.finite?
+          raise MaskUpdateRunner::Error, "cannot express #{value} in a mongosh script" unless value.finite?
 
           "Double(#{value})"
         when String then JSON.generate(value)
         when BSON::ObjectId then "ObjectId(\"#{value}\")"
-        else raise MaskUpdatePlan::Error, "cannot express a #{value.class} value in a mongosh script"
+        else raise MaskUpdateRunner::Error, "cannot express a #{value.class} value in a mongosh script"
         end
       end
     end

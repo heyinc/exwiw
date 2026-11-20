@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Checks Exwiw::MaskUpdatePlan against a real database: the rows an UPDATE masks must equal what
+# Checks Exwiw::MaskUpdateRunner against a real database: the rows an UPDATE masks must equal what
 # export produces for the same declarations, and everything else must stay untouched.
 #
 #   bundle exec ruby e2e/mask_update_scenario.rb sqlite|postgresql|mysql|mongodb
@@ -260,9 +260,16 @@ tables = configs
 # The export side uses an empty copy of the schema.
 export_into(DBS[:export], Exwiw::Adapter.build(connection_config(DBS[:source]), LOGGER), tables.map(&:dup).each(&:reject_ignored_members!))
 
-adapter = Exwiw::Adapter.build(connection_config(DBS[:apply]), LOGGER)
 original = read_all(DBS[:source])
-plan = Exwiw::MaskUpdatePlan.build(adapter: adapter, tables: tables, dump_target: Exwiw::DumpTarget.new(table_name: "accounts", ids: SELECTED))
+schema_dir = Dir.mktmpdir("mask_update_schema")
+tables.each { |t| File.write(File.join(schema_dir, "#{t.name}.json"), JSON.dump(t.to_hash)) }
+io = StringIO.new
+summary = Exwiw::MaskUpdateRunner.new(
+  connection_config: connection_config(DBS[:apply]), schema_dir: schema_dir, logger: LOGGER, io: io,
+  dump_target: Exwiw::DumpTarget.new(table_name: "accounts", ids: SELECTED),
+).run
+plan = Struct.new(:script, :summary).new(io.string.delete_suffix("\n"), summary)
+FileUtils.remove_entry(schema_dir)
 puts plan.script
 puts plan.summary.inspect
 
