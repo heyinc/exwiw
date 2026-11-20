@@ -26,10 +26,10 @@ module Exwiw
       Dir.mktmpdir do |schema_dir|
         tables.each { |t| File.write(File.join(schema_dir, "#{t.name}.json"), JSON.dump(t.to_hash)) }
         allow(Adapter).to receive(:build).and_call_original
-        allow(Adapter).to receive(:build).with(adapter.connection_config, anything).and_return(adapter)
+        allow(Adapter).to receive(:build).with(adapter.connection_config, anything, connection: nil, session: nil).and_return(adapter)
         io = options.delete(:io) || StringIO.new
         summary = MaskUpdateRunner.new(
-          connection_config: adapter.connection_config, schema_dir: schema_dir, logger: logger, io: io,
+          **runner_inputs(connection_config: adapter.connection_config, schema_dir: schema_dir), logger: logger, io: io,
           dump_target: DumpTarget.new(table_name: table_name, ids: values, recursive: false, mode: :primary_key, **target), **options,
         ).run
         Result.new(io.string.delete_suffix("\n"), summary)
@@ -65,7 +65,7 @@ module Exwiw
         tables = [table(columns: masked_columns)]
         expect { build(adapter, tables, []) }.to raise_error(MaskUpdateRunner::Error, /no primary key values/)
         expect { build(adapter, tables, [1, ""]) }.to raise_error(MaskUpdateRunner::Error, /empty value/)
-        expect { build(adapter, tables, [nil]) }.to raise_error(MaskUpdateRunner::Error, /must be an Integer or a String/)
+        expect { build(adapter, tables, [nil]) }.to raise_error(MaskUpdateRunner::Error, /must be an Integer, a String or a BSON::ObjectId/)
       end
 
       it "rejects a table with no masked column, ignoring ignored columns and needs_mask_decision" do
@@ -682,6 +682,110 @@ module Exwiw
           columns = [{ name: "id" }, { name: "api_token" }.merge(mask)]
           expect { build(adapter, [table(columns: columns)]) }.to raise_error(MaskUpdateRunner::Error, /accounts\.api_token look like credentials/)
         end
+      end
+    end
+
+    describe "#apply through a given connection" do
+      let(:accounts) do
+        table(columns: [{ name: "id" }, { name: "email", replace_with: "masked{id}" }, { name: "updated_at" }])
+      end
+
+      def apply(source, tables, values, **options)
+        Dir.mktmpdir do |schema_dir|
+          tables.each { |t| File.write(File.join(schema_dir, "#{t.name}.json"), JSON.dump(t.to_hash)) }
+          schema = Schema.load(dir: schema_dir, config_class: source.adapter_class.table_config_class)
+          statements = []
+          summary = MaskUpdateRunner.new(
+            source: source, schema: schema, logger: logger, **options,
+            dump_target: DumpTarget.new(table_name: tables.first.name, ids: values, recursive: false, mode: :primary_key),
+          ).apply { |statement| statements << statement }
+          [summary, statements]
+        end
+      end
+
+      it "yields the statements once all are built, and reads only the rows the given SQLite database holds" do
+        db = SQLite3::Database.new(":memory:")
+        db.execute("CREATE TABLE accounts (id INTEGER PRIMARY KEY, email TEXT, updated_at TEXT)")
+        db.execute("INSERT INTO accounts VALUES (1, 'a@x', 'old'), (2, 'b@x', 'old')")
+
+        summary, statements = apply(DataSource.given("sqlite", db), [accounts], [1, 404], extra_assignments: { updated_at: "now" })
+
+        expect(summary).to have_attributes(target_count: 1, missing_primary_key_values: [404])
+        expect(statements).to eq(["UPDATE accounts SET email = 'masked1', updated_at = 'now' WHERE accounts.id = 1;"])
+        expect(db.execute("SELECT email FROM accounts ORDER BY id")).to eq([["a@x"], ["b@x"]])
+      end
+
+      it "leaves a column with a declared mask to the mask, not to extra_assignments" do
+        db = SQLite3::Database.new(":memory:")
+        db.execute("CREATE TABLE accounts (id INTEGER PRIMARY KEY, email TEXT, updated_at TEXT)")
+        db.execute("INSERT INTO accounts VALUES (1, 'a@x', 'old')")
+
+        _, statements = apply(DataSource.given("sqlite", db), [accounts], [1], extra_assignments: { "email" => "x" })
+
+        expect(statements).to eq(["UPDATE accounts SET email = 'masked1' WHERE accounts.id = 1;"])
+      end
+
+      it "reads a given PostgreSQL connection as text, even when a type map decodes its results" do
+        config = database_config(:postgresql)
+        conn = PG.connect(host: config[:host], port: config[:port], user: config[:username], password: config[:password], dbname: "exwiw_test")
+        conn.type_map_for_results = PG::BasicTypeMapForResults.new(conn)
+        conn.exec("CREATE TEMPORARY TABLE accounts (id int PRIMARY KEY, email text, updated_at timestamp)")
+        conn.exec("INSERT INTO accounts VALUES (1, 'a@x', NULL)")
+        columns = [{ name: "id" }, { name: "email" }, { name: "updated_at", raw_sql: "TIMESTAMP '2000-01-02 03:04:05'" }]
+
+        _, statements = apply(DataSource.given("postgresql", conn), [table(columns: columns)], [1])
+
+        expect(statements).to eq([%(UPDATE accounts SET updated_at = '2000-01-02 03:04:05' WHERE accounts.id = 1;)])
+      ensure
+        conn&.close
+      end
+
+      %i[mysql2 trilogy].each do |driver|
+        it "reads through a given #{driver} client" do
+          config = database_config(:mysql)
+          options = { host: config[:host], port: config[:port].to_i, username: config[:username], password: config[:password], database: "exwiw_test" }
+          require driver.to_s
+          client = driver == :mysql2 ? Mysql2::Client.new(**options) : Trilogy.new(**options)
+          client.query("CREATE TEMPORARY TABLE accounts (id int PRIMARY KEY, email varchar(64), updated_at datetime)")
+          client.query("INSERT INTO accounts VALUES (1, 'a@x', NULL)")
+
+          _, statements = apply(DataSource.given("mysql", client), [accounts], [1])
+
+          expect(statements).to eq(["UPDATE accounts SET email = 'masked1' WHERE accounts.id = 1;"])
+        ensure
+          client&.close
+        end
+      end
+
+      it "reads in a given MongoDB session, and builds bulk writes the Ruby driver can run" do
+        config = database_config(:mongodb)
+        client = Mongo::Client.new(["#{config[:host]}:#{config[:port]}"], database: "exwiw_mask_update_given_spec")
+        collection = client[:accounts]
+        collection.drop
+        collection.insert_many([{ _id: "0012", email: "a@x" }, { _id: 12, email: "b@x" }])
+        lsids = []
+        subscriber = Object.new
+        subscriber.define_singleton_method(:started) { |event| lsids << event.command["lsid"] if event.command_name == "find" }
+        %i[succeeded failed].each { |m| subscriber.define_singleton_method(m) { |_| } }
+        client.subscribe(Mongo::Monitoring::COMMAND, subscriber)
+        session = client.start_session
+        config_hash = { name: "accounts", primary_key: "_id", belongs_tos: [], fields: [{ name: "_id" }, { name: "email", replace_with: "masked{_id}" }] }
+
+        summary, bulk_writes = apply(
+          DataSource.given("mongodb", client.database, session: session), [MongodbCollectionConfig.from_symbol_keys(config_hash)],
+          ["0012"], extra_assignments: { "touched" => true },
+        )
+        expect(bulk_writes.size).to eq(1)
+        collection.bulk_write(bulk_writes.first.driver_operations)
+
+        expect(lsids).to all(eq(session.session_id)).and(be_any)
+        expect(summary.target_count).to eq(2)
+        expect(collection.find.sort(email: 1).map { |d| [d["_id"], d["email"], d["touched"]] })
+          .to contain_exactly(["0012", "masked0012", true], [12, "masked12", true])
+      ensure
+        session&.end_session
+        collection&.drop
+        client&.close
       end
     end
   end

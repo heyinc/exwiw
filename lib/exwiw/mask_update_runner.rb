@@ -3,8 +3,9 @@
 require "stringio"
 
 module Exwiw
-  # Writes the statements (SQL UPDATEs, or lines of canonical Extended JSON for MongoDB) that mask chosen rows of
-  # one table in place with the masks declared for export. Only reads the database.
+  # Builds the statements (SQL UPDATEs, or `bulkWrite`s for MongoDB) that mask chosen rows of one table in place with
+  # the masks declared for export. #run writes them as text (lines of canonical Extended JSON for MongoDB) and only
+  # reads the database; #apply hands them to the caller to execute.
   class MaskUpdateRunner
     class Error < ArgumentError; end
 
@@ -20,32 +21,29 @@ module Exwiw
     # credential-looking ones that needed an allowance.
     Checked = Data.define(:columns, :allowed_constant_columns)
 
-    # @param connection_config [Exwiw::ConnectionConfig] the database to read
-    # @param schema_dir [String] directory of the schema config files
+    # @param source [Exwiw::DataSource] the database to read
+    # @param schema [Exwiw::Schema] the loaded schema configs
     # @param dump_target [Exwiw::DumpTarget] `table_name` and `ids` (default ID space) name the rows to mask by primary key
     # @param logger [Logger]
-    # @param io [#puts] where the statements are written
+    # @param io [#puts] where #run writes the statements
     # @param allow_constant_columns [Array<String>] credential-looking "table.column"s the caller accepts masking to non-NULL
-    # @param profiles [Array<String>] the declared schema profiles
-    # @param profile [String, nil] the schema profile to apply
+    # @param extra_assignments [Hash{String => Object}] columns (fields) set to a fixed value on every masked row, unless masked, e.g. updated_at
     def initialize(
-      connection_config:,
-      schema_dir:,
+      source:,
+      schema:,
       dump_target:,
       logger:,
       io: $stdout,
       allow_constant_columns: [],
-      profiles: [],
-      profile: nil
+      extra_assignments: {}
     )
-      @connection_config = connection_config
-      @schema_dir = schema_dir
+      @source = source
+      @schema = schema
       @dump_target = dump_target
       @logger = logger
       @io = io
       @allow_constant_columns = Array(allow_constant_columns).map(&:to_s)
-      @profiles = profiles
-      @profile = profile
+      @extra_assignments = extra_assignments.transform_keys(&:to_s)
     end
 
     # Reads the target rows and writes the statements that mask them to `io`.
@@ -53,20 +51,44 @@ module Exwiw
     # @return [Exwiw::MaskUpdateRunner::Summary]
     # @raise [Exwiw::MaskUpdateRunner::Error] when no statements can be generated, or dump_target uses `ids_field`, `scope_column` or another ID space
     def run
+      adapter, statements, summary = generate
+      # Nothing reaches `io` unless every statement is written, so a failure never leaves a script that masks only some rows.
+      output = StringIO.new
+      statements.each { |statement| adapter.write_mask_update(output, statement) }
+      @io.write(output.string)
+      summary
+    end
+
+    # Reads the target rows and yields each statement that masks them, once all are built, for the caller to execute.
+    # Wrap the call in a transaction to make the masking all-or-nothing.
+    #
+    # @yieldparam statement [String, Exwiw::Adapter::MongodbAdapter::MaskUpdateBulkWrite] an SQL UPDATE, or a bulk write for the collection
+    # @return [Exwiw::MaskUpdateRunner::Summary]
+    # @raise [Exwiw::MaskUpdateRunner::Error] as #run does; nothing is yielded then
+    def apply(&block)
+      raise ArgumentError, "a block that executes each statement is required" unless block
+
+      _adapter, statements, summary = generate
+      statements.each(&block)
+      summary
+    end
+
+    private def generate
       reject_unsupported_target!
-      adapter = Adapter.build(@connection_config, @logger)
-      table_by_name = load_table_config(adapter.class.table_config_class).to_h { |config| [config.name, config] }
+      @schema.check_adapter!(@source.adapter_class)
+      @logger.info("Applying schema profile '#{@schema.profile}'") if @schema.profile
+      adapter = @source.build_adapter(@logger)
+      table_by_name = @schema.table_by_name
 
       table = table_by_name[@dump_target.table_name.to_s]
-      raise Error, "table '#{@dump_target.table_name}' is not declared in the schema (#{@schema_dir})" if table.nil?
+      raise Error, "table '#{@dump_target.table_name}' is not declared in the schema (#{@schema.dir})" if table.nil?
 
       validate_table!(table)
       primary_key_values = normalize_primary_key_values(table, @dump_target.default_ids)
       checked = adapter.check_mask_update(table, table_by_name, allow_constant_columns: @allow_constant_columns)
 
       row_transformer = RowTransformer.build(table)
-      # Nothing reaches `io` unless every row is written, so a failure never leaves a script that masks only some rows.
-      output = StringIO.new
+      statements = []
       record_count = 0
       missing = []
       primary_key_values.each_slice(CHUNK_SIZE) do |chunk|
@@ -75,19 +97,20 @@ module Exwiw
         results = adapter.execute(query_ast)
         results = row_transformer.wrap(results) if row_transformer
 
-        _statement_count, found, not_found = adapter.write_mask_updates(output, results, table, chunk)
+        chunk_statements, found, not_found = adapter.mask_update_statements(results, table, chunk, @extra_assignments)
+        statements.concat(chunk_statements)
         record_count += found
         missing.concat(not_found)
       end
-      @io.write(output.string)
 
-      Summary.new(
+      summary = Summary.new(
         table_name: table.name,
         target_count: record_count,
         columns: checked.columns,
         missing_primary_key_values: missing,
         allowed_constant_columns: checked.allowed_constant_columns,
       )
+      [adapter, statements, summary]
     end
 
     # A credential-looking column may only be masked to NULL or a cryptographically random SQL expression (the adapter's RANDOM_SECRET_PATTERNS): a constant, id-derived, fake or map value is guessable.
@@ -133,17 +156,12 @@ module Exwiw
       raise Error, "no primary key values given for '#{table.name}'" if values.empty?
 
       values.each do |value|
-        unless value.is_a?(Integer) || value.is_a?(String)
-          raise Error, "primary key value #{value.inspect} for '#{table.name}' must be an Integer or a String"
+        unless value.is_a?(Integer) || value.is_a?(String) || (defined?(::BSON::ObjectId) && value.is_a?(::BSON::ObjectId))
+          raise Error, "primary key value #{value.inspect} for '#{table.name}' must be an Integer, a String or a BSON::ObjectId"
         end
         raise Error, "primary key values for '#{table.name}' must not contain an empty value" if value == ""
       end
       values.uniq
-    end
-
-    private def load_table_config(klass)
-      @logger.info("Applying schema profile '#{@profile}'") if @profile
-      SchemaLoader.new(dir: @schema_dir, config_class: klass, profiles: @profiles, profile: @profile).load
     end
 
     private def reject_unsupported_target!

@@ -98,9 +98,8 @@ module Exwiw
         let(:connection_config) { ConnectionConfig.new(**scenario[:connection]) }
         let(:runner) do
           Runner.new(
-            connection_config: connection_config,
+            **runner_inputs(connection_config: connection_config, schema_dir: scenario[:schema_dir]),
             output_dir: output_dir,
-            schema_dir: scenario[:schema_dir],
             dump_target: DumpTarget.new(table_name: "shops", ids: scenario.fetch(:ids, ["1"])),
             output_format: scenario.fetch(:output_format, "insert"),
             logger: ::Logger.new(nil),

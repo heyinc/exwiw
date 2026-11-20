@@ -70,7 +70,7 @@ module Exwiw
         end
       end
 
-      def initialize(connection_config, logger)
+      def initialize(connection_config, logger, connection: nil, session: nil)
         super
         @state = {}
         @explain_placeholder = false
@@ -253,20 +253,38 @@ module Exwiw
         MaskUpdateRunner::Checked.new(columns: names, allowed_constant_columns: allowed)
       end
 
-      # Writes one line, `["<collection>", <operations>]` in canonical Extended JSON, whose operations are mongosh's
-      # `bulkWrite` operations (a Ruby driver's `bulk_write` wants `update_one:` with Symbol keys instead): an
-      # `updateOne` that `$set`s every masked leaf of each document in `results`.
-      # Documents are masked with the same plan #to_bulk_insert uses while the assignments are recorded. Counterpart
-      # of #write_inserts; call #build_query first. Keys the plan drops are never assigned, so they are neither set
-      # nor unset.
+      # One `bulkWrite` of `updateOne`s on a collection: what #mask_update_statements returns. `operations` are what
+      # mongosh's `bulkWrite` takes, so #to_extended_json is exactly the line `mask-update` prints.
+      MaskUpdateBulkWrite = Data.define(:collection_name, :operations) do
+        # @return [String] `["<collection>", <operations>]` in canonical Extended JSON
+        def to_extended_json
+          JSON.generate([collection_name, operations].as_extended_json(mode: :canonical))
+        end
+
+        # The Ruby driver's Mongo::Collection#bulk_write rejects mongosh's `updateOne`; it takes `update_one:` keys.
+        #
+        # @return [Array<Hash>] the operations in the form Mongo::Collection#bulk_write takes
+        def driver_operations
+          operations.map do |op|
+            update = op.fetch("updateOne")
+            { update_one: { filter: update.fetch("filter"), update: update.fetch("update") } }
+          end
+        end
+      end
+
+      # Builds one `bulkWrite` whose `updateOne`s `$set` every masked leaf of each document in `results`. Documents
+      # are masked with the same plan #to_bulk_insert uses while the assignments are recorded. Call #build_query
+      # first. Keys the plan drops are never assigned, so they are neither set nor unset.
       #
-      # @param io [#puts] where the line is written
       # @param results [Enumerable<Hash>] the documents named by `primary_key_values`, as #execute returns them
       # @param config [Exwiw::MongodbCollectionConfig] collection to mask
       # @param primary_key_values [Array<String>] the given primary keys (at most MaskUpdateRunner::CHUNK_SIZE)
-      # @return [Array(Integer, Integer, Array<String>)] lines written, documents found, given keys with no document
-      def write_mask_updates(io, results, config, primary_key_values)
+      # @param extra_assignments [Hash{String => Object}] top-level fields set to a fixed value on every document, unless masked
+      # @return [Array(Array<MaskUpdateBulkWrite>, Integer, Array<String>)] the bulk write (none when nothing is set), documents found, given keys with no document
+      def mask_update_statements(results, config, primary_key_values, extra_assignments = {})
         plan = mask_plan(config)
+        masked = mask_target_names(plan)
+        extras = extra_assignments.reject { |name, _| masked.include?(name) }
         found_ids = Set.new
         operations = results.filter_map do |doc|
           found_ids << doc[config.primary_key]
@@ -274,12 +292,22 @@ module Exwiw
           apply_mask_plan!(doc, plan, sets)
           next if sets.empty?
 
+          sets.merge!(extras)
           { "updateOne" => { "filter" => { config.primary_key => doc[config.primary_key] }, "update" => { "$set" => sets } } }
         end
-        io.puts JSON.generate([config.name, operations].as_extended_json(mode: :canonical)) unless operations.empty?
+        statements = operations.empty? ? [] : [MaskUpdateBulkWrite.new(collection_name: config.name, operations: operations)]
 
         missing = primary_key_values.reject { |value| id_candidates(value).any? { |id| found_ids.include?(id) } }
-        [operations.empty? ? 0 : 1, found_ids.size, missing]
+        [statements, found_ids.size, missing]
+      end
+
+      # Writes a MaskUpdateBulkWrite as one line of canonical Extended JSON (see README "Applying the MongoDB output").
+      #
+      # @param io [#puts] where the line is written
+      # @param statement [MaskUpdateBulkWrite] a statement #mask_update_statements returned
+      # @return [void]
+      def write_mask_update(io, statement)
+        io.puts statement.to_extended_json
       end
 
       private def mask_target_names(plan, prefix = nil)
@@ -437,7 +465,8 @@ module Exwiw
       # plus every getMore the streaming dump walks — which is what makes it the
       # right cap for an accidentally heavy/unscoped extraction.
       private def find_timeout_opts(query)
-        query.timeout_ms ? { timeout_ms: query.timeout_ms } : {}
+        opts = query.timeout_ms ? { timeout_ms: query.timeout_ms } : {}
+        @given_session ? opts.merge(session: @given_session) : opts
       end
 
       private def reject_filter!(config)
@@ -864,7 +893,7 @@ module Exwiw
       # Dropping comes first so an ignored field is invisible to the masking that
       # follows, as on a top-level collection — normally not fetched, and dropped
       # here when the projection pulled it in as a propagation key.
-      # With `sets` (a Hash), also records each masked leaf as dotted path => new value, for #write_mask_updates.
+      # With `sets` (a Hash), also records each masked leaf as dotted path => new value, for #mask_update_statements.
       private def apply_mask_plan!(doc, plan, sets = nil, path = nil)
         plan.dropped_fields.each { |name| doc.delete(name) }
         plan.masked_fields.each do |name, mask|
@@ -939,7 +968,7 @@ module Exwiw
       end
 
       private def db
-        @db ||=
+        @db ||= @given_connection ||
           begin
             require 'mongo'
             Mongo::Logger.logger.level = ::Logger::WARN

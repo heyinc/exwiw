@@ -136,9 +136,8 @@ module Exwiw
         File.write(File.join(schema_dir, "#{name}.json"), JSON.pretty_generate(config))
       end
       Runner.new(
-        connection_config: connection_config,
+        **runner_inputs(connection_config: connection_config, schema_dir: schema_dir),
         output_dir: output_dir,
-        schema_dir: schema_dir,
         dump_target: DumpTarget.new(table_name: "organizations", ids: [ORG1]),
         logger: ::Logger.new(nil),
       ).run

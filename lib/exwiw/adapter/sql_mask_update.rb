@@ -36,26 +36,27 @@ module Exwiw
         MaskUpdateRunner::Checked.new(columns: masked.map(&:name), allowed_constant_columns: allowed)
       end
 
-      # Writes one UPDATE per row of `results`, setting every masked column to the value `results` holds for it.
-      # Counterpart of #write_inserts. Rows are matched by what the database returns (a case-insensitive collation
-      # can return "abc" for "ABC").
+      # Builds one UPDATE per row of `results`, setting every masked column to the value `results` holds for it.
+      # Rows are matched by what the database returns (a case-insensitive collation can return "abc" for "ABC").
       #
-      # @param io [#puts] where the statements are written
       # @param results [Enumerable<Array>] rows of the query #build_query builds, already through the RowTransformer
       # @param table [Exwiw::TableConfig] table to mask
       # @param primary_key_values [Array<Integer, String>] the given primary keys (at most MaskUpdateRunner::CHUNK_SIZE)
-      # @return [Array(Integer, Integer, Array)] statements written, rows found, given keys with no row
+      # @param extra_assignments [Hash{String => Object}] columns set to a fixed value on every row, unless masked
+      # @return [Array(Array<String>, Integer, Array)] the UPDATE statements, rows found, given keys with no row
       # @raise [Exwiw::MaskUpdateRunner::Error] for a row the database matched only after converting a given key, or a mask value an UPDATE cannot hold
-      def write_mask_updates(io, results, table, primary_key_values)
+      def mask_update_statements(results, table, primary_key_values, extra_assignments = {})
         masked = masked_columns(table)
+        extras = extra_assignments.reject { |name, _| masked.any? { |c| c.name == name } }.map do |name, value|
+          "#{quote_identifier(name)} = #{escape_value(value)}"
+        end
         pk_index = table.columns.index { |c| c.name == table.primary_key }
         masked_indexes = masked.map { |c| table.columns.index(c) }
         given_by_key = primary_key_values.to_h { |v| [v.to_s, v] }
         given_folded = primary_key_values.to_set { |v| v.to_s.downcase }
 
         found = Set.new
-        statement_count = 0
-        results.each do |row|
+        statements = results.map do |row|
           returned = row[pk_index]
           # MySQL converts a string like '12x' to 12 when comparing with an integer key, so such a row is not the one asked for.
           unless given_by_key.key?(returned.to_s) || given_folded.include?(returned.to_s.downcase)
@@ -69,11 +70,19 @@ module Exwiw
           assignments = masked.each_with_index.map do |c, i|
             "#{quote_identifier(c.name)} = #{literal_for(table, c, row[masked_indexes[i]])}"
           end
-          io.puts update_statement(table, assignments, [given_by_key.fetch(returned.to_s, returned)])
-          statement_count += 1
+          update_statement(table, assignments + extras, [given_by_key.fetch(returned.to_s, returned)])
         end
 
-        [statement_count, statement_count, primary_key_values.reject { |v| found.include?(v.to_s.downcase) }]
+        [statements, statements.size, primary_key_values.reject { |v| found.include?(v.to_s.downcase) }]
+      end
+
+      # Writes a statement of #mask_update_statements as one line of SQL.
+      #
+      # @param io [#puts] where the statement is written
+      # @param statement [String] an UPDATE statement
+      # @return [void]
+      def write_mask_update(io, statement)
+        io.puts statement
       end
 
       private def masked_columns(table)

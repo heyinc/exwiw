@@ -295,7 +295,7 @@ module Exwiw
       end
 
       private def connection
-        @connection ||=
+        @connection ||= @given_connection ||
           begin
             require 'sqlite3'
             SQLite3::Database.new(File.expand_path(@connection_config.database_name))

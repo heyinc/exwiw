@@ -2,37 +2,40 @@
 
 module Exwiw
   class ExplainRunner
+    # @param source [Exwiw::DataSource] the database to read
+    # @param schema [Exwiw::Schema] the loaded schema configs
+    # @param dump_target [Exwiw::DumpTarget] the rows whose queries are explained
+    # @param logger [Logger]
+    # @param io [#puts] where the queries and their plans are written
+    # @param explain_verbosity [String, nil] mongodb only
     def initialize(
-      connection_config:,
-      schema_dir:,
+      source:,
+      schema:,
       dump_target:,
       logger:,
       io: $stdout,
-      explain_verbosity: nil,
-      profiles: [],
-      profile: nil
+      explain_verbosity: nil
     )
-      @connection_config = connection_config
-      @schema_dir = schema_dir
+      @source = source
+      @schema = schema
       @dump_target = dump_target
       @logger = logger
       @io = io
       # mongodb-only; nil lets the adapter pick its safe default (queryPlanner).
       @explain_verbosity = explain_verbosity
-      @profiles = profiles
-      @profile = profile
     end
 
     def run
-      adapter = Adapter.build(@connection_config, @logger)
+      @schema.check_adapter!(@source.adapter_class)
+      adapter = @source.build_adapter(@logger)
       # explain executes nothing, so an adapter whose non-target scope is captured
       # at runtime (mongodb) has no parent ids to filter children by; ask it to
       # build placeholder scope filters so each query reflects the real dump.
       adapter.explain_scope_with_placeholders!
-      configs = load_table_config(adapter.class.table_config_class)
+      configs = @schema.configs
       validate_ignored(configs)
 
-      table_by_name = configs.each_with_object({}) { |config, hash| hash[config.name] = config }
+      table_by_name = @schema.table_by_name
 
       target = table_by_name[@dump_target.table_name]
       validate_target_exists!(target)
@@ -51,7 +54,7 @@ module Exwiw
         runtime_reverse_scope: adapter.is_a?(Adapter::MongodbAdapter),
       )
 
-      @io.puts "-- profile: #{@profile}" if @profile
+      @io.puts "-- profile: #{@schema.profile}" if @schema.profile
       total_size = ordered_table_names.size
       ordered_table_names.each_with_index do |table_name, idx|
         table = table_by_name.fetch(table_name)
@@ -102,10 +105,6 @@ module Exwiw
       @io.puts
     end
 
-    private def load_table_config(klass)
-      SchemaLoader.new(dir: @schema_dir, config_class: klass, profiles: @profiles, profile: @profile).load
-    end
-
     # Reject a `--target-table` (or `--target-collection`) absent from the loaded
     # schema; mirrors Runner#validate_target_exists! so explain and export fail the
     # same way on a typo. `target` is the looked-up config (nil when not found).
@@ -118,7 +117,7 @@ module Exwiw
       return unless target.nil?
 
       raise ArgumentError,
-            "--target-table '#{@dump_target.table_name}' does not exist in the schema (#{@schema_dir})."
+            "--target-table '#{@dump_target.table_name}' does not exist in the schema (#{@schema.dir})."
     end
 
     private def validate_ignored(configs)

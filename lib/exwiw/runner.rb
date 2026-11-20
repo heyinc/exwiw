@@ -4,40 +4,43 @@ require "fileutils"
 
 module Exwiw
   class Runner
+    # @param source [Exwiw::DataSource] the database to read
+    # @param schema [Exwiw::Schema] the loaded schema configs
+    # @param dump_target [Exwiw::DumpTarget] the rows to export
+    # @param logger [Logger]
+    # @param output_dir [String] where the dump is written
     def initialize(
-      connection_config:,
-      output_dir:,
-      schema_dir:,
+      source:,
+      schema:,
       dump_target:,
       logger:,
+      output_dir:,
       output_format: 'insert',
       after_insert_hook_path: nil,
       parallel_workers: nil,
-      cli_options: {},
-      profiles: [],
-      profile: nil
+      cli_options: {}
     )
-      @connection_config = connection_config
+      @source = source
+      @schema = schema
       @output_dir = output_dir
-      @schema_dir = schema_dir
       @dump_target = dump_target
       @output_format = output_format
       @after_insert_hook_path = after_insert_hook_path
       @parallel_workers = parallel_workers
       @cli_options = cli_options
-      @profiles = profiles
-      @profile = profile
       @logger = logger
     end
 
     def run
-      adapter = Adapter.build(@connection_config, @logger)
-      configs = load_table_config(adapter.class.table_config_class)
+      @schema.check_adapter!(@source.adapter_class)
+      @logger.info("Applying schema profile '#{@schema.profile}'") if @schema.profile
+      adapter = @source.build_adapter(@logger)
+      configs = @schema.configs
 
       validate_ignored(configs)
       validate_rails_managed_target!(configs)
 
-      table_by_name = configs.each_with_object({}) { |config, hash| hash[config.name] = config }
+      table_by_name = @schema.table_by_name
 
       target = table_by_name[@dump_target.table_name]
       validate_target_exists!(target)
@@ -226,6 +229,11 @@ module Exwiw
       return false unless @parallel_workers && @parallel_workers > 1
       return false unless @dump_target.recursive?
 
+      if @source.given_connection?
+        @logger.warn("--parallel-workers ignored: a forked worker cannot reuse a given connection; running serially.")
+        return false
+      end
+
       if @dump_target.table_name.nil?
         @logger.warn("--parallel-workers ignored: MongoDB parallelism needs a --target-collection; running serially.")
         return false
@@ -262,7 +270,7 @@ module Exwiw
         "genuine=#{plan.genuine.size}, leaves=#{plan.leaves.size}, ref_bt=#{plan.ref_bt.size}."
       )
       stats = MongodbParallelDumper.new(
-        connection_config: @connection_config,
+        connection_config: @source.connection_config,
         plan: plan,
         dump_target: @dump_target,
         table_by_name: table_by_name,
@@ -288,15 +296,6 @@ module Exwiw
       else
         FileUtils.mkdir_p(@output_dir)
       end
-    end
-
-    # Drops the belongs_tos/columns(fields) flagged ignore:true so they are not
-    # considered during extraction. Done here (after loading from file) rather
-    # than in `.from` so the schema generators keep the full config and can
-    # preserve the ignored entries on regeneration.
-    private def load_table_config(klass)
-      @logger.info("Applying schema profile '#{@profile}'") if @profile
-      SchemaLoader.new(dir: @schema_dir, config_class: klass, profiles: @profiles, profile: @profile).load
     end
 
     private def validate_ignored(configs)
@@ -339,7 +338,7 @@ module Exwiw
       return unless target.nil?
 
       raise ArgumentError,
-            "--target-table '#{@dump_target.table_name}' does not exist in the schema (#{@schema_dir})."
+            "--target-table '#{@dump_target.table_name}' does not exist in the schema (#{@schema.dir})."
     end
 
     private def validate_rails_managed_target!(configs)
