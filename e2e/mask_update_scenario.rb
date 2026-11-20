@@ -268,7 +268,8 @@ puts plan.summary.inspect
 
 check("summary reports the missing primary key", plan.summary.missing_primary_key_values == [999])
 check("summary counts existing rows", plan.summary.target_count == 3)
-check("missing key absent from the script", !plan.script.include?("999"))
+# a random api_token can contain "999", so look for the key in a WHERE
+check("missing key absent from the script", plan.script !~ /(?:= |: )999\b/)
 check("no header or transaction control", plan.script !~ /session_replication_role|FOREIGN_KEY_CHECKS|\bBEGIN\b|\bCOMMIT\b/i)
 
 apply(DBS[:apply], plan.script)
