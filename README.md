@@ -116,7 +116,7 @@ exwiw mask-update \
 - exwiw only reads. The output has no header and no transaction control; review it and apply it yourself. Whether the declared masks are safe values for the database you apply it to is not checked: a mask written for a development copy is applied as written.
 - Every masked value is computed when the statements are generated, by the same SELECT `export` runs, and written as a literal: one UPDATE per row. Apply them soon after generating; a row changed in between is overwritten with a value computed from its old data.
 - Applying the same statements twice leaves the same values. Generating them again after masking reads the masked values, so a mask that reads the column (`{column}`), `map` or `replace_with_fake_data` can give different values the second time, and a random `raw_sql` always does.
-- A column whose name contains `password`, `digest`, `salt`, `secret`, `token`, `credential`, `encrypted`, `passcode`, `api_key` or `access_key` may only be masked to NULL (`"raw_sql": "NULL"`) or to a random expression as its `raw_sql` (the table below), because any other value is guessable: a constant, one derived from the primary key, or a fake or `map` value. Use a random expression for a column that cannot be NULL (NOT NULL or UNIQUE). The value is drawn when the statements are generated and written into them, so treat the output as a secret. MongoDB can neither say NULL nor draw a random value, so every such path needs an allowance. Set `"allow_guessable_credential": true` on a column (a MongoDB field, an embedded collection's included) to accept any other mask; the summary lists those columns. It is an error on a column that does not need it, and only `mask-update` reads it.
+- A column whose name contains `password`, `digest`, `salt`, `secret`, `token`, `credential`, `encrypted`, `passcode`, `api_key` or `access_key` may only be masked to NULL (`"raw_sql": "NULL"`) or to a random expression as its `raw_sql` (the table below), because any other value is guessable: a constant, one derived from the primary key, or a fake or `map` value. Use a random expression for a column that cannot be NULL (NOT NULL or UNIQUE). The value is drawn when the statements are generated and written into them, so treat the output as a secret. MongoDB can neither say NULL nor draw a random value, so every such path needs an allowance. Set `"allow_guessable_credential": true` on a column (a MongoDB field, an embedded collection's included) to accept any other mask; the summary lists those columns. It is an error on a column that does not need it. `mask-update` enforces this; [`schema:check`](#static-checks-check) reports the same rules from the config alone.
 - The literals assume MySQL is applied over a `utf8mb4` connection without `NO_BACKSLASH_ESCAPES`, and PostgreSQL with `standard_conforming_strings` on.
 - It is an error when the table is not declared or is `ignore: true`, has no primary key or a composite one, declares no mask, or masks its primary key.
 
@@ -201,7 +201,8 @@ DATABASE_PASSWORD=... exwiw \
 - Relative paths are resolved from the config file's directory, not the current directory.
 - Unknown keys are rejected. Keys that only apply to `export` are ignored by `explain`, `mask-update` and `schema`, so all subcommands can share one file (`ids_field` is the exception: `mask-update` picks rows by primary key and rejects it).
 - MongoDB-only keys (`explain_verbosity`, `mongodb_query_timeout_ms`, `parallel_workers`) are described in [MongoDB support](docs/mongodb.md).
-- `profiles` declares schema profiles; see [Profile overlays](#profile-overlays).
+- `profiles` declares schema profiles; see [Profile overlays](#profile-overlays). `base` is reserved for the base config.
+- `check` selects the static checks `schema check` runs; see [Static checks](#static-checks-check). Only `schema check` reads it.
 
 ### Output format
 
@@ -268,7 +269,7 @@ Entries in `columns` and `belongs_tos` accept `comment` (a note exwiw never read
 
 ### Hand-edited keys survive regeneration
 
-Regenerating the config (see [Generating the schema config](#generating-the-schema-config)) keeps what you wrote by hand. A column already in the config is kept as it is, `comment` and `ignore` on a table or `belongs_to` are kept, and so are the keys the generators never write (`filter`, `bulk_insert_chunk_size`, `scope_column`, `id_space`, `scope_exempt`, `reverse_scope`, `batch_scope`).
+Regenerating the config (see [Generating the schema config](#generating-the-schema-config)) keeps what you wrote by hand. A column already in the config is kept as it is (with its `allow_unmasked` and `allow_guessable_credential`), `comment` and `ignore` on a table or `belongs_to` are kept, and so are the keys the generators never write (`filter`, `bulk_insert_chunk_size`, `scope_column`, `id_space`, `scope_exempt`, `reverse_scope`, `batch_scope`).
 
 ### Profile overlays
 
@@ -298,7 +299,7 @@ exwiw schema show --profile=dev --table=users   # prints the merged config; need
 - Only the names in `profiles` are recognized: without them, `users.dev.json` is an ordinary config file. Profile names use lowercase letters, digits, `_` and `-`. A profile applies only when `--profile` names it (export, explain, `mask-update` and `schema show`), one per run; naming an undeclared profile is an error.
 - An overlay must have the `name` of a config in the same directory (with multiple databases, in that database's subdirectory), and each config can have one overlay per profile.
 - A key in the overlay replaces the base value; a nested object such as `batch_scope` is replaced as a whole. `columns` (`fields` for MongoDB) are matched by `name`, and `belongs_tos` by `table_name`, `foreign_key`, `foreign_type` and `type_value`; the matched entry is merged key by key. An overlay can only change entries the base has, not add new ones.
-- Setting one of `replace_with`, `raw_sql`, `map` and `replace_with_fake_data` on a column removes the others, so the overlay's mask is the one that applies.
+- Setting one of `replace_with`, `raw_sql`, `map`, `replace_with_fake_data` and `allow_unmasked` on a column removes the others, so the overlay's mask is the one that applies, and `"allow_unmasked": true` exports the column unmasked for that profile. To remove `allow_unmasked` in an overlay, set it to `null`. `allow_unmasked` and `allow_guessable_credential` accept only `true`: `false` is rejected, as it would count as setting the flag and remove the base's mask.
 - `null` removes an optional key. `name`, required keys and lists cannot be set to `null`.
 - The merged config is loaded and validated like any config; a profile that cannot be merged or produces an invalid config fails every command that reads it.
 - The schema generators, `tidy` and `check` never read or write overlays as base configs. `tidy` removes overlay entries for tables, columns and `belongs_tos` that are gone from the base (and the overlay file when its table is gone). `check` reports them as `overlay_stale` (see [Checking the config against the schema](#checking-the-config-against-the-schema)), and fails when an overlay does not merge.
@@ -495,7 +496,7 @@ SELECT activities.* FROM activities
 
 ## Masking
 
-Each column can be masked with one of the following keys.
+Each column can be masked with one of the following keys. A column whose name looks sensitive but that is deliberately exported as it is can say so with `"allow_unmasked": true` (see [Static checks](#static-checks-check)).
 
 ### `replace_with`
 
@@ -621,7 +622,42 @@ bundle exec rake exwiw:schema:check
 - `stale_*`: removed tables and columns that the config still exports, which would make the export fail. Used by `--fail-on=stale` (see [below](#non-rails-applications-exwiw-schema----from-db)).
 - `overlay_stale`: only when `profiles` are declared. Entries of [profile overlays](#profile-overlays) that reference what the regenerated base no longer has, such as `dev:users.columns.legacy_flag`. These are stale too: the overlay would no longer merge. An overlay that does not merge into the committed config makes the check fail with an error instead.
 
+- `integrity`, `credentials`, `masks`: findings of the [static checks](#static-checks-check), one key per enabled check. Regenerating does not fix them.
+
 With multiple databases each entry starts with the database name (`primary/users.email`). Set `EXWIW_SCHEMA_CHECK_OUTPUT=<path>` to also write the JSON to a file.
+
+#### Static checks (`check`)
+
+`schema:check` also judges the committed config itself, with no database rows: what would make `mask-update` (and `mask_with_exwiw!`) fail, credentials masked to a guessable value, and columns that look sensitive but are not masked. `mask-update` enforces the same rules when it runs. Each check is enabled in the config file:
+
+```yaml
+# exwiw.yml
+profiles: [dev]
+check:
+  integrity: {}                   # on by default; `false` turns it off
+  credentials: true               # off by default
+  masks:                          # off by default
+    patterns: ['(^|_)kana(_|$)']  # added to the built-in patterns
+    profiles: [base, dev]         # which configs to judge
+```
+
+- Each check takes `true` (the same as `{}`), a mapping of options, or `false`. Without `check`, only `integrity` runs.
+- `profiles` names the configs to judge: `base` is the base config with no overlay, the others are declared profiles. By default a check judges the base config and every declared profile. A finding shows the profiles it occurs in: `users.api_token [base, dev]: ...`.
+- Tables that `mask-update` refuses are skipped: `ignore: true`, Rails-managed and composite primary key tables. A MongoDB embedded collection is judged through its parent, under the field's path (`users.profile.addresses.zip_code`). Ignored columns are not judged.
+- The adapter decides which random expressions count as safe. The rake task takes it from the Rails database configuration named like each database directory (the default connection's for a single database); `check_mongoid` uses MongoDB, and `exwiw schema check` its `--adapter`. An adapter that cannot be found fails the check.
+- An invalid `check` section fails the check (`exwiw schema check` exits with the "could not run" status).
+
+The checks:
+
+- `integrity`: what is inconsistent whatever the data. A table that declares a mask must not mask its primary key and must select it. `allow_guessable_credential` must guard a credential-looking column masked to a guessable value, and `allow_unmasked` a column that is not masked, is not the primary key or a `belongs_to` foreign key, and matches a mask pattern. (A table with no mask at all is not reported: it only fails when someone masks it.)
+- `credentials`: a column whose name contains `password`, `digest`, `salt`, `secret`, `token`, `credential`, `encrypted`, `passcode`, `api_key` or `access_key`, masked to anything but NULL or the adapter's random expression (see [`exwiw mask-update`](#exwiw-mask-update)), unless it sets `allow_guessable_credential: true`. A MongoDB mask is never NULL or random.
+- `masks`: a column (MongoDB: the last segment of a field path) whose name matches a mask pattern but that declares no mask and no `"allow_unmasked": true`. The primary key and `belongs_to` foreign keys are exempt, as exwiw never masks them. The built-in patterns are case-insensitive and cannot be removed; `patterns` adds regular expressions (case-insensitive) to them:
+  - the credential names above, and `otp`
+  - `email`, `e_mail`; `phone`, `mobile` (as a whole name, or `mobile_number` and the like), `tel`, `fax`; `address`; `zip`, `postal`
+  - `birth`; `first_name`, `last_name`, `middle_name`, `full_name`, `given_name`, `family_name` (also without `_`)
+  - `ssn`, `cvv`, `cvc`; `card_number`
+
+`allow_unmasked: true` is a decision to export real data, so leave a `comment` saying why.
 
 ### Multiple databases
 
@@ -657,8 +693,8 @@ exwiw schema tidy     --from-db -a postgresql -h db.example.com -p 5432 -u app -
 
 - MySQL and PostgreSQL only.
 - `DATABASE_PASSWORD` may be empty, for CI databases without a password.
-- Safe mode and the `check` report work as above. `check` exits 1 when the config needs attention, and with another status when it could not run.
-- `check --fail-on=stale` fails only on `stale_*`, so it can run before an export without blocking on newly added columns.
+- Safe mode and the `check` report work as above, including the [static checks](#static-checks-check), which judge the config with the `--adapter`'s rules. `check` exits 1 when the config needs attention, and with another status when it could not run.
+- `check --fail-on=stale` fails only on `stale_*`, so it can run before an export without blocking on newly added columns or static check findings.
 - One run covers one database, and the files are written directly into the schema directory.
 
 Foreign keys in the database become `belongs_tos`. A table without a primary key is generated with `ignore: true` and a comment; once you add a `primary_key` by hand, it is kept.

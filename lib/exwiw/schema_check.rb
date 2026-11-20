@@ -7,7 +7,8 @@ require "tmpdir"
 
 module Exwiw
   # Reports how the committed schema config differs from what the application
-  # would generate now, plus the columns still waiting for a masking decision.
+  # would generate now, plus the columns still waiting for a masking decision
+  # and what the static checks (CheckConfig) find in the committed config.
   # Regenerating into a copy rather than over the config directory lets it run
   # on a working tree it must not modify (CI).
   #
