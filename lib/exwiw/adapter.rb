@@ -32,6 +32,12 @@ module Exwiw
       ADAPTER_ALIASES.fetch(key, key)
     end
 
+    # A value that has no SQL literal form (see Base#non_string_literal).
+    class UnsupportedValueError < ArgumentError; end
+
+    # What a number's text must look like to be written into SQL as it is.
+    NUMERIC_LITERAL = /\A-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\z/
+
     class Base
       # Gives every adapter #qualified_name & co. so shared helpers below
       # (#null_preserving) can use them; the quote-char/reserved-word hooks
@@ -40,6 +46,22 @@ module Exwiw
       include IdentifierQuoting
 
       attr_reader :connection_config
+
+      # The SQL text of a value that is neither nil nor a String (those are #escape_value's own cases): an
+      # Integer, a finite Float or another number whose text is a plain numeric literal, or true / false.
+      # Writing anything else as it is would put its `to_s` into the SQL, e.g. `NaN`, `1/3` or `[1, 2]`.
+      #
+      # @param value [Object] the value to write
+      # @return [String]
+      # @raise [Exwiw::Adapter::UnsupportedValueError] when the value has no SQL literal form
+      private def non_string_literal(value)
+        text = value.to_s
+        return text if value == true || value == false || (value.is_a?(Numeric) && text.match?(NUMERIC_LITERAL))
+
+        raise UnsupportedValueError,
+              "cannot write #{value.inspect} (#{value.class}) as an SQL literal; " \
+              "only a String, a number, true, false or nil can be written"
+      end
 
       def initialize(connection_config, logger)
         @connection_config = connection_config
@@ -56,9 +78,39 @@ module Exwiw
       # @params [Exwiw::TableConfig] table
       # @params [Exwiw::DumpTarget] dump_target
       # @params [Hash{String => Exwiw::TableConfig}] table_by_name
+      # @params [Boolean] self_ancestors false selects only the rows the target names, without the ancestors a
+      #   self-referencing table keeps (SQL adapters; the mongodb adapter never adds them but then does not warn)
       # @return [Object] adapter-specific query object (e.g. Exwiw::QueryAst::Select for SQL)
-      def build_query(table, dump_target, table_by_name)
+      def build_query(table, dump_target, table_by_name, self_ancestors: true)
         raise NotImplementedError
+      end
+
+      # Checks that the table (collection) can be masked as declared, before any row is read. Exwiw::MaskUpdateRunner
+      # calls this after validating the table and the primary key values. An implementation leaves `ignore: true`
+      # members alone, raises for a table that declares no mask or masks its primary key, and passes what it masks to
+      # Exwiw::MaskUpdateRunner.check_credential_columns!.
+      #
+      # @param _table [Exwiw::TableConfig, Exwiw::MongodbCollectionConfig] the table (collection) to mask
+      # @param _table_by_name [Hash{String => Object}] every declared table by name, as for #build_query
+      # @param allow_constant_columns [Array<String>] "table.column"s whose credential-looking name the caller accepts masking to non-NULL
+      # @return [Exwiw::MaskUpdateRunner::Checked]
+      # @raise [Exwiw::MaskUpdateRunner::Error] when the table cannot be masked as declared
+      def check_mask_update(_table, _table_by_name, allow_constant_columns: [])
+        raise NotImplementedError, "#{self.class.name} does not implement #check_mask_update"
+      end
+
+      # Writes the statements that mask the rows of `results` in place, with no header or transaction control: the
+      # counterpart of #write_inserts for Exwiw::MaskUpdateRunner, which reads `results` with #build_query (called
+      # first) and #execute. Never writes to the database.
+      #
+      # @param _io [#puts] where the statements are written
+      # @param _results [Enumerable] the rows (documents) named by `_primary_key_values`, masked by the RowTransformer where one applies
+      # @param _table [Exwiw::TableConfig, Exwiw::MongodbCollectionConfig] the table (collection) to mask
+      # @param _primary_key_values [Array<Integer, String>] the given primary keys, checked and unique
+      # @return [Array(Integer, Integer, Array)] statements written, rows found, given keys with no row
+      # @raise [Exwiw::MaskUpdateRunner::Error] when a row cannot be masked as declared
+      def write_mask_updates(_io, _results, _table, _primary_key_values)
+        raise NotImplementedError, "#{self.class.name} does not implement #write_mask_updates"
       end
 
       # File extension used for dump output (e.g. 'sql' for SQL, 'jsonl' for MongoDB).

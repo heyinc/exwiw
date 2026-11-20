@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A value with no SQL literal form is refused instead of being written as its `to_s`.** `INSERT`s (and the new `UPDATE`s) put a `map` or `replace_with_fake_data` result that was not a String or `nil` into the SQL as it was, so `NaN`, `Infinity`, a `Rational`, an Array or a Hash gave a broken or misleading statement. Strings, `nil`, numbers (finite Floats included) and `true`/`false` are written as before; any other value raises `Exwiw::Adapter::UnsupportedValueError`. COPY output is unchanged.
+
 ## [1.2.1] - 2026-11-19
 
 ### Fixed

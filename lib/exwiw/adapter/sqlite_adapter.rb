@@ -5,6 +5,13 @@ module Exwiw
     class SqliteAdapter < Base
       include IdentifierQuoting::Sqlite
       include SqlBulkInsert
+      include SqlMaskUpdate
+
+      # Whole-expression forms of a random string accepted for a credential-looking column.
+      RANDOM_SECRET_PATTERNS = [
+        /\Ahex\s*\(\s*randomblob\s*\(\s*(?<bytes>[1-9]\d*)\s*\)\s*\)\z/i,
+        /\Alower\s*\(\s*hex\s*\(\s*randomblob\s*\(\s*(?<bytes>[1-9]\d*)\s*\)\s*\)\s*\)\z/i,
+      ].freeze
 
       # A lazy, streaming stand-in for the materialized rows #execute used to
       # return (`connection.execute(sql)`). It walks the result one row at a time
@@ -57,8 +64,8 @@ module Exwiw
         end
       end
 
-      def build_query(table, dump_target, table_by_name)
-        Exwiw::QueryAstBuilder.run(table.name, table_by_name, dump_target, @logger)
+      def build_query(table, dump_target, table_by_name, self_ancestors: true)
+        Exwiw::QueryAstBuilder.run(table.name, table_by_name, dump_target, @logger, self_ancestors: self_ancestors)
       end
 
       def execute(query_ast)
@@ -259,7 +266,7 @@ module Exwiw
           qv = escape_single_quote(value)
           "'#{qv}'"
         else
-          value
+          non_string_literal(value)
         end
       end
 

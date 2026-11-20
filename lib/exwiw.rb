@@ -27,6 +27,7 @@ require_relative "exwiw/ddl_postprocessor"
 require_relative "exwiw/adapter/identifier_quoting"
 require_relative "exwiw/adapter"
 require_relative "exwiw/adapter/sql_bulk_insert"
+require_relative "exwiw/adapter/sql_mask_update"
 require_relative "exwiw/adapter/sqlite_adapter"
 require_relative "exwiw/adapter/mysql_client"
 require_relative "exwiw/adapter/mysql_adapter"
@@ -42,6 +43,7 @@ require_relative "exwiw/row_transformer"
 require_relative "exwiw/batched_extraction"
 require_relative "exwiw/after_insert_hook"
 require_relative "exwiw/runner"
+require_relative "exwiw/mask_update_runner"
 require_relative "exwiw/explain_runner"
 require_relative "exwiw/schema_generator"
 require_relative "exwiw/db_introspector"
@@ -74,10 +76,26 @@ module Exwiw
   # groups of tables keyed by unrelated kinds of id can be scoped in one run. An
   # Array is taken as the values of the `default` space. Single-target mode and
   # the mongodb adapter use the `default` space only.
+  #
+  # `mode` is :primary_key or :scope_column.
+  #
+  # - :primary_key starts from `table_name` (required): `ids` are its primary keys, and the
+  #   tables related to it are followed unless `recursive` is false (only `table_name`'s rows).
+  # - :scope_column filters every table by its own `scope_column`, and `ids` are values of
+  #   those columns ([scope-column mode]). `table_name` has no meaning here, and `recursive`
+  #   must not be given.
+  #
+  # With `mode` nil the target decides, as before: scope-column mode when `table_name` declares
+  # a `scope_column`, when there is no `table_name` but `ids` are given, or when the deprecated
+  # global `scope_column` is set; the primary key otherwise.
+  #
+  # `recursive` is nil (not given, which follows related tables) or a Boolean; see #recursive?.
   DEFAULT_ID_SPACE = "default"
   ID_SPACE_NAME_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
-  DumpTarget = Struct.new(:table_name, :ids, :ids_field, :scope_column, keyword_init: true) do
+  MODES = %i[primary_key scope_column].freeze
+
+  DumpTarget = Struct.new(:table_name, :ids, :ids_field, :scope_column, :recursive, :mode, keyword_init: true) do
     def self.normalize_ids(ids)
       case ids
       when nil then {}
@@ -89,6 +107,15 @@ module Exwiw
     def initialize(**kwargs)
       super
       self.ids = ids
+      self.mode = mode&.to_sym
+      return if mode.nil? || MODES.include?(mode)
+
+      raise ArgumentError, "mode must be one of #{MODES.join(', ')}, got #{mode.inspect}"
+    end
+
+    # @return [Boolean] whether the tables related to the target are followed (unless `recursive` is false)
+    def recursive?
+      recursive != false
     end
 
     def ids=(value)

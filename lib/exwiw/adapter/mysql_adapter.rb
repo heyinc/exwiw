@@ -7,6 +7,13 @@ module Exwiw
     class MysqlAdapter < Base
       include IdentifierQuoting::Mysql
       include SqlBulkInsert
+      include SqlMaskUpdate
+
+      # Whole-expression forms of a cryptographically random string accepted for a credential-looking column.
+      RANDOM_SECRET_PATTERNS = [
+        /\AHEX\s*\(\s*RANDOM_BYTES\s*\(\s*(?<bytes>[1-9]\d*)\s*\)\s*\)\z/i,
+        /\ALOWER\s*\(\s*HEX\s*\(\s*RANDOM_BYTES\s*\(\s*(?<bytes>[1-9]\d*)\s*\)\s*\)\s*\)\z/i,
+      ].freeze
 
       # A lazy, streaming stand-in for the materialized rows #execute used to
       # return (`connection.query(sql).rows`). It pulls rows off the wire one at
@@ -54,8 +61,8 @@ module Exwiw
         end
       end
 
-      def build_query(table, dump_target, table_by_name)
-        Exwiw::QueryAstBuilder.run(table.name, table_by_name, dump_target, @logger)
+      def build_query(table, dump_target, table_by_name, self_ancestors: true)
+        Exwiw::QueryAstBuilder.run(table.name, table_by_name, dump_target, @logger, self_ancestors: self_ancestors)
       end
 
       def execute(query_ast)
@@ -399,7 +406,7 @@ module Exwiw
           qv = escape_single_quote(qv)
           "'#{qv}'"
         else
-          value
+          non_string_literal(value)
         end
       end
 

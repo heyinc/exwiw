@@ -128,7 +128,7 @@ module Exwiw
               "specify a top-level collection instead."
       end
 
-      def build_query(config, dump_target, config_by_name)
+      def build_query(config, dump_target, config_by_name, self_ancestors: true)
         if config.embedded?
           raise NotImplementedError,
                 "MongodbAdapter#build_query was called with embedded config '#{config.name}'. " \
@@ -171,7 +171,7 @@ module Exwiw
           else
             related_collection_filter(config, config_by_name, dump_target)
           end
-        warn_missing_self_ancestors(config) unless filter.empty?
+        warn_missing_self_ancestors(config) if self_ancestors && !filter.empty?
 
         Exwiw::MongoQuery::Find.new(
           collection: config.name,
@@ -227,6 +227,65 @@ module Exwiw
           apply_mask_plan!(doc, plan)
           Exwiw::ExtJson.encode(doc)
         end.join("\n")
+      end
+
+      # Checks that `config` can be masked as declared, before any document is read.
+      #
+      # @param config [Exwiw::MongodbCollectionConfig] collection to mask
+      # @param config_by_name [Hash{String => Exwiw::MongodbCollectionConfig}] every declared collection by name
+      # @param allow_constant_columns [Array<String>] credential-looking "collection.path"s accepted as non-NULL masks
+      # @return [Exwiw::MaskUpdateRunner::Checked]
+      # @raise [Exwiw::MaskUpdateRunner::Error] when the collection declares no mask or masks its primary key, or for an unaccepted credential-looking path
+      def check_mask_update(config, config_by_name, allow_constant_columns: [])
+        @embedded_children_by_parent = index_embedded_children(config_by_name)
+
+        names = mask_target_names(mask_plan(config))
+        if names.empty?
+          raise MaskUpdateRunner::Error, "collection '#{config.name}' declares no mask (replace_with / replace_with_fake_data) on any field"
+        end
+        if names.include?(config.primary_key)
+          raise MaskUpdateRunner::Error, "collection '#{config.name}' masks '#{config.primary_key}', which is immutable in MongoDB"
+        end
+        # A MongoDB mask can neither say NULL nor draw random bytes, so a credential-looking path always needs an allowance.
+        safe_paths = names.map { |n| [n, false] }
+        allowed = MaskUpdateRunner.check_credential_columns!(config.name, safe_paths, allow_constant_columns)
+
+        MaskUpdateRunner::Checked.new(columns: names, allowed_constant_columns: allowed)
+      end
+
+      # Writes one line, `["<collection>", <operations>]` in canonical Extended JSON, whose operations are mongosh's
+      # `bulkWrite` operations (a Ruby driver's `bulk_write` wants `update_one:` with Symbol keys instead): an
+      # `updateOne` that `$set`s every masked leaf of each document in `results`.
+      # Documents are masked with the same plan #to_bulk_insert uses while the assignments are recorded. Counterpart
+      # of #write_inserts; call #build_query first. Keys the plan drops are never assigned, so they are neither set
+      # nor unset.
+      #
+      # @param io [#puts] where the line is written
+      # @param results [Enumerable<Hash>] the documents named by `primary_key_values`, as #execute returns them
+      # @param config [Exwiw::MongodbCollectionConfig] collection to mask
+      # @param primary_key_values [Array<String>] the given primary keys (at most MaskUpdateRunner::CHUNK_SIZE)
+      # @return [Array(Integer, Integer, Array<String>)] lines written, documents found, given keys with no document
+      def write_mask_updates(io, results, config, primary_key_values)
+        plan = mask_plan(config)
+        found_ids = Set.new
+        operations = results.filter_map do |doc|
+          found_ids << doc[config.primary_key]
+          sets = {}
+          apply_mask_plan!(doc, plan, sets)
+          next if sets.empty?
+
+          { "updateOne" => { "filter" => { config.primary_key => doc[config.primary_key] }, "update" => { "$set" => sets } } }
+        end
+        io.puts JSON.generate([config.name, operations].as_extended_json(mode: :canonical)) unless operations.empty?
+
+        ids = coerce_ids(primary_key_values)
+        missing = primary_key_values.zip(ids).reject { |_, id| found_ids.include?(id) }.map(&:first)
+        [operations.empty? ? 0 : 1, found_ids.size, missing]
+      end
+
+      private def mask_target_names(plan, prefix = nil)
+        own = (plan.masked_fields.map(&:first) + plan.faked_fields.map(&:first)).map { |n| [prefix, n].compact.join(".") }
+        own + plan.embedded.flat_map { |e| mask_target_names(e.plan, [prefix, *e.prefix, e.last].compact.join(".")) }
       end
 
       # Default explain verbosity. `queryPlanner` asks the server to PLAN the
@@ -804,7 +863,8 @@ module Exwiw
       # Dropping comes first so an ignored field is invisible to the masking that
       # follows, as on a top-level collection — normally not fetched, and dropped
       # here when the projection pulled it in as a propagation key.
-      private def apply_mask_plan!(doc, plan)
+      # With `sets` (a Hash), also records each masked leaf as dotted path => new value, for #write_mask_updates.
+      private def apply_mask_plan!(doc, plan, sets = nil, path = nil)
         plan.dropped_fields.each { |name| doc.delete(name) }
         plan.masked_fields.each do |name, mask|
           # Preserve a NULL / absent source value instead of clobbering it into a
@@ -813,6 +873,7 @@ module Exwiw
           next if doc[name].nil?
 
           doc[name] = mask.is_a?(Array) ? render_template(mask, doc) : mask
+          sets[[path, name].compact.join(".")] = doc[name] if sets
         end
         plan.faked_fields.each do |name, deriver, seed_field|
           # NULL-preserving like replace_with (an absent key stays absent). The
@@ -821,14 +882,19 @@ module Exwiw
           next if doc[name].nil?
 
           doc[name] = deriver.call(doc[seed_field])
+          sets[[path, name].compact.join(".")] = doc[name] if sets
         end
         plan.embedded.each do |child|
           container = child.prefix.reduce(doc) { |acc, seg| acc.is_a?(Hash) ? acc[seg] : nil }
           next unless container.is_a?(Hash)
 
+          child_path = [path, *child.prefix, child.last]
           case (value = container[child.last])
-          when Array then value.each { |sub| apply_mask_plan!(sub, child.plan) if sub.is_a?(Hash) }
-          when Hash  then apply_mask_plan!(value, child.plan)
+          when Array
+            value.each_with_index do |sub, i|
+              apply_mask_plan!(sub, child.plan, sets, [*child_path, i].compact.join(".")) if sub.is_a?(Hash)
+            end
+          when Hash then apply_mask_plan!(value, child.plan, sets, child_path.compact.join("."))
           end
         end
       end

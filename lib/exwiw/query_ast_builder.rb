@@ -2,8 +2,8 @@
 
 module Exwiw
   class QueryAstBuilder
-    def self.run(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_declared_reverse: true, forward_path: [], reverse_path: [], deep_chain_warned: nil, batch_ids: nil)
-      new(table_name, table_by_name, dump_target, logger, allow_reverse: allow_reverse, allow_declared_reverse: allow_declared_reverse, forward_path: forward_path, reverse_path: reverse_path, deep_chain_warned: deep_chain_warned, batch_ids: batch_ids).run
+    def self.run(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_declared_reverse: true, forward_path: [], reverse_path: [], deep_chain_warned: nil, batch_ids: nil, self_ancestors: true)
+      new(table_name, table_by_name, dump_target, logger, allow_reverse: allow_reverse, allow_declared_reverse: allow_declared_reverse, forward_path: forward_path, reverse_path: reverse_path, deep_chain_warned: deep_chain_warned, batch_ids: batch_ids, self_ancestors: self_ancestors).run
     end
 
     # The self-referencing foreign keys whose ancestors a narrowed `table` also
@@ -32,8 +32,11 @@ module Exwiw
     # named but `--ids` are given and some table declares a `scope_column`; or when
     # the deprecated `--scope-column` flag is set (a global column with no target).
     # In each case every table is filtered by a shared column instead of being
-    # anchored on one named target's primary key.
+    # anchored on one named target's primary key. An explicit `mode` overrides all of
+    # this: :primary_key never, :scope_column always.
     def self.scope_mode?(table_by_name, dump_target)
+      return false if dump_target.mode == :primary_key
+      return true if dump_target.mode == :scope_column
       return true unless dump_target.scope_column.nil?
       if dump_target.table_name.nil?
         return ids_given?(dump_target) && scope_column_declared?(table_by_name)
@@ -55,6 +58,42 @@ module Exwiw
       end
     end
 
+    # An explicit `--mode` must match the rest of the target: `primary-key` names the table whose
+    # keys `--ids` are and cannot meet the global `--scope-column`, and `scope-column` needs a column
+    # to filter by.
+    def self.validate_mode!(table_by_name, dump_target)
+      case dump_target.mode
+      when :primary_key
+        unless dump_target.scope_column.nil?
+          raise ArgumentError, "--mode=primary-key cannot be combined with --scope-column."
+        end
+        if dump_target.table_name.nil? && ids_given?(dump_target)
+          raise ArgumentError, "--mode=primary-key needs --target-table: the ids are the primary keys of that table."
+        end
+      when :scope_column
+        return unless dump_target.scope_column.nil? && !scope_column_declared?(table_by_name)
+
+        raise ArgumentError,
+              "--mode=scope-column was given, but no table in the schema declares `scope_column` " \
+              "(tables marked `ignore: true` are not counted)."
+      end
+    end
+
+    # `--recursive` / `--no-recursive` belong to primary-key mode, where the target table is the
+    # start: scope-column mode covers every table, and `--no-recursive` needs the target table.
+    def self.validate_recursive_allowed!(table_by_name, dump_target)
+      return if dump_target.recursive.nil?
+
+      if scope_mode?(table_by_name, dump_target)
+        raise ArgumentError,
+              "--recursive/--no-recursive only apply to --mode=primary-key; scope-column mode " \
+              "(chosen by --mode, or by the schema or --ids when --mode is omitted) always covers every table."
+      end
+      return unless dump_target.table_name.nil?
+
+      raise ArgumentError, "--recursive/--no-recursive need --target-table, the table to start from."
+    end
+
     # `--ids` without `--target-table` (and without the deprecated flag) selects
     # scope-column mode, which needs a declared `scope_column` to start from.
     def self.validate_ids_anchor!(table_by_name, dump_target)
@@ -74,6 +113,8 @@ module Exwiw
     # (both modes) — before any output is written. `tables` is the set of
     # dumpable configs (ignore:true tables are skipped — they are not extracted).
     def self.validate_scope!(tables, table_by_name, dump_target, logger)
+      validate_mode!(table_by_name, dump_target)
+      validate_recursive_allowed!(table_by_name, dump_target)
       validate_ids_anchor!(table_by_name, dump_target)
       validate_named_id_spaces_allowed!(tables, table_by_name, dump_target)
 
@@ -203,7 +244,7 @@ module Exwiw
 
     attr_reader :narrowed_by_automatic_reverse
 
-    def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_declared_reverse: true, forward_path: [], reverse_path: [], deep_chain_warned: nil, batch_ids: nil)
+    def initialize(table_name, table_by_name, dump_target, logger, allow_reverse: true, allow_declared_reverse: true, forward_path: [], reverse_path: [], deep_chain_warned: nil, batch_ids: nil, self_ancestors: true)
       @table_name = table_name
       @table_by_name = table_by_name
       @dump_target = dump_target
@@ -213,6 +254,8 @@ module Exwiw
       # BatchedExtraction. Deliberately not threaded into the recursive builds
       # below, which compile other tables' queries.
       @batch_ids = batch_ids
+      # false selects only the rows the scope names, without a self-referencing table's ancestors.
+      @self_ancestors = self_ancestors
       # @forward_path is the chain of tables currently being forward-resolved by
       # the "scope via an indirectly-scoped belongs_to parent" rescue
       # (build_belongs_to_scoped_clause). Each forward hop appends the table it is
@@ -334,7 +377,7 @@ module Exwiw
     # not held to the table's filter or scope, since valid foreign keys win. A
     # batched table is left alone: every batch would repeat the ancestors.
     private def with_self_ancestors(table, ast)
-      return ast unless @batch_ids.nil?
+      return ast unless @batch_ids.nil? && @self_ancestors
       return ast if ast.where_clauses.empty? && ast.join_clauses.empty?
 
       links = self.class.self_ancestor_links(table)

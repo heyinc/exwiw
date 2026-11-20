@@ -976,6 +976,58 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
     end
 
+    context 'with an explicit mode' do
+      it 'reads the ids as primary keys of a target that declares scope_column when mode is primary_key' do
+        target = Exwiw::DumpTarget.new(table_name: 'legacy_orders', ids: ['1'], mode: :primary_key)
+
+        expect(described_class.scope_mode?(table_by_name, target)).to eq(false)
+        ast = described_class.run('legacy_orders', table_by_name, target, logger)
+        expect(ast.where_clauses.map(&:to_h)).to eq([{ column_name: 'id', operator: :eq, value: ['1'] }])
+      end
+
+      it 'is scope-column mode when mode is scope_column, even if the target declares nothing' do
+        target = Exwiw::DumpTarget.new(table_name: 'orders', ids: ['t1'], mode: :scope_column)
+
+        expect(described_class.scope_mode?(table_by_name, target)).to eq(true)
+      end
+
+      it 'rejects mode primary_key with the global --scope-column or with ids and no target' do
+        with_flag = Exwiw::DumpTarget.new(table_name: 'orders', ids: ['1'], scope_column: 'tenant_id', mode: :primary_key)
+        no_target = Exwiw::DumpTarget.new(ids: ['1'], mode: :primary_key)
+
+        expect { described_class.validate_scope!(all_tables, table_by_name, with_flag, logger) }
+          .to raise_error(ArgumentError, /--mode=primary-key cannot be combined with --scope-column/)
+        expect { described_class.validate_scope!(all_tables, table_by_name, no_target, logger) }
+          .to raise_error(ArgumentError, /--mode=primary-key needs --target-table/)
+      end
+
+      it 'rejects mode scope_column when no table declares a scope_column' do
+        tables = { 'orders' => table_by_name.fetch('orders') }
+        tables.each_value { |t| t.scope_column = nil }
+        target = Exwiw::DumpTarget.new(table_name: 'orders', ids: ['t1'], mode: :scope_column)
+
+        expect { described_class.validate_scope!(tables.values, tables, target, logger) }
+          .to raise_error(ArgumentError, /--mode=scope-column was given, but no table in the schema declares `scope_column`/)
+      end
+
+      it 'accepts --recursive/--no-recursive in primary-key mode only' do
+        primary = Exwiw::DumpTarget.new(table_name: 'orders', ids: ['1'], recursive: false)
+        explicit_scope = Exwiw::DumpTarget.new(table_name: 'orders', ids: ['t1'], mode: :scope_column, recursive: false)
+        declared_scope = Exwiw::DumpTarget.new(table_name: 'legacy_orders', ids: ['t1'], recursive: true)
+
+        expect { described_class.validate_scope!(all_tables, table_by_name, primary, logger) }.not_to raise_error
+        [explicit_scope, declared_scope].each do |target|
+          expect { described_class.validate_scope!(all_tables, table_by_name, target, logger) }
+            .to raise_error(ArgumentError, /only apply to --mode=primary-key; scope-column mode/)
+        end
+      end
+
+      it 'rejects an unknown mode' do
+        expect { Exwiw::DumpTarget.new(table_name: 'orders', mode: :tenant) }
+          .to raise_error(ArgumentError, /mode must be one of primary_key, scope_column/)
+      end
+    end
+
     context 'scope-column mode triggered by --ids with no target named' do
       let(:dump_target) { Exwiw::DumpTarget.new(ids: ['t1']) }
 

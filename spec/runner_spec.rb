@@ -113,6 +113,26 @@ module Exwiw
       end
     end
 
+    describe 'with recursive: false' do
+      let(:schema_dir) { 'e2e/sqlite-schema' }
+
+      it 'writes the target table only' do
+        DumpTarget.new(table_name: 'shops', ids: ['1'], recursive: false).then do |target|
+          Runner.new(connection_config: connection_config, output_dir: output_dir, schema_dir: schema_dir, dump_target: target, logger: ::Logger.new(nil)).run
+        end
+
+        expect(Dir[File.join(output_dir, 'insert-*.sql')].map { |f| File.basename(f) }).to eq(%w[insert-000-schema.sql insert-001-shops.sql])
+      end
+
+      it 'needs a target table' do
+        target = DumpTarget.new(table_name: nil, ids: [], recursive: false)
+
+        expect do
+          Runner.new(connection_config: connection_config, output_dir: output_dir, schema_dir: schema_dir, dump_target: target, logger: ::Logger.new(nil)).run
+        end.to raise_error(ArgumentError, /--recursive\/--no-recursive need --target-table/)
+      end
+    end
+
     describe 'without bulk_insert_chunk_size' do
       let(:dump_target) { DumpTarget.new(table_name: 'shops', ids: ['1', '2', '3', '4', '5']) }
 

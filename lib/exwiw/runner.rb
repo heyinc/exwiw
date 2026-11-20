@@ -44,6 +44,7 @@ module Exwiw
       adapter.validate_as_dump_target!(target) if target
 
       dumpable_configs = configs.select { |c| adapter.dumpable?(c) }
+      dumpable_configs = dumpable_configs.select { |c| c.name == @dump_target.table_name } unless @dump_target.recursive?
       # Scope-column mode: abort if any extractable table cannot be scoped (no-op
       # otherwise). Done before extraction so nothing is dumped if it would leak.
       QueryAstBuilder.validate_scope!(dumpable_configs, table_by_name, @dump_target, @logger)
@@ -223,6 +224,7 @@ module Exwiw
     private def use_mongodb_parallel?(adapter, configs)
       return false unless adapter.is_a?(Adapter::MongodbAdapter)
       return false unless @parallel_workers && @parallel_workers > 1
+      return false unless @dump_target.recursive?
 
       if @dump_target.table_name.nil?
         @logger.warn("--parallel-workers ignored: MongoDB parallelism needs a --target-collection; running serially.")
