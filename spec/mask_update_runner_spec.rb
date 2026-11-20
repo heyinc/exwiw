@@ -541,7 +541,11 @@ module Exwiw
         expect(plan.summary).to have_attributes(
           target_count: 2, columns: %w[name email], missing_primary_key_values: ["a0ffffffffffffffffffffff"]
         )
-        expect(plan.script).to match(/\Adb\.getCollection\("users"\)\.bulkWrite\(\[\n  \{ updateOne: \{ filter: \{ "_id": ObjectId\("#{ids[0]}"\) \}/)
+        collection, operations = BSON::ExtJSON.parse_obj(JSON.parse(plan.script))
+        expect(collection).to eq("users")
+        expect(operations.first).to match(
+          "updateOne" => { "filter" => { "_id" => BSON::ObjectId.from_string(ids[0]) }, "update" => { "$set" => hash_including("name", "email") } }
+        )
       end
     end
 
@@ -577,13 +581,25 @@ module Exwiw
       end
     end
 
-    describe "MongoDB values a mongosh script cannot express" do
+    describe "MongoDB output" do
       let(:adapter) { Adapter.build(connection_config(:mongodb), logger) }
 
-      it "rejects them with a clear error instead of emitting a wrong literal" do
-        [Time.utc(2026, 1, 1), BSON::Decimal128.new("1.5"), BSON::Binary.new("x"), 1.0 / 0, { "a" => 1 }].each do |value|
-          expect { adapter.send(:js_literal, value) }.to raise_error(MaskUpdateRunner::Error, /cannot express/)
-        end
+      it "is one line of canonical Extended JSON per collection that keeps the BSON type of the key" do
+        collection = MongodbCollectionConfig.from_symbol_keys(
+          name: "mask_update_ejson_spec", primary_key: "_id", belongs_tos: [], fields: [{ name: "name", replace_with: "x" }],
+        )
+        coll = adapter.send(:db)["mask_update_ejson_spec"]
+        coll.drop
+        coll.insert_one({ "_id" => 7, "name" => "a" })
+
+        plan = build(adapter, [collection], ["7"], table_name: "mask_update_ejson_spec")
+
+        expect(plan.script.lines.size).to eq(1)
+        expect(JSON.parse(plan.script)).to eq(
+          ["mask_update_ejson_spec", [{ "updateOne" => { "filter" => { "_id" => { "$numberInt" => "7" } }, "update" => { "$set" => { "name" => "x" } } } }]]
+        )
+      ensure
+        coll&.drop
       end
     end
 

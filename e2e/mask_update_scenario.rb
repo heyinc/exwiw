@@ -208,9 +208,11 @@ end
 def apply(db_name, script)
   if ADAPTER == "mongodb"
     cfg = connection_config(db_name)
-    path = File.join(Dir.tmpdir, "mask_update_#{Process.pid}.js")
+    path = File.join(Dir.tmpdir, "mask_update_#{Process.pid}.jsonl")
     File.write(path, script)
-    ok = system("mongosh", "--quiet", "mongodb://#{cfg.host}:#{cfg.port}/#{db_name}", "--file", path)
+    # The same procedure the README gives: EJSON.parse each line, then bulkWrite its operations.
+    apply_js = File.join(__dir__, "mask_update_apply.js")
+    ok = system({ "MASK_UPDATE_FILE" => path }, "mongosh", "--quiet", "mongodb://#{cfg.host}:#{cfg.port}/#{db_name}", "--file", apply_js)
     raise "mongosh failed" unless ok
   else
     run_sql(db_name, script)

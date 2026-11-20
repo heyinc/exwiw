@@ -3,7 +3,7 @@
 require "stringio"
 
 module Exwiw
-  # Writes the statements (SQL UPDATEs, or a mongosh script for MongoDB) that mask chosen rows of
+  # Writes the statements (SQL UPDATEs, or lines of canonical Extended JSON for MongoDB) that mask chosen rows of
   # one table in place with the masks declared for export. Only reads the database.
   class MaskUpdateRunner
     class Error < ArgumentError; end

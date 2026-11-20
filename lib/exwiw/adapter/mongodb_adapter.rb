@@ -253,15 +253,17 @@ module Exwiw
         MaskUpdateRunner::Checked.new(columns: names, allowed_constant_columns: allowed)
       end
 
-      # Writes one `bulkWrite` that `$set`s every masked leaf of the documents in `results`, masking them with the
-      # same plan #to_bulk_insert uses and recording what it assigns. Counterpart of #write_inserts; call
-      # #build_query first. Keys the plan drops are never assigned, so they are neither set nor unset.
+      # Writes one line, `["<collection>", <operations>]` in canonical Extended JSON, whose operations are what
+      # `collection.bulk_write` takes: an `updateOne` that `$set`s every masked leaf of each document in `results`.
+      # Documents are masked with the same plan #to_bulk_insert uses while the assignments are recorded. Counterpart
+      # of #write_inserts; call #build_query first. Keys the plan drops are never assigned, so they are neither set
+      # nor unset.
       #
-      # @param io [#puts] where the mongosh script is written
+      # @param io [#puts] where the line is written
       # @param results [Enumerable<Hash>] the documents named by `primary_key_values`, as #execute returns them
       # @param config [Exwiw::MongodbCollectionConfig] collection to mask
       # @param primary_key_values [Array<String>] the given primary keys (at most MaskUpdateRunner::CHUNK_SIZE)
-      # @return [Array(Integer, Integer, Array<String>)] statements written, documents found, given keys with no document
+      # @return [Array(Integer, Integer, Array<String>)] lines written, documents found, given keys with no document
       def write_mask_updates(io, results, config, primary_key_values)
         plan = mask_plan(config)
         found_ids = Set.new
@@ -271,10 +273,9 @@ module Exwiw
           apply_mask_plan!(doc, plan, sets)
           next if sets.empty?
 
-          "  { updateOne: { filter: { #{js_literal(config.primary_key)}: #{js_literal(doc[config.primary_key])} }, " \
-            "update: { \"$set\": { #{sets.map { |path, value| "#{js_literal(path)}: #{js_literal(value)}" }.join(', ')} } } } }"
+          { "updateOne" => { "filter" => { config.primary_key => doc[config.primary_key] }, "update" => { "$set" => sets } } }
         end
-        io.puts "db.getCollection(#{js_literal(config.name)}).bulkWrite([\n#{operations.join(",\n")}\n]);" unless operations.empty?
+        io.puts JSON.generate([config.name, operations].as_extended_json(mode: :canonical)) unless operations.empty?
 
         ids = coerce_ids(primary_key_values)
         missing = primary_key_values.zip(ids).reject { |_, id| found_ids.include?(id) }.map(&:first)
@@ -284,21 +285,6 @@ module Exwiw
       private def mask_target_names(plan, prefix = nil)
         own = (plan.masked_fields.map(&:first) + plan.faked_fields.map(&:first)).map { |n| [prefix, n].compact.join(".") }
         own + plan.embedded.flat_map { |e| mask_target_names(e.plan, [prefix, *e.prefix, e.last].compact.join(".")) }
-      end
-
-      private def js_literal(value)
-        case value
-        when nil then "null"
-        when true, false then value.to_s
-        when Integer then value.between?(-2**31, 2**31 - 1) ? value.to_s : "NumberLong(\"#{value}\")"
-        when Float
-          raise MaskUpdateRunner::Error, "cannot express #{value} in a mongosh script" unless value.finite?
-
-          "Double(#{value})"
-        when String then JSON.generate(value)
-        when BSON::ObjectId then "ObjectId(\"#{value}\")"
-        else raise MaskUpdateRunner::Error, "cannot express a #{value.class} value in a mongosh script"
-        end
       end
 
       # Default explain verbosity. `queryPlanner` asks the server to PLAN the
