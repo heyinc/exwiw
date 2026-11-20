@@ -78,12 +78,19 @@ module Exwiw
   # Array is taken as the values of the `default` space. Single-target mode and
   # the mongodb adapter use the `default` space only.
   #
+  # `ids_by` says what `ids` are: :primary_key (the target table's primary keys; single-target
+  # mode even if the table declares a `scope_column`) or :scope_column ([scope-column mode]).
+  # nil leaves it to the schema, as before: scope-column mode when the target table declares a
+  # `scope_column`, and the primary key otherwise.
+  #
   # `recursive` (default true) extracts the tables related to `table_name` too; false
   # extracts only `table_name`'s own rows. false needs a `table_name` and no scope-column mode.
   DEFAULT_ID_SPACE = "default"
   ID_SPACE_NAME_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
-  DumpTarget = Struct.new(:table_name, :ids, :ids_field, :scope_column, :recursive, keyword_init: true) do
+  IDS_BY = %i[primary_key scope_column].freeze
+
+  DumpTarget = Struct.new(:table_name, :ids, :ids_field, :scope_column, :recursive, :ids_by, keyword_init: true) do
     def self.normalize_ids(ids)
       case ids
       when nil then {}
@@ -96,6 +103,10 @@ module Exwiw
       super
       self.ids = ids
       self.recursive = true if recursive.nil?
+      self.ids_by = ids_by&.to_sym
+      return if ids_by.nil? || IDS_BY.include?(ids_by)
+
+      raise ArgumentError, "ids_by must be one of #{IDS_BY.join(', ')}, got #{ids_by.inspect}"
     end
 
     def ids=(value)

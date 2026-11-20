@@ -976,6 +976,46 @@ RSpec.describe Exwiw::QueryAstBuilder do
       end
     end
 
+    context 'with an explicit ids_by' do
+      it 'reads the ids as primary keys of a target that declares scope_column when ids_by is primary_key' do
+        target = Exwiw::DumpTarget.new(table_name: 'legacy_orders', ids: ['1'], ids_by: :primary_key)
+
+        expect(described_class.scope_mode?(table_by_name, target)).to eq(false)
+        ast = described_class.run('legacy_orders', table_by_name, target, logger)
+        expect(ast.where_clauses.map(&:to_h)).to eq([{ column_name: 'id', operator: :eq, value: ['1'] }])
+      end
+
+      it 'is scope-column mode when ids_by is scope_column, even if the target declares nothing' do
+        target = Exwiw::DumpTarget.new(table_name: 'orders', ids: ['t1'], ids_by: :scope_column)
+
+        expect(described_class.scope_mode?(table_by_name, target)).to eq(true)
+      end
+
+      it 'rejects ids_by primary_key with the global --scope-column or with ids and no target' do
+        with_flag = Exwiw::DumpTarget.new(table_name: 'orders', ids: ['1'], scope_column: 'tenant_id', ids_by: :primary_key)
+        no_target = Exwiw::DumpTarget.new(ids: ['1'], ids_by: :primary_key)
+
+        expect { described_class.validate_scope!(all_tables, table_by_name, with_flag, logger) }
+          .to raise_error(ArgumentError, /--ids-by=primary-key cannot be combined with --scope-column/)
+        expect { described_class.validate_scope!(all_tables, table_by_name, no_target, logger) }
+          .to raise_error(ArgumentError, /--ids-by=primary-key needs --target-table/)
+      end
+
+      it 'rejects ids_by scope_column when no table declares a scope_column' do
+        tables = { 'orders' => table_by_name.fetch('orders') }
+        tables.each_value { |t| t.scope_column = nil }
+        target = Exwiw::DumpTarget.new(table_name: 'orders', ids: ['t1'], ids_by: :scope_column)
+
+        expect { described_class.validate_scope!(tables.values, tables, target, logger) }
+          .to raise_error(ArgumentError, /--ids-by=scope-column was given, but no table in the schema declares `scope_column`/)
+      end
+
+      it 'rejects an unknown ids_by' do
+        expect { Exwiw::DumpTarget.new(table_name: 'orders', ids_by: :tenant) }
+          .to raise_error(ArgumentError, /ids_by must be one of primary_key, scope_column/)
+      end
+    end
+
     context 'scope-column mode triggered by --ids with no target named' do
       let(:dump_target) { Exwiw::DumpTarget.new(ids: ['t1']) }
 

@@ -32,8 +32,11 @@ module Exwiw
     # named but `--ids` are given and some table declares a `scope_column`; or when
     # the deprecated `--scope-column` flag is set (a global column with no target).
     # In each case every table is filtered by a shared column instead of being
-    # anchored on one named target's primary key.
+    # anchored on one named target's primary key. An explicit `ids_by` overrides all of
+    # this: :primary_key never, :scope_column always.
     def self.scope_mode?(table_by_name, dump_target)
+      return false if dump_target.ids_by == :primary_key
+      return true if dump_target.ids_by == :scope_column
       return true unless dump_target.scope_column.nil?
       if dump_target.table_name.nil?
         return ids_given?(dump_target) && scope_column_declared?(table_by_name)
@@ -52,6 +55,27 @@ module Exwiw
     def self.scope_column_declared?(table_by_name)
       table_by_name.each_value.any? do |table|
         !table.ignore && table.respond_to?(:scope_column) && !table.scope_column.nil?
+      end
+    end
+
+    # An explicit `--ids-by` must match the rest of the target: `primary-key` names the table whose
+    # keys `--ids` are and cannot meet the global `--scope-column`, and `scope-column` needs a column
+    # to filter by.
+    def self.validate_ids_by!(table_by_name, dump_target)
+      case dump_target.ids_by
+      when :primary_key
+        unless dump_target.scope_column.nil?
+          raise ArgumentError, "--ids-by=primary-key cannot be combined with --scope-column."
+        end
+        if dump_target.table_name.nil? && ids_given?(dump_target)
+          raise ArgumentError, "--ids-by=primary-key needs --target-table: the ids are the primary keys of that table."
+        end
+      when :scope_column
+        return unless dump_target.scope_column.nil? && !scope_column_declared?(table_by_name)
+
+        raise ArgumentError,
+              "--ids-by=scope-column was given, but no table in the schema declares `scope_column` " \
+              "(tables marked `ignore: true` are not counted)."
       end
     end
 
@@ -90,6 +114,7 @@ module Exwiw
     # (both modes) — before any output is written. `tables` is the set of
     # dumpable configs (ignore:true tables are skipped — they are not extracted).
     def self.validate_scope!(tables, table_by_name, dump_target, logger)
+      validate_ids_by!(table_by_name, dump_target)
       validate_non_recursive_allowed!(table_by_name, dump_target)
       validate_ids_anchor!(table_by_name, dump_target)
       validate_named_id_spaces_allowed!(tables, table_by_name, dump_target)

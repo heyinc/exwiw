@@ -62,9 +62,6 @@ module Exwiw
 
       validate_table!(table)
       primary_key_values = normalize_primary_key_values(table, @dump_target.default_ids)
-      # the ids are primary keys here even if the table declares a scope_column
-      table = table.dup.tap { |t| t.scope_column = nil } if table.respond_to?(:scope_column=)
-      table_by_name = table_by_name.merge(table.name => table)
       checked = adapter.check_mask_update(table, table_by_name, allow_constant_columns: @allow_constant_columns)
 
       row_transformer = RowTransformer.build(table)
@@ -150,6 +147,11 @@ module Exwiw
     end
 
     private def reject_unsupported_target!
+      case @dump_target.ids_by
+      when :primary_key then nil
+      when :scope_column then raise Error, "ids_by: :scope_column is not supported: the ids must be primary keys"
+      else raise Error, "ids_by is required: set ids_by: :primary_key (--ids-by=primary-key) to say the ids are primary keys"
+      end
       if @dump_target.recursive
         raise Error, "recursion is not supported yet: only the target table's rows are masked, so set recursive: false (--no-recursive)"
       end

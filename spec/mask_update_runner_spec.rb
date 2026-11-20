@@ -30,7 +30,7 @@ module Exwiw
         io = options.delete(:io) || StringIO.new
         summary = MaskUpdateRunner.new(
           connection_config: adapter.connection_config, schema_dir: schema_dir, logger: logger, io: io,
-          dump_target: DumpTarget.new(table_name: table_name, ids: values, recursive: false, **target), **options,
+          dump_target: DumpTarget.new(table_name: table_name, ids: values, recursive: false, ids_by: :primary_key, **target), **options,
         ).run
         Result.new(io.string.delete_suffix("\n"), summary)
       end
@@ -88,6 +88,15 @@ module Exwiw
         mongo = Adapter.build(connection_config(:mongodb), logger)
         expect { build(mongo, [embedded], table_name: "addresses") }
           .to raise_error(MaskUpdateRunner::Error, /embedded in 'accounts'/)
+      end
+
+      it "needs ids_by to say the ids are primary keys, and has no scope_column ids yet" do
+        tables = [table(columns: masked_columns)]
+
+        expect { build(adapter, tables, [1], target: { ids_by: nil }) }
+          .to raise_error(MaskUpdateRunner::Error, /ids_by is required.*--ids-by=primary-key/)
+        expect { build(adapter, tables, [1], target: { ids_by: :scope_column }) }
+          .to raise_error(MaskUpdateRunner::Error, /ids_by: :scope_column is not supported/)
       end
 
       it "rejects a recursive target, which is not supported yet" do
