@@ -1,18 +1,22 @@
 # frozen_string_literal: true
 
 module Exwiw
-  # Keeps loaded schemas, and loads one again only when a schema file or the config file changes, so masking
-  # record by record does not parse every schema file each time. Safe to share across threads.
+  # Keeps loaded schemas for `ttl` seconds, so masking record by record does not parse every schema file each time.
+  # A change to a schema file or the config file shows within `ttl`. Safe to share across threads.
   class SchemaCache
+    DEFAULT_TTL = 60
+
     # @return [Exwiw::SchemaCache] the cache shared by the whole process
     def self.shared
       @shared
     end
 
-    Entry = Data.define(:schema, :stamp)
+    Entry = Data.define(:schema, :expires_at)
     private_constant :Entry
 
-    def initialize
+    # @param ttl [Numeric] seconds a loaded schema is kept
+    def initialize(ttl: DEFAULT_TTL)
+      @ttl = ttl
       @entries = {}
       @lock = Mutex.new
     end
@@ -32,26 +36,19 @@ module Exwiw
       @lock.synchronize do
         # Relative paths (and the config file lookup) depend on the working directory, so it is part of the key.
         key = [config_class, schema_dir && File.expand_path(schema_dir), profile, config_path, Dir.pwd]
+        now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         entry = @entries[key]
-        return entry.schema if entry && entry.stamp == stamp(entry.schema.dir, config_path)
+        return entry.schema if entry && now < entry.expires_at
 
         dir = schema_dir || ConfigFile.schema_dir(config_path) ||
               (config_path ? File.join(File.dirname(config_path), "schema") : "exwiw/schema")
-        current = stamp(dir, config_path)
         profiles = ConfigFile.profiles(config_path)
         schema = Schema.load(dir: dir, config_class: config_class, profiles: profiles, profile: profile)
         raise ArgumentError, "no schema config in #{File.expand_path(dir)}" if schema.configs.empty?
 
-        @entries[key] = Entry.new(schema: schema, stamp: current)
+        @entries[key] = Entry.new(schema: schema, expires_at: now + @ttl)
         schema
       end
-    end
-
-    # @return [Array<Array(String, Time)>] each schema file and config file, with its modification time
-    private def stamp(dir, config_path)
-      config_paths = config_path ? [config_path] : ConfigFile::DEFAULT_PATHS.map { |path| File.expand_path(path) }
-      paths = Dir.glob(File.join(dir, "**", "*.json")) + config_paths
-      paths.select { |path| File.file?(path) }.sort.map { |path| [path, File.mtime(path)] }
     end
 
     @shared = new

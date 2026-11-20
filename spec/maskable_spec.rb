@@ -259,17 +259,21 @@ module Exwiw
 
         after { base.remove_connection }
 
-        it "loads the schema once, and again only when a schema file changes" do
+        it "loads the schema once, and again when the cached one is older than the TTL" do
           a = account.create!(email: "a@x")
           allow(Schema).to receive(:load).and_call_original
+          clock = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          allow(Process).to receive(:clock_gettime).with(Process::CLOCK_MONOTONIC) { clock }
 
           a.mask_with_exwiw!
-          a.mask_with_exwiw!
-          expect(Schema).to have_received(:load).once
-
           path = File.join(@schema_dir, "maskable_spec_accounts.json")
           File.write(path, File.read(path).sub("a{id}", "b{id}"))
-          File.utime(Time.now + 60, Time.now + 60, path)
+          clock += SchemaCache::DEFAULT_TTL - 1
+          a.mask_with_exwiw!
+          expect(Schema).to have_received(:load).once
+          expect(a.email).to eq("a#{a.id}")
+
+          clock += 2
           a.mask_with_exwiw!
 
           expect(Schema).to have_received(:load).twice
