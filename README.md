@@ -122,7 +122,7 @@ exwiw mask-update \
 
 #### Applying the MongoDB output
 
-Each line is `["users", [{"updateOne": {"filter": {"_id": ...}, "update": {"$set": {...}}}}]]` in [canonical Extended JSON](https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/), so the BSON types of the key and the values are kept. Parse a line with `EJSON.parse(line, { relaxed: false })` in `mongosh` or with `BSON::ExtJSON.parse_obj(JSON.parse(line))` in Ruby, and pass the operations to `bulkWrite` (`bulk_write`). In `mongosh`, save this as `apply.js`:
+Each line is `["users", [{"updateOne": {"filter": {"_id": ...}, "update": {"$set": {...}}}}]]` in [canonical Extended JSON](https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/), so the BSON types of the key and the values are kept. The operations are the ones `mongosh`'s `bulkWrite` takes. In `mongosh`, parse each line with `EJSON.parse(line, { relaxed: false })` and save this as `apply.js`:
 
 ```js
 const fs = require("fs");
@@ -135,6 +135,15 @@ for (const line of fs.readFileSync(process.env.MASK_UPDATE_FILE, "utf8").split("
 
 ```bash
 MASK_UPDATE_FILE=mask.jsonl mongosh "$MONGODB_URI" --file apply.js
+```
+
+In Ruby, restore a line with `BSON::ExtJSON.parse_obj(JSON.parse(line))`. The driver's `bulk_write` does not take those keys as they are, so rename them to `update_one:` with Symbol keys:
+
+```ruby
+name, operations = BSON::ExtJSON.parse_obj(JSON.parse(line))
+client[name].bulk_write(
+  operations.map { |op| { update_one: { filter: op["updateOne"]["filter"], update: op["updateOne"]["update"] } } }
+)
 ```
 
 The `raw_sql` forms accepted for such a column (the whole expression, case-insensitive; `N` is 16 to 1024):
