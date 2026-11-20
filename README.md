@@ -100,7 +100,7 @@ exwiw explain \
 
 ### `exwiw mask-update`
 
-Prints the UPDATE statements that mask the given rows of one table in place, using the [masks](#masking) of the schema config, the same ones `export` applies. For MongoDB it prints a `mongosh` script instead.
+Prints the UPDATE statements that mask the given rows of one table in place, using the [masks](#masking) of the schema config, the same ones `export` applies. For MongoDB it prints one line of canonical Extended JSON per batch instead, `["<collection>", <operations>]`, where the operations are what `collection.bulk_write` takes (see [Applying the MongoDB output](#applying-the-mongodb-output)).
 
 ```bash
 exwiw mask-update \
@@ -119,6 +119,23 @@ exwiw mask-update \
 - A column whose name contains `password`, `digest`, `salt`, `secret`, `token`, `credential`, `encrypted`, `passcode`, `api_key` or `access_key` may only be masked to NULL (`"raw_sql": "NULL"`) or to a random expression as its `raw_sql` (the table below), because any other value is guessable: a constant, one derived from the primary key, or a fake or `map` value. Use a random expression for a column that cannot be NULL (NOT NULL or UNIQUE). The value is drawn when the statements are generated and written into them, so treat the output as a secret. MongoDB can neither say NULL nor draw a random value, so every such path needs an allowance. Name a column with `--allow-constant-column=table.column` (repeatable) to accept any other mask; the summary lists those columns.
 - The literals assume MySQL is applied over a `utf8mb4` connection without `NO_BACKSLASH_ESCAPES`, and PostgreSQL with `standard_conforming_strings` on.
 - It is an error when the table is not declared or is `ignore: true`, has no primary key or a composite one, declares no mask, or masks its primary key.
+
+#### Applying the MongoDB output
+
+Each line is `["users", [{"updateOne": {"filter": {"_id": ...}, "update": {"$set": {...}}}}]]` in [canonical Extended JSON](https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/), so the BSON types of the key and the values are kept. Parse a line with `EJSON.parse(line, { relaxed: false })` in `mongosh` or with `BSON::ExtJSON.parse_obj(JSON.parse(line))` in Ruby, and pass the operations to `bulkWrite` (`bulk_write`). In `mongosh`, save this as `apply.js`:
+
+```js
+const fs = require("fs");
+
+for (const line of fs.readFileSync(process.env.MASK_UPDATE_FILE, "utf8").split("\n").filter(Boolean)) {
+  const [name, operations] = EJSON.parse(line, { relaxed: false });
+  db.getCollection(name).bulkWrite(operations);
+}
+```
+
+```bash
+MASK_UPDATE_FILE=mask.jsonl mongosh "$MONGODB_URI" --file apply.js
+```
 
 The `raw_sql` forms accepted for such a column (the whole expression, case-insensitive; `N` is 16 to 1024):
 

@@ -213,7 +213,7 @@ module Exwiw
       end
     end
 
-    # Prints the UPDATEs (a mongosh script for mongodb) that mask the given rows of one table
+    # Prints the UPDATEs (canonical Extended JSON lines for mongodb) that mask the given rows of one table
     # on stdout and a summary on stderr; the database is only read.
     private def run_mask_update(connection_config, dump_target, logger)
       summary = MaskUpdateRunner.new(
@@ -1096,7 +1096,7 @@ module Exwiw
                       or `explain_verbosity:` in config (queryPlanner (default,
                       no query is executed) | executionStats | allPlansExecution).
             mask-update
-                      Print the UPDATE statements (a mongosh script for mongodb) that
+                      Print the UPDATE statements (canonical Extended JSON lines for mongodb) that
                       mask the rows given by --target-table and --ids with the masks
                       declared in the schema config. The database is only read; apply
                       the output yourself. A column whose name looks like a credential
