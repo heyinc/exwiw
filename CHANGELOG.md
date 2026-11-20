@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`exwiw mask-update` prints the UPDATE statements that mask given rows of one table in place.** It uses the same masks `export` applies (`replace_with`, `raw_sql`, `map`, `replace_with_fake_data`), takes the rows from `--target-table` and `--ids` (with `--ids-by=primary-key` and `--no-recursive`, both required until ids by scope column and related tables are supported), honors `--profile`, and only reads the database; for MongoDB it prints a `mongosh` script. A column whose name looks like a credential (`password`, `token`, `secret`, ...) can only be masked to NULL or to a random `raw_sql` such as `hex(randomblob(16))`, unless it is named with `--allow-constant-column`. See [`exwiw mask-update`](README.md#exwiw-mask-update). The Ruby API is `Exwiw::MaskUpdateRunner`.
+
+- **`--ids-by=primary-key|scope-column` says what `--ids` are.** Without it the schema decides: if the `--target-table` declares a `scope_column`, `--ids` are values of that column, so adding a `scope_column` to the schema changed what the same command meant. Without the option the behavior is unchanged.
+
+- **`--no-recursive` exports (or explains) only the `--target-table`'s rows**, without the rows related to them. `--recursive` is the default.
+
 ### Fixed
 
 - **A value with no SQL literal form is refused instead of being written as its `to_s`.** `INSERT`s (and the new `UPDATE`s) put a `map` or `replace_with_fake_data` result that was not a String or `nil` into the SQL as it was, so `NaN`, `Infinity`, a `Rational`, an Array or a Hash gave a broken or misleading statement. Strings, `nil`, numbers (finite Floats included) and `true`/`false` are written as before; any other value raises `Exwiw::Adapter::UnsupportedValueError`. COPY output is unchanged.
@@ -15,8 +23,6 @@
 ## [1.2.0] - 2026-11-19
 
 ### Added
-
-- **`exwiw mask-update` prints the UPDATE statements that mask given rows of one table in place.** It uses the same masks `export` applies (`replace_with`, `raw_sql`, `map`, `replace_with_fake_data`), takes the rows from `--target-table` and `--ids` (with `--no-recursive`, required until related tables can be followed), honors `--profile`, and only reads the database; for MongoDB it prints a `mongosh` script. A column whose name looks like a credential (`password`, `token`, `secret`, ...) can only be masked to NULL or to a random `raw_sql` such as `hex(randomblob(16))`, unless it is named with `--allow-constant-column`. See [`exwiw mask-update`](README.md#exwiw-mask-update). The Ruby API is `Exwiw::MaskUpdateRunner`.
 
 - **Profile overlays keep export-specific settings out of the base schema config.** With `profiles: [dev]` in `exwiw.yml`, a file `users.dev.json` next to `users.json` is merged into it when `--profile=dev` is passed. `export`, `explain` and the new `exwiw schema show` (which prints the merged config without connecting to a database; `--table` prints one table) apply it, and `explain` prints the profile it applied. The merge follows the config's shape: keys replace the base's, `columns` / `fields` are matched by `name` and `belongs_tos` by their relation, setting one masking mode on a column drops the others (so an overlay `replace_with` is not silently overridden by the base's `raw_sql`), and `null` removes an optional key. An overlay cannot add entries, rename a config, or null `name`, a required key or a list, and an overlay without a base config, two overlays of one config for one profile, or a merged config that fails validation is an error in every command. The schema generators, `tidy` and `check` (the rake tasks, which read `profiles` from `exwiw.yml`, `--from-db`, and Mongoid) never read or write overlays as base configs; `tidy` removes the overlay entries for tables, columns, fields and `belongs_tos` the base no longer has, and `check` reports them under `overlay_stale` (which both `--fail-on=any` and `--fail-on=stale` fail on) and exits with the error status when an overlay does not merge. Only declared profile names are recognized, so without `profiles` nothing changes. See [Profile overlays](README.md#profile-overlays).
 

@@ -1187,8 +1187,8 @@ module Exwiw
         File.join(@dir, 'exwiw.yml').tap { |path| File.write(path, "adapter: sqlite\nschema_dir: schema\n#{yaml}") }
       end
 
-      def mask_update_argv(*extra, yaml: "profiles: [dev]\n", subcommand: 'mask-update', target: ['--target-table=users', '--ids=1,2'], recursive: ['--no-recursive'])
-        [subcommand, '--database=tmp/test.sqlite3', "--config=#{write_config(yaml)}", *target, *recursive, *extra]
+      def mask_update_argv(*extra, yaml: "profiles: [dev]\n", subcommand: 'mask-update', target: ['--target-table=users', '--ids=1,2'], recursive: ['--no-recursive'], ids_by: ['--ids-by=primary-key'])
+        [subcommand, '--database=tmp/test.sqlite3', "--config=#{write_config(yaml)}", *target, *recursive, *ids_by, *extra]
       end
 
       it 'prints the UPDATE on stdout and the summary on stderr' do
@@ -1216,6 +1216,13 @@ module Exwiw
       it 'requires --no-recursive, since recursion is not supported yet' do
         expect { run_cli(mask_update_argv(recursive: [])) }
           .to raise_error(SystemExit).and output(/recursion is not supported yet.*--no-recursive/).to_stderr
+      end
+
+      it 'requires --ids-by=primary-key, and has no scope-column ids yet' do
+        expect { run_cli(mask_update_argv(ids_by: [])) }
+          .to raise_error(SystemExit).and output(/ids_by is required.*--ids-by=primary-key/).to_stderr
+        expect { run_cli(mask_update_argv(ids_by: ['--ids-by=scope-column'])) }
+          .to raise_error(SystemExit).and output(/ids_by: :scope_column is not supported/).to_stderr
       end
 
       it 'requires --target-table and --ids' do
