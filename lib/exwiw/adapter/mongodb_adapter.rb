@@ -158,8 +158,8 @@ module Exwiw
             # (default: the parent primary_key); see #execute, which stashes
             # those fields into @state.
             #
-            # Type coercion is only applied to the primary key (`_id`), whose
-            # stored type we know (Mongoid's default ObjectId). For a custom
+            # Type coercion is only applied to the primary key (`_id`): a textual
+            # id also matches its Integer or ObjectId reading (see #coerce_ids). For a custom
             # `ids_field` the stored type is unknown, so the textual --ids are
             # left as Strings rather than guessed at — the caller passes values
             # matching the field's actual type.
@@ -278,8 +278,7 @@ module Exwiw
         end
         io.puts JSON.generate([config.name, operations].as_extended_json(mode: :canonical)) unless operations.empty?
 
-        ids = coerce_ids(primary_key_values)
-        missing = primary_key_values.zip(ids).reject { |_, id| found_ids.include?(id) }.map(&:first)
+        missing = primary_key_values.reject { |value| id_candidates(value).any? { |id| found_ids.include?(id) } }
         [operations.empty? ? 0 : 1, found_ids.size, missing]
       end
 
@@ -402,19 +401,21 @@ module Exwiw
       #
       # Only used for the primary-key filter; a custom `--ids-field` skips this
       # because its stored type is unknown (see build_query).
+      # An `_id` given as text may be stored as that String or as what it reads as, so both are matched: "123"
+      # also matches 123, and a 24-digit hex String also matches its ObjectId. Typed values match only themselves.
       private def coerce_ids(ids)
-        Array(ids).map { |id| coerce_id(id) }
+        Array(ids).flat_map { |id| id_candidates(id) }.uniq
       end
 
-      private def coerce_id(id)
-        return id unless id.is_a?(String)
+      private def id_candidates(id)
+        return [id] unless id.is_a?(String)
 
         if id.match?(/\A-?\d+\z/)
-          id.to_i
+          [id, id.to_i]
         elsif object_id_hex?(id)
-          BSON::ObjectId.from_string(id)
+          [id, BSON::ObjectId.from_string(id)]
         else
-          id
+          [id]
         end
       end
 

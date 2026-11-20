@@ -113,24 +113,30 @@ module Exwiw
         end
 
         context "coercing the textual --ids to the stored _id type" do
-          it "coerces a 24-char hex --ids into a BSON::ObjectId so it matches an ObjectId _id" do
-            # Mongoid's default `_id` is a BSON::ObjectId. `--ids` arrives as a
-            # String, and Mongo compares types strictly, so a plain hex String
-            # would never match an ObjectId in the `$in` filter. The adapter must
-            # coerce it to BSON::ObjectId.
+          it "matches a 24-char hex --ids as a BSON::ObjectId as well as the String" do
+            # Mongoid's default `_id` is a BSON::ObjectId, and Mongo compares types strictly, so a plain hex String
+            # would never match it; an `_id` stored as that String must still match too.
             shops = config_by_name.fetch("shops")
             dump_target = Exwiw::DumpTarget.new(table_name: "shops", ids: ["5f5e7c1e1c9d440000000001"])
             query = adapter.build_query(shops, dump_target, config_by_name)
-            coerced = query.filter.fetch("_id").fetch("$in").first
-            expect(coerced).to be_a(BSON::ObjectId)
-            expect(coerced.to_s).to eq("5f5e7c1e1c9d440000000001")
+            expect(query.filter.fetch("_id").fetch("$in"))
+              .to eq(["5f5e7c1e1c9d440000000001", BSON::ObjectId.from_string("5f5e7c1e1c9d440000000001")])
           end
 
-          it "coerces an integer-looking --ids to Integer and leaves other strings as-is" do
+          it "matches an integer-looking --ids as an Integer as well as the String, and other strings as-is" do
+            # A zero-padded code stored as a String keeps its zeros only in the String form.
             shops = config_by_name.fetch("shops")
-            dump_target = Exwiw::DumpTarget.new(table_name: "shops", ids: ["42", "abc-123"])
+            dump_target = Exwiw::DumpTarget.new(table_name: "shops", ids: ["42", "007", "abc-123"])
             query = adapter.build_query(shops, dump_target, config_by_name)
-            expect(query.filter.fetch("_id").fetch("$in")).to eq([42, "abc-123"])
+            expect(query.filter.fetch("_id").fetch("$in")).to eq(["42", 42, "007", 7, "abc-123"])
+          end
+
+          it "matches typed ids only as themselves" do
+            shops = config_by_name.fetch("shops")
+            oid = BSON::ObjectId.new
+            dump_target = Exwiw::DumpTarget.new(table_name: "shops", ids: [oid, 42])
+            query = adapter.build_query(shops, dump_target, config_by_name)
+            expect(query.filter.fetch("_id").fetch("$in")).to eq([oid, 42])
           end
         end
 
