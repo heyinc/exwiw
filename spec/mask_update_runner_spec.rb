@@ -727,6 +727,21 @@ module Exwiw
         expect(statements).to eq(["UPDATE accounts SET email = 'masked1', updated_at = '2026-01-02 03:04:05.678901' WHERE accounts.id = 1;"])
       end
 
+      it "keeps the time of a DateTime and writes a Date as a date in extra_assignments" do
+        db = SQLite3::Database.new(":memory:")
+        db.execute("CREATE TABLE accounts (id INTEGER PRIMARY KEY, email TEXT, updated_at TEXT, born_on TEXT)")
+        db.execute("INSERT INTO accounts VALUES (1, 'a@x', 'old', 'old')")
+
+        _, statements = apply(
+          DataSource.given("sqlite", db), [accounts], [1],
+          extra_assignments: { "updated_at" => DateTime.new(2026, 1, 2, 3, 4, 5), "born_on" => Date.new(2000, 1, 2) },
+        )
+
+        expect(statements).to eq(
+          ["UPDATE accounts SET email = 'masked1', updated_at = '2026-01-02 03:04:05.000000', born_on = '2000-01-02' WHERE accounts.id = 1;"]
+        )
+      end
+
       it "refuses a MongoDB connection that is not a Mongo::Client" do
         config = database_config(:mongodb)
         client = Mongo::Client.new(["#{config[:host]}:#{config[:port]}"], database: "exwiw_mask_update_given_spec")

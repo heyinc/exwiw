@@ -110,7 +110,8 @@ module Exwiw
       private def extra_literal(table, name, value)
         value =
           case value
-          when Time then value.strftime("%Y-%m-%d %H:%M:%S.%6N")
+          # DateTime before Date: it is a Date subclass, and would lose its time there.
+          when Time, DateTime then value.strftime("%Y-%m-%d %H:%M:%S.%6N")
           when Date then value.strftime("%Y-%m-%d")
           else value
           end
