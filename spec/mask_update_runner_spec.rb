@@ -601,6 +601,26 @@ module Exwiw
       ensure
         coll&.drop
       end
+
+      it "can be applied from Ruby by renaming the operations the way the driver's bulk_write wants" do
+        collection = MongodbCollectionConfig.from_symbol_keys(
+          name: "mask_update_ruby_apply_spec", primary_key: "_id", belongs_tos: [], fields: [{ name: "name", replace_with: "x" }],
+        )
+        coll = adapter.send(:db)["mask_update_ruby_apply_spec"]
+        coll.drop
+        coll.insert_one({ "_id" => 7, "name" => "a", "keep" => 1.5 })
+        plan = build(adapter, [collection], ["7"], table_name: "mask_update_ruby_apply_spec")
+
+        name, operations = BSON::ExtJSON.parse_obj(JSON.parse(plan.script))
+        driver_operations = operations.map do |op|
+          { update_one: { filter: op["updateOne"]["filter"], update: op["updateOne"]["update"] } }
+        end
+        adapter.send(:db)[name].bulk_write(driver_operations)
+
+        expect(coll.find.first).to eq({ "_id" => 7, "name" => "x", "keep" => 1.5 })
+      ensure
+        coll&.drop
+      end
     end
 
     describe "random expressions for credential-looking columns" do

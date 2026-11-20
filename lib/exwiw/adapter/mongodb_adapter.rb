@@ -253,8 +253,9 @@ module Exwiw
         MaskUpdateRunner::Checked.new(columns: names, allowed_constant_columns: allowed)
       end
 
-      # Writes one line, `["<collection>", <operations>]` in canonical Extended JSON, whose operations are what
-      # `collection.bulk_write` takes: an `updateOne` that `$set`s every masked leaf of each document in `results`.
+      # Writes one line, `["<collection>", <operations>]` in canonical Extended JSON, whose operations are mongosh's
+      # `bulkWrite` operations (a Ruby driver's `bulk_write` wants `update_one:` with Symbol keys instead): an
+      # `updateOne` that `$set`s every masked leaf of each document in `results`.
       # Documents are masked with the same plan #to_bulk_insert uses while the assignments are recorded. Counterpart
       # of #write_inserts; call #build_query first. Keys the plan drops are never assigned, so they are neither set
       # nor unset.
