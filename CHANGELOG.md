@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`exwiw mask-update` prints the UPDATE statements that mask given rows of one table in place.** It uses the same masks `export` applies (`replace_with`, `raw_sql`, `map`, `replace_with_fake_data`), takes the rows from `--target-table` and `--ids` (with `--mode=primary-key` and `--no-recursive`, both required until the scope-column mode and related tables are supported), honors `--profile`, and only reads the database; for MongoDB it prints one line of canonical Extended JSON per batch, `["<collection>", <operations>]`, that `mongosh` (`EJSON.parse`) or a driver (`bulk_write`) can apply. A column whose name looks like a credential (`password`, `token`, `secret`, ...) can only be masked to NULL or to a random `raw_sql` such as `hex(randomblob(16))`, unless it is named with `--allow-constant-column`. See [`exwiw mask-update`](README.md#exwiw-mask-update). The Ruby API is `Exwiw::MaskUpdateRunner`.
+
+- **`--mode=primary-key|scope-column` says how the target is read.** `primary-key` starts from `--target-table` (required) and reads `--ids` as its primary keys; `scope-column` filters every table by its own `scope_column` and reads `--ids` as their values (`--target-table` has no meaning there). Without `--mode` nothing changes: the target decides, so a `--target-table` that declares a `scope_column` meant scope-column mode, and adding one to a schema changed what the same command meant.
+
+- **`--no-recursive` exports (or explains) only the `--target-table`'s rows**, without the rows related to them. It applies to `--mode=primary-key` (`--recursive` is the default); giving either flag in scope-column mode is an error.
+
 ### Fixed
 
 - **A value with no SQL literal form is refused instead of being written as its `to_s`.** `INSERT`s (and the new `UPDATE`s) put a `map` or `replace_with_fake_data` result that was not a String or `nil` into the SQL as it was, so `NaN`, `Infinity`, a `Rational`, an Array or a Hash gave a broken or misleading statement. Strings, `nil`, numbers (finite Floats included) and `true`/`false` are written as before; any other value raises `Exwiw::Adapter::UnsupportedValueError`. COPY output is unchanged.

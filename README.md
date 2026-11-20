@@ -55,6 +55,15 @@ This exports the `shops` rows with id 1 and 2 and the rows of other tables relat
 | omitted | given | [Scope-column mode](#scope-column-mode). An error if no table declares a `scope_column` (SQL adapters only) |
 | omitted | omitted | Every table in full |
 
+`--mode` chooses how the target is read, and the options depend on it:
+
+| `--mode` | `--target-table` | `--ids` | `--[no-]recursive` |
+|---|---|---|---|
+| `primary-key` | Required. The table to start from | Its primary keys | Allowed. `--no-recursive` extracts only the target table's rows, without their related rows (default `--recursive`) |
+| `scope-column` | No meaning (it only matters when `--mode` is omitted) | Values of the tables' [`scope_column`](#scope-column-mode)s; every table is filtered by its own | An error |
+
+Without `--mode`, the target decides: `scope-column` if the `--target-table` declares a `scope_column` in the schema, or if there is no `--target-table` (with `--ids`); `primary-key` otherwise. So adding a `scope_column` to a schema changes what `--target-table=shops --ids=1` means; pass `--mode=primary-key` to keep it. With neither `--target-table` nor `--ids`, every table is exported in full.
+
 The output directory (`dump/` by default) is emptied before each run. When it already has files and stdin is a terminal, exwiw asks before removing them.
 
 The output files are:
@@ -89,6 +98,62 @@ exwiw explain \
 
 `--output-dir`, `--output-format` and `--after-insert-hook` cannot be used with `explain`.
 
+### `exwiw mask-update`
+
+Prints the UPDATE statements that mask the given rows of one table in place, using the [masks](#masking) of the schema config, the same ones `export` applies. For MongoDB it prints one line of canonical Extended JSON per batch instead, `["<collection>", <operations>]`, where the operations are what `collection.bulk_write` takes (see [Applying the MongoDB output](#applying-the-mongodb-output)).
+
+```bash
+exwiw mask-update \
+  --adapter=postgresql \
+  --host=localhost --port=5432 --user=reader \
+  --database=app_production \
+  --schema-dir=exwiw/schema \
+  --target-table=users --ids=1,2 --mode=primary-key --no-recursive > mask.sql
+```
+
+`--ids` are primary key values (a composite primary key is not supported), and `--mode=primary-key` is required so that a `scope_column` declared in the schema never changes what they mean. Only the target table's rows are masked, not the tables related to it; recursion is not supported yet, so `--no-recursive` is required (a later version will extend what is masked, and `--no-recursive` will keep this behavior). The statements go to stdout; a summary (the number of rows, the columns, primary key values that were not found) goes to stderr. `--profile` applies the overlay of a [profile](#profile-overlays).
+
+- exwiw only reads. The output has no header and no transaction control; review it and apply it yourself. Whether the declared masks are safe values for the database you apply it to is not checked: a mask written for a development copy is applied as written.
+- Every masked value is computed when the statements are generated, by the same SELECT `export` runs, and written as a literal: one UPDATE per row. Apply them soon after generating; a row changed in between is overwritten with a value computed from its old data.
+- Applying the same statements twice leaves the same values. Generating them again after masking reads the masked values, so a mask that reads the column (`{column}`), `map` or `replace_with_fake_data` can give different values the second time, and a random `raw_sql` always does.
+- A column whose name contains `password`, `digest`, `salt`, `secret`, `token`, `credential`, `encrypted`, `passcode`, `api_key` or `access_key` may only be masked to NULL (`"raw_sql": "NULL"`) or to a random expression as its `raw_sql` (the table below), because any other value is guessable: a constant, one derived from the primary key, or a fake or `map` value. Use a random expression for a column that cannot be NULL (NOT NULL or UNIQUE). The value is drawn when the statements are generated and written into them, so treat the output as a secret. MongoDB can neither say NULL nor draw a random value, so every such path needs an allowance. Name a column with `--allow-constant-column=table.column` (repeatable) to accept any other mask; the summary lists those columns.
+- The literals assume MySQL is applied over a `utf8mb4` connection without `NO_BACKSLASH_ESCAPES`, and PostgreSQL with `standard_conforming_strings` on.
+- It is an error when the table is not declared or is `ignore: true`, has no primary key or a composite one, declares no mask, or masks its primary key.
+
+#### Applying the MongoDB output
+
+Each line is `["users", [{"updateOne": {"filter": {"_id": ...}, "update": {"$set": {...}}}}]]` in [canonical Extended JSON](https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/), so the BSON types of the key and the values are kept. The operations are the ones `mongosh`'s `bulkWrite` takes. In `mongosh`, parse each line with `EJSON.parse(line, { relaxed: false })` and save this as `apply.js`:
+
+```js
+const fs = require("fs");
+
+for (const line of fs.readFileSync(process.env.MASK_UPDATE_FILE, "utf8").split("\n").filter(Boolean)) {
+  const [name, operations] = EJSON.parse(line, { relaxed: false });
+  db.getCollection(name).bulkWrite(operations);
+}
+```
+
+```bash
+MASK_UPDATE_FILE=mask.jsonl mongosh "$MONGODB_URI" --file apply.js
+```
+
+In Ruby, restore a line with `BSON::ExtJSON.parse_obj(JSON.parse(line))`. The driver's `bulk_write` does not take those keys as they are, so rename them to `update_one:` with Symbol keys:
+
+```ruby
+name, operations = BSON::ExtJSON.parse_obj(JSON.parse(line))
+client[name].bulk_write(
+  operations.map { |op| { update_one: { filter: op["updateOne"]["filter"], update: op["updateOne"]["update"] } } }
+)
+```
+
+The `raw_sql` forms accepted for such a column (the whole expression, case-insensitive; `N` is 16 to 1024):
+
+| Adapter | `raw_sql` |
+|---|---|
+| PostgreSQL | `gen_random_uuid()::text`, `replace(gen_random_uuid()::text, '-', '')`, `encode(gen_random_bytes(N), 'hex')` (needs the `pgcrypto` extension) |
+| MySQL | `HEX(RANDOM_BYTES(N))`, `LOWER(HEX(RANDOM_BYTES(N)))` |
+| SQLite | `hex(randomblob(N))`, `lower(hex(randomblob(N)))` |
+
 ### Config file (`exwiw.yml`)
 
 Options can be kept in a YAML file passed with `--config=PATH`. Without `--config`, `exwiw.yml` (or `exwiw.yaml`) in the current directory is used if it exists. Options passed on the command line take precedence.
@@ -111,7 +176,7 @@ DATABASE_PASSWORD=... exwiw \
 
 - Connection settings (`host`, `port`, `user`, `database`, `uri`, `password`) are rejected, so they stay out of a committed file. `adapter` is allowed.
 - Relative paths are resolved from the config file's directory, not the current directory.
-- Unknown keys are rejected. Keys that only apply to `export` are ignored by `explain` and `schema`, so all subcommands can share one file.
+- Unknown keys are rejected. Keys that only apply to `export` are ignored by `explain`, `mask-update` and `schema`, so all subcommands can share one file (`ids_field` is the exception: `mask-update` picks rows by primary key and rejects it).
 - MongoDB-only keys (`explain_verbosity`, `mongodb_query_timeout_ms`, `parallel_workers`) are described in [MongoDB support](docs/mongodb.md).
 - `profiles` declares schema profiles; see [Profile overlays](#profile-overlays).
 
@@ -207,7 +272,7 @@ exwiw export --profile=dev ...    # without --profile, no profile applies
 exwiw schema show --profile=dev --table=users   # prints the merged config; needs no database
 ```
 
-- Only the names in `profiles` are recognized: without them, `users.dev.json` is an ordinary config file. Profile names use lowercase letters, digits, `_` and `-`. A profile applies only when `--profile` names it (export, explain and `schema show`), one per run; naming an undeclared profile is an error.
+- Only the names in `profiles` are recognized: without them, `users.dev.json` is an ordinary config file. Profile names use lowercase letters, digits, `_` and `-`. A profile applies only when `--profile` names it (export, explain, `mask-update` and `schema show`), one per run; naming an undeclared profile is an error.
 - An overlay must have the `name` of a config in the same directory (with multiple databases, in that database's subdirectory), and each config can have one overlay per profile.
 - A key in the overlay replaces the base value; a nested object such as `batch_scope` is replaced as a whole. `columns` (`fields` for MongoDB) are matched by `name`, and `belongs_tos` by `table_name`, `foreign_key`, `foreign_type` and `type_value`; the matched entry is merged key by key. An overlay can only change entries the base has, not add new ones.
 - Setting one of `replace_with`, `raw_sql`, `map` and `replace_with_fake_data` on a column removes the others, so the overlay's mask is the one that applies.

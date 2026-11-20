@@ -856,7 +856,7 @@ module Exwiw
           it 'rejects --profile' do
             expect { run_cli(profile_argv('check', ['--profile=dev'])) }
               .to raise_error(SystemExit)
-              .and output(/--profile only applies to export, explain and `exwiw schema show`/).to_stderr
+              .and output(/--profile only applies to export, explain, mask-update and `exwiw schema show`/).to_stderr
           end
         end
 
@@ -1165,6 +1165,109 @@ module Exwiw
           expect { run_cli(sqlite_argv('explain', '--profile=dev')) }
             .to raise_error(ArgumentError, /has belongs_to references to ignored table\(s\): shops/)
         end
+      end
+    end
+
+    describe 'mask-update subcommand' do
+      def run_cli(argv)
+        CLI.new(argv).run
+      end
+
+      around do |example|
+        Dir.mktmpdir do |dir|
+          @dir = dir
+          @schema_dir = File.join(dir, 'schema')
+          FileUtils.mkdir_p(@schema_dir)
+          FileUtils.cp(Dir.glob('e2e/sqlite-schema/*.json'), @schema_dir)
+          example.run
+        end
+      end
+
+      def write_config(yaml)
+        File.join(@dir, 'exwiw.yml').tap { |path| File.write(path, "adapter: sqlite\nschema_dir: schema\n#{yaml}") }
+      end
+
+      def mask_update_argv(*extra, yaml: "profiles: [dev]\n", subcommand: 'mask-update', target: ['--target-table=users', '--ids=1,2'], recursive: ['--no-recursive'], mode: ['--mode=primary-key'])
+        [subcommand, '--database=tmp/test.sqlite3', "--config=#{write_config(yaml)}", *target, *recursive, *mode, *extra]
+      end
+
+      it 'prints the UPDATE on stdout and the summary on stderr' do
+        expect { run_cli(mask_update_argv) }
+          .to output(/\AUPDATE users SET name = 'masked1', email = 'masked1@example.com' WHERE users\.id = '1';\nUPDATE users SET name = 'masked2', .* WHERE users\.id = '2';\n\z/).to_stdout
+          .and output(/\Ausers: 2 row\(s\) masked, columns: name, email\n\z/).to_stderr
+      end
+
+      it 'reports primary key values it did not find' do
+        expect { run_cli(mask_update_argv(target: ['--target-table=users', '--ids=1,999'])) }
+          .to output(/users: 1 row\(s\) masked.*\nprimary key values not found: 999\n/).to_stderr
+          .and output(/UPDATE users/).to_stdout
+      end
+
+      it 'applies the masks of the profile named by --profile' do
+        File.write(File.join(@schema_dir, 'users.dev.json'),
+                   JSON.pretty_generate('name' => 'users', 'columns' => [{ 'name' => 'name', 'replace_with' => 'anonymous' }]))
+
+        expect { run_cli(mask_update_argv('--profile=dev')) }
+          .to output(/'anonymous'/).to_stdout.and output(/masked/).to_stderr
+        expect { run_cli(mask_update_argv) }
+          .to output(/name = 'masked1'/).to_stdout.and output(/masked/).to_stderr
+      end
+
+      it 'requires --no-recursive, since recursion is not supported yet' do
+        expect { run_cli(mask_update_argv(recursive: [])) }
+          .to raise_error(SystemExit).and output(/recursion is not supported yet.*--no-recursive/).to_stderr
+      end
+
+      it 'requires --mode=primary-key, and has no scope-column mode yet' do
+        expect { run_cli(mask_update_argv(mode: [])) }
+          .to raise_error(SystemExit).and output(/mode is required.*--mode=primary-key/).to_stderr
+        expect { run_cli(mask_update_argv(mode: ['--mode=scope-column'])) }
+          .to raise_error(SystemExit).and output(/mode: :scope_column is not supported/).to_stderr
+      end
+
+      it 'requires --target-table and --ids' do
+        expect { run_cli(mask_update_argv(target: [])) }
+          .to raise_error(SystemExit).and output(/--target-table .* and --ids are required for mask-update/).to_stderr
+        expect { run_cli(mask_update_argv(target: ['--target-table=users'])) }
+          .to raise_error(SystemExit).and output(/--target-table .* and --ids are required for mask-update/).to_stderr
+      end
+
+      it 'rejects options that pick or write rows another way' do
+        expect { run_cli(mask_update_argv('--scope-column=shop_id')) }
+          .to raise_error(SystemExit).and output(/--scope-column cannot be combined with --target-table/).to_stderr
+        mongodb = ['--adapter=mongodb', '--host=127.0.0.1', '--port=27017', '--database=exwiw_test', '--ids-field=email']
+        expect { run_cli(mask_update_argv(*mongodb)) }
+          .to raise_error(SystemExit).and output(/not applicable in 'mask-update' subcommand: --ids-field/).to_stderr
+        expect { run_cli(mask_update_argv('--output-dir=out')) }
+          .to raise_error(SystemExit).and output(/not applicable in 'mask-update' subcommand: --output-dir/).to_stderr
+        expect { run_cli(mask_update_argv(target: ['--target-table=users', '--ids=1', '--ids=shop=2'])) }
+          .to raise_error(SystemExit).and output(/--ids with an <id_space>= prefix/).to_stderr
+      end
+
+      it 'passes --allow-constant-column to the plan, which rejects one that guards nothing' do
+        expect { run_cli(mask_update_argv('--allow-constant-column=users.name')) }
+          .to raise_error(SystemExit).and output(/allow_constant_columns names users\.name/).to_stderr
+      end
+
+      it 'lets explain take --no-recursive to cover the target table only' do
+        argv = mask_update_argv(subcommand: 'explain', target: ['--target-table=shops', '--ids=1'])
+
+        expect { run_cli(argv) }.to output(/-- \[1\/1\] shops/).to_stdout
+      end
+
+      it 'rejects --allow-constant-column outside mask-update' do
+        argv = mask_update_argv('--allow-constant-column=users.name', subcommand: 'explain', target: [])
+        expect { run_cli(argv) }
+          .to raise_error(SystemExit).and output(/--allow-constant-column only applies to mask-update/).to_stderr
+      end
+
+      it 'exits 1 with the reason for a credential-looking column masked to something guessable' do
+        File.write(File.join(@schema_dir, 'vault.json'),
+                   JSON.pretty_generate('name' => 'vault', 'primary_key' => 'id',
+                                        'columns' => [{ 'name' => 'id' }, { 'name' => 'api_token', 'replace_with' => 'x' }]))
+
+        expect { run_cli(mask_update_argv(target: ['--target-table=vault', '--ids=1'])) }
+          .to raise_error(SystemExit).and output(/vault\.api_token look like credentials/).to_stderr
       end
     end
   end

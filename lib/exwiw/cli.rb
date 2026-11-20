@@ -12,7 +12,7 @@ require 'exwiw'
 
 module Exwiw
   class CLI
-    KNOWN_SUBCOMMANDS = %w[export explain schema].freeze
+    KNOWN_SUBCOMMANDS = %w[export explain schema mask-update].freeze
 
     # The verbs `exwiw schema` takes, mirroring the `exwiw:schema:*` rake tasks
     # a Rails application would run instead.
@@ -71,8 +71,8 @@ module Exwiw
     REJECTED_CONNECTION_KEYS = %w[host port user database uri password ssl_mode ssl_ca].freeze
 
     # Keys that only make sense for `export`. They are skipped when merging config
-    # for `explain` so a shared config file does not trip validate_explain_only!,
-    # and for `schema`, which performs no export at all.
+    # for `explain` and `mask-update` so a shared config file does not trip
+    # validate_no_export_options!, and for `schema`, which performs no export at all.
     EXPORT_ONLY_CONFIG_KEYS = %w[output_dir output_format after_insert_hook parallel_workers].freeze
 
     def self.start(argv)
@@ -120,6 +120,8 @@ module Exwiw
       @ids_errors = []
       @ids_field = nil
       @scope_column = nil
+      @recursive = nil
+      @mode = nil
       @output_format = nil
       @after_insert_hook_path = nil
       @parallel_workers = nil
@@ -136,6 +138,8 @@ module Exwiw
       @profile = nil
       # `schema show` only: print one table instead of all.
       @show_table = nil
+      # `mask-update` only: credential-looking columns accepted as non-NULL masks.
+      @allow_constant_columns = []
       # nil (not :info) so we can tell "user passed --log-level" from the default,
       # letting a config-file value fill in; the :info default is applied later.
       @log_level = nil
@@ -169,6 +173,8 @@ module Exwiw
         ids: @ids_by_id_space,
         ids_field: @ids_field,
         scope_column: @scope_column,
+        recursive: @recursive,
+        mode: @mode,
       )
 
       logger = build_logger
@@ -202,7 +208,40 @@ module Exwiw
         ).run
       when "schema"
         run_schema(connection_config)
+      when "mask-update"
+        run_mask_update(connection_config, dump_target, logger)
       end
+    end
+
+    # Prints the UPDATEs (canonical Extended JSON lines for mongodb) that mask the given rows of one table
+    # on stdout and a summary on stderr; the database is only read.
+    private def run_mask_update(connection_config, dump_target, logger)
+      summary = MaskUpdateRunner.new(
+        connection_config: connection_config,
+        schema_dir: @schema_dir,
+        dump_target: dump_target,
+        logger: logger,
+        io: $stdout,
+        allow_constant_columns: @allow_constant_columns,
+        profiles: @profiles,
+        profile: @profile,
+      ).run
+
+      $stderr.puts mask_update_summary(summary)
+    rescue MaskUpdateRunner::Error => e
+      $stderr.puts e.message
+      exit 1
+    end
+
+    private def mask_update_summary(summary)
+      lines = ["#{summary.table_name}: #{summary.target_count} row(s) masked, columns: #{summary.columns.join(', ')}"]
+      unless summary.missing_primary_key_values.empty?
+        lines << "primary key values not found: #{summary.missing_primary_key_values.join(', ')}"
+      end
+      unless summary.allowed_constant_columns.empty?
+        lines << "credential-looking columns masked on request: #{summary.allowed_constant_columns.join(', ')}"
+      end
+      lines
     end
 
     # `exwiw schema generate|check|tidy --from-db`: the same three operations
@@ -385,9 +424,12 @@ module Exwiw
         exit 1
       end
 
-      if @subcommand == "explain"
-        validate_explain_only!
-        resolve_explain_verbosity!
+      validate_no_export_options! if @subcommand == "explain" || @subcommand == "mask-update"
+      resolve_explain_verbosity! if @subcommand == "explain"
+
+      if @allow_constant_columns.any? && @subcommand != "mask-update"
+        $stderr.puts "--allow-constant-column only applies to mask-update."
+        exit 1
       end
 
       # `schema` shares only the connection options with the other subcommands:
@@ -453,6 +495,8 @@ module Exwiw
         $stderr.puts "Schema dir contains no .json files: #{@schema_dir}"
         exit 1
       end
+
+      validate_mask_update_options! if @subcommand == "mask-update"
 
       if @target_table_name && !ids_given?
         $stderr.puts "--ids is required when --target-table is specified"
@@ -532,9 +576,9 @@ module Exwiw
         end
       end
 
-      # For `explain`, drop export-only keys so a config shared with `export`
-      # does not make validate_explain_only! reject the run.
-      if @subcommand == "explain" || @subcommand == "schema"
+      # For `explain` and `mask-update`, drop export-only keys so a config shared with `export`
+      # does not make validate_no_export_options! reject the run.
+      if %w[explain schema mask-update].include?(@subcommand)
         config = config.reject { |k, _| EXPORT_ONLY_CONFIG_KEYS.include?(k) }
       end
 
@@ -578,12 +622,12 @@ module Exwiw
     end
 
     # A profile applies only when --profile names it, and only to export,
-    # explain and `schema show`.
+    # explain, mask-update and `schema show`.
     private def resolve_profile!
       return if @profile_option.nil?
 
       if @subcommand == "schema" && @schema_verb != SCHEMA_SHOW_VERB
-        $stderr.puts "--profile only applies to export, explain and `exwiw schema show` " \
+        $stderr.puts "--profile only applies to export, explain, mask-update and `exwiw schema show` " \
                      "(got `exwiw schema #{@schema_verb}`)."
         exit 1
       end
@@ -768,8 +812,8 @@ module Exwiw
     # (docs/mongodb-dump-parallelism-2x-notes.md). It is mongodb-only (the SQL
     # adapters shell out to their own dumpers) and must be a positive integer;
     # N<2 is accepted but runs serially. Runs after the adapter name is normalized
-    # so the family check is reliable. `explain` rejection is handled separately
-    # by validate_explain_only!.
+    # so the family check is reliable. `explain` and `mask-update` rejection is handled
+    # separately by validate_no_export_options!.
     private def resolve_parallel_workers!
       return if @parallel_workers.nil?
 
@@ -927,7 +971,7 @@ module Exwiw
       end
     end
 
-    private def validate_explain_only!
+    private def validate_no_export_options!
       rejected = []
       rejected << "--output-dir" unless @output_dir.nil?
       rejected << "--output-format" unless @output_format.nil?
@@ -935,7 +979,24 @@ module Exwiw
       rejected << "--parallel-workers" unless @parallel_workers.nil?
 
       unless rejected.empty?
-        $stderr.puts "The following options are not applicable in 'explain' subcommand: #{rejected.join(', ')}"
+        $stderr.puts "The following options are not applicable in '#{@subcommand}' subcommand: #{rejected.join(', ')}"
+        exit 1
+      end
+    end
+
+    # `mask-update` picks the rows to mask by primary key alone.
+    private def validate_mask_update_options!
+      if @target_table_name.nil? || default_ids.empty?
+        $stderr.puts "--target-table (or --target-collection) and --ids are required for mask-update"
+        exit 1
+      end
+
+      rejected = []
+      rejected << "--ids-field" unless @ids_field.nil?
+      rejected << "--ids with an <id_space>= prefix" unless (@ids_by_id_space.keys - [DEFAULT_ID_SPACE]).empty?
+
+      unless rejected.empty?
+        $stderr.puts "The following options are not applicable in 'mask-update' subcommand: #{rejected.join(', ')}"
         exit 1
       end
     end
@@ -1034,6 +1095,13 @@ module Exwiw
                       For mongodb, set verbosity via EXWIW_MONGODB_EXPLAIN_VERBOSITY
                       or `explain_verbosity:` in config (queryPlanner (default,
                       no query is executed) | executionStats | allPlansExecution).
+            mask-update
+                      Print the UPDATE statements (canonical Extended JSON lines for mongodb) that
+                      mask the rows given by --target-table and --ids with the masks
+                      declared in the schema config. The database is only read; apply
+                      the output yourself. A column whose name looks like a credential
+                      may only be masked to NULL (raw_sql "NULL") or a random raw_sql
+                      such as hex(randomblob(16)), unless named in --allow-constant-column.
             schema    Maintain the schema config (generate | check | tidy) by
                       reading a live database, for applications that cannot be
                       loaded to generate it from their models. Requires --from-db;
@@ -1068,6 +1136,8 @@ module Exwiw
         opts.on("--target-collection=[COLLECTION]", "Alias of --target-table for the mongodb adapter.") { |v| @target_collection_name = v }
         opts.on("--ids=[IDS]", "Comma-separated list of identifiers. Required when --target-table is given. Prefix with `<id_space>=` (e.g. --ids=org=a,b) to give the values of a named ID space; may be repeated, once per ID space. An id containing `=` is passed as --ids=default=<ids>.") { |v| add_ids_option(v) }
         opts.on("--ids-field=[FIELD]", "Field on the target collection that --ids is matched against. Defaults to the primary key. (mongodb adapter only)") { |v| @ids_field = v }
+        opts.on("--mode=MODE", %w[primary-key scope-column], "primary-key: --target-table (required) is the start, --ids are its primary keys, and the tables related to it are followed (see --[no-]recursive). scope-column: every table is filtered by its own `scope_column`, --ids are values of those columns, --target-table has no meaning, and --[no-]recursive is an error. Without --mode: scope-column if --target-table declares a `scope_column` or is omitted (with --ids), primary-key otherwise. mask-update requires --mode=primary-key.") { |v| @mode = v.tr("-", "_").to_sym }
+        opts.on("--[no-]recursive", "primary-key mode only (an error in scope-column mode): follow the tables related to --target-table (default), or extract only its rows. mask-update requires --no-recursive.") { |v| @recursive = v }
         opts.on("--scope-column=[COLUMN]", "DEPRECATED. Filter every table by this shared global column (--ids are its values) instead of a single --target-table. SQL adapters only; mutually exclusive with --target-table. Prefer declaring a per-table `scope_column:` in the schema config.") { |v| @scope_column = v }
         opts.on("--output-format=[FORMAT]", "Output format: insert (default) or copy (PostgreSQL only, export subcommand only)") { |v| @output_format = v }
         opts.on("--insert-only", "DEPRECATED: ignored. exwiw no longer generates delete-*.sql files, so every export is insert-only.") do
@@ -1079,7 +1149,8 @@ module Exwiw
         opts.on("--parallel-workers=N", Integer, "Fork N workers for the MongoDB dump's parallel schedule (mongodb + export only; N>=2 enables it, default is serial). Output is byte-identical to serial; falls back to serial where fork is unavailable.") { |v| @parallel_workers = v }
         opts.on("--mongodb-query-timeout-ms=N", Integer, "Global server-enforced timeout (ms) for every MongoDB query (mongodb only). Aborts an accidentally heavy/unscoped query past the deadline. Overridden per collection by `query_timeout_ms` in the schema config.") { |v| @mongodb_query_timeout_ms = v }
         opts.on("--fail-on=CATEGORY", "schema check only: what makes the exit code non-zero. 'any' (default) fails on any drift or undecided masking; 'stale' fails only when the committed config references tables/columns the schema no longer has - the drift that would break an export. The full report is printed either way.") { |v| @fail_on = v }
-        opts.on("--profile=NAME", "Schema profile whose overlay files (<table>.<profile>.json) are merged into the base config (export, explain and schema show). Must be declared under `profiles` in the config file. Without it, no profile applies.") { |v| @profile_option = v }
+        opts.on("--profile=NAME", "Schema profile whose overlay files (<table>.<profile>.json) are merged into the base config (export, explain, mask-update and schema show). Must be declared under `profiles` in the config file. Without it, no profile applies.") { |v| @profile_option = v }
+        opts.on("--allow-constant-column=TABLE.COLUMN", "mask-update only: accept a column whose name looks like a credential (password, token, secret, ...) being masked to something other than NULL or a random raw_sql. Exact `table.column`; repeat for several.") { |v| @allow_constant_columns << v }
         opts.on("--table=TABLE", "schema show only: print the config of this table/collection only.") { |v| @show_table = v }
         opts.on("--log-level=LEVEL", "Log level (debug, info). default is info") { |v| @log_level = v.to_sym }
 
