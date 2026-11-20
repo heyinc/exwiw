@@ -1187,8 +1187,8 @@ module Exwiw
         File.join(@dir, 'exwiw.yml').tap { |path| File.write(path, "adapter: sqlite\nschema_dir: schema\n#{yaml}") }
       end
 
-      def mask_update_argv(*extra, yaml: "profiles: [dev]\n", subcommand: 'mask-update', target: ['--target-table=users', '--ids=1,2'])
-        [subcommand, '--database=tmp/test.sqlite3', "--config=#{write_config(yaml)}", *target, *extra]
+      def mask_update_argv(*extra, yaml: "profiles: [dev]\n", subcommand: 'mask-update', target: ['--target-table=users', '--ids=1,2'], recursive: ['--no-recursive'])
+        [subcommand, '--database=tmp/test.sqlite3', "--config=#{write_config(yaml)}", *target, *recursive, *extra]
       end
 
       it 'prints the UPDATE on stdout and the summary on stderr' do
@@ -1213,6 +1213,11 @@ module Exwiw
           .to output(/name = 'masked1'/).to_stdout.and output(/masked/).to_stderr
       end
 
+      it 'requires --no-recursive, since recursion is not supported yet' do
+        expect { run_cli(mask_update_argv(recursive: [])) }
+          .to raise_error(SystemExit).and output(/recursion is not supported yet.*--no-recursive/).to_stderr
+      end
+
       it 'requires --target-table and --ids' do
         expect { run_cli(mask_update_argv(target: [])) }
           .to raise_error(SystemExit).and output(/--target-table .* and --ids are required for mask-update/).to_stderr
@@ -1235,6 +1240,12 @@ module Exwiw
       it 'passes --allow-constant-column to the plan, which rejects one that guards nothing' do
         expect { run_cli(mask_update_argv('--allow-constant-column=users.name')) }
           .to raise_error(SystemExit).and output(/allow_constant_columns names users\.name/).to_stderr
+      end
+
+      it 'lets explain take --no-recursive to cover the target table only' do
+        argv = mask_update_argv(subcommand: 'explain', target: ['--target-table=shops', '--ids=1'])
+
+        expect { run_cli(argv) }.to output(/-- \[1\/1\] shops/).to_stdout
       end
 
       it 'rejects --allow-constant-column outside mask-update' do

@@ -55,6 +55,8 @@ This exports the `shops` rows with id 1 and 2 and the rows of other tables relat
 | omitted | given | [Scope-column mode](#scope-column-mode). An error if no table declares a `scope_column` (SQL adapters only) |
 | omitted | omitted | Every table in full |
 
+With `--no-recursive` (and `--target-table`), only the target table's rows are exported, without their related rows. `export` and `explain` accept it; the default is `--recursive`.
+
 The output directory (`dump/` by default) is emptied before each run. When it already has files and stdin is a terminal, exwiw asks before removing them.
 
 The output files are:
@@ -99,10 +101,10 @@ exwiw mask-update \
   --host=localhost --port=5432 --user=reader \
   --database=app_production \
   --schema-dir=exwiw/schema \
-  --target-table=users --ids=1,2 > mask.sql
+  --target-table=users --ids=1,2 --no-recursive > mask.sql
 ```
 
-`--ids` are primary key values (a composite primary key is not supported). The statements go to stdout; a summary (the number of rows, the columns, primary key values that were not found) goes to stderr. `--profile` applies the overlay of a [profile](#profile-overlays).
+`--ids` are primary key values (a composite primary key is not supported). Only the target table's rows are masked, not the tables related to it; recursion is not supported yet, so `--no-recursive` is required (a later version will extend what is masked, and `--no-recursive` will keep this behavior). The statements go to stdout; a summary (the number of rows, the columns, primary key values that were not found) goes to stderr. `--profile` applies the overlay of a [profile](#profile-overlays).
 
 - exwiw only reads. The output has no header and no transaction control; review it and apply it yourself. Whether the declared masks are safe values for the database you apply it to is not checked: a mask written for a development copy is applied as written.
 - Every masked value is computed when the statements are generated, by the same SELECT `export` runs, and written as a literal: one UPDATE per row. Apply them soon after generating; a row changed in between is overwritten with a value computed from its old data.
