@@ -55,9 +55,14 @@ This exports the `shops` rows with id 1 and 2 and the rows of other tables relat
 | omitted | given | [Scope-column mode](#scope-column-mode). An error if no table declares a `scope_column` (SQL adapters only) |
 | omitted | omitted | Every table in full |
 
-What `--ids` are depends on the schema unless you say: if the `--target-table` declares a `scope_column`, `--ids` are values of that column ([scope-column mode](#scope-column-mode)); otherwise they are primary keys. `--ids-by=primary-key` or `--ids-by=scope-column` states it, so adding a `scope_column` to the schema cannot change what a command means.
+`--mode` chooses how the target is read, and the options depend on it:
 
-With `--no-recursive` (and `--target-table`), only the target table's rows are exported, without their related rows. `export` and `explain` accept it; the default is `--recursive`.
+| `--mode` | `--target-table` | `--ids` | `--[no-]recursive` |
+|---|---|---|---|
+| `primary-key` | Required. The table to start from | Its primary keys | Allowed. `--no-recursive` extracts only the target table's rows, without their related rows (default `--recursive`) |
+| `scope-column` | No meaning (it only matters when `--mode` is omitted) | Values of the tables' [`scope_column`](#scope-column-mode)s; every table is filtered by its own | An error |
+
+Without `--mode`, the target decides: `scope-column` if the `--target-table` declares a `scope_column` in the schema, or if there is no `--target-table` (with `--ids`); `primary-key` otherwise. So adding a `scope_column` to a schema changes what `--target-table=shops --ids=1` means; pass `--mode=primary-key` to keep it. With neither `--target-table` nor `--ids`, every table is exported in full.
 
 The output directory (`dump/` by default) is emptied before each run. When it already has files and stdin is a terminal, exwiw asks before removing them.
 
@@ -103,10 +108,10 @@ exwiw mask-update \
   --host=localhost --port=5432 --user=reader \
   --database=app_production \
   --schema-dir=exwiw/schema \
-  --target-table=users --ids=1,2 --ids-by=primary-key --no-recursive > mask.sql
+  --target-table=users --ids=1,2 --mode=primary-key --no-recursive > mask.sql
 ```
 
-`--ids` are primary key values (a composite primary key is not supported), and `--ids-by=primary-key` is required so that a `scope_column` declared in the schema never changes what they mean. Only the target table's rows are masked, not the tables related to it; recursion is not supported yet, so `--no-recursive` is required (a later version will extend what is masked, and `--no-recursive` will keep this behavior). The statements go to stdout; a summary (the number of rows, the columns, primary key values that were not found) goes to stderr. `--profile` applies the overlay of a [profile](#profile-overlays).
+`--ids` are primary key values (a composite primary key is not supported), and `--mode=primary-key` is required so that a `scope_column` declared in the schema never changes what they mean. Only the target table's rows are masked, not the tables related to it; recursion is not supported yet, so `--no-recursive` is required (a later version will extend what is masked, and `--no-recursive` will keep this behavior). The statements go to stdout; a summary (the number of rows, the columns, primary key values that were not found) goes to stderr. `--profile` applies the overlay of a [profile](#profile-overlays).
 
 - exwiw only reads. The output has no header and no transaction control; review it and apply it yourself. Whether the declared masks are safe values for the database you apply it to is not checked: a mask written for a development copy is applied as written.
 - Every masked value is computed when the statements are generated, by the same SELECT `export` runs, and written as a literal: one UPDATE per row. Apply them soon after generating; a row changed in between is overwritten with a value computed from its old data.

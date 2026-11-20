@@ -120,8 +120,8 @@ module Exwiw
       @ids_errors = []
       @ids_field = nil
       @scope_column = nil
-      @recursive = true
-      @ids_by = nil
+      @recursive = nil
+      @mode = nil
       @output_format = nil
       @after_insert_hook_path = nil
       @parallel_workers = nil
@@ -174,7 +174,7 @@ module Exwiw
         ids_field: @ids_field,
         scope_column: @scope_column,
         recursive: @recursive,
-        ids_by: @ids_by,
+        mode: @mode,
       )
 
       logger = build_logger
@@ -1136,8 +1136,8 @@ module Exwiw
         opts.on("--target-collection=[COLLECTION]", "Alias of --target-table for the mongodb adapter.") { |v| @target_collection_name = v }
         opts.on("--ids=[IDS]", "Comma-separated list of identifiers. Required when --target-table is given. Prefix with `<id_space>=` (e.g. --ids=org=a,b) to give the values of a named ID space; may be repeated, once per ID space. An id containing `=` is passed as --ids=default=<ids>.") { |v| add_ids_option(v) }
         opts.on("--ids-field=[FIELD]", "Field on the target collection that --ids is matched against. Defaults to the primary key. (mongodb adapter only)") { |v| @ids_field = v }
-        opts.on("--ids-by=KIND", %w[primary-key scope-column], "What --ids are: primary-key (the target table's primary keys, even if it declares a `scope_column`) or scope-column (values of the `scope_column`s, see scope-column mode). Without it the schema decides: scope-column when the target table declares a `scope_column`. mask-update requires --ids-by=primary-key.") { |v| @ids_by = v.tr("-", "_").to_sym }
-        opts.on("--[no-]recursive", "Whether to extract the tables related to --target-table too (default). --no-recursive extracts only the target table's rows and needs --target-table. mask-update does not support recursion yet and requires --no-recursive.") { |v| @recursive = v }
+        opts.on("--mode=MODE", %w[primary-key scope-column], "primary-key: --target-table (required) is the start, --ids are its primary keys, and the tables related to it are followed (see --[no-]recursive). scope-column: every table is filtered by its own `scope_column`, --ids are values of those columns, --target-table has no meaning, and --[no-]recursive is an error. Without --mode: scope-column if --target-table declares a `scope_column` or is omitted (with --ids), primary-key otherwise. mask-update requires --mode=primary-key.") { |v| @mode = v.tr("-", "_").to_sym }
+        opts.on("--[no-]recursive", "primary-key mode only (an error in scope-column mode): follow the tables related to --target-table (default), or extract only its rows. mask-update requires --no-recursive.") { |v| @recursive = v }
         opts.on("--scope-column=[COLUMN]", "DEPRECATED. Filter every table by this shared global column (--ids are its values) instead of a single --target-table. SQL adapters only; mutually exclusive with --target-table. Prefer declaring a per-table `scope_column:` in the schema config.") { |v| @scope_column = v }
         opts.on("--output-format=[FORMAT]", "Output format: insert (default) or copy (PostgreSQL only, export subcommand only)") { |v| @output_format = v }
         opts.on("--insert-only", "DEPRECATED: ignored. exwiw no longer generates delete-*.sql files, so every export is insert-only.") do
