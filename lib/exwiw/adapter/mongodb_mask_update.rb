@@ -10,8 +10,6 @@ module Exwiw
       # @param allow_constant_columns [Array<String>] credential-looking "collection.path"s accepted as non-NULL masks
       # @return [Exwiw::MaskUpdateRunner::Generated]
       def build_mask_update(config, dump_target, config_by_name, allow_constant_columns: [])
-        config_by_name = config_by_name.transform_values { |c| c.dup.reject_ignored_members! }
-        config = config_by_name.fetch(config.name)
         @embedded_children_by_parent = index_embedded_children(config_by_name)
 
         plan = build_mask_plan(config)

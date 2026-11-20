@@ -14,10 +14,7 @@ module Exwiw
       # @return [Exwiw::MaskUpdateRunner::Generated]
       def build_mask_update(table, dump_target, table_by_name, allow_constant_columns: [])
         # ids are primary keys here even if the table declares a scope_column
-        table = table.dup.tap do |t|
-          t.columns = t.columns.reject(&:ignore)
-          t.scope_column = nil
-        end
+        table = table.dup.tap { |t| t.scope_column = nil }
         columns = table.columns
         masked = columns.select { |c| mask_declared?(c) }
         if masked.empty?
