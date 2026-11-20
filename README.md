@@ -154,6 +154,29 @@ The `raw_sql` forms accepted for such a column (the whole expression, case-insen
 | MySQL | `HEX(RANDOM_BYTES(N))`, `LOWER(HEX(RANDOM_BYTES(N)))` |
 | SQLite | `hex(randomblob(N))`, `lower(hex(randomblob(N)))` |
 
+#### Masking from a Rails application (`mask_with_exwiw!`)
+
+An application can mask its own rows through the connection it already holds. Include `Exwiw::Maskable::ActiveRecordModel` (Mongoid: `Exwiw::Maskable::MongoidDocument`) in the models, then call `mask_with_exwiw!` on a relation (criteria) or a record:
+
+```ruby
+class ApplicationRecord < ActiveRecord::Base
+  primary_abstract_class
+  include Exwiw::Maskable::ActiveRecordModel
+
+  def self.exwiw_config_path = Rails.root.join("exwiw/exwiw.yml") # optional
+end
+
+User.where(organization_id: 1).mask_with_exwiw!
+User.where(organization_id: 1).in_batches { |batch| batch.mask_with_exwiw! }
+user.mask_with_exwiw!
+User.where(id: ids).mask_with_exwiw!(dry_run: true).statements # the UPDATEs, not executed
+```
+
+- It applies the masks `mask-update` would print, reading and updating through the model's connection, and returns `Exwiw::Maskable::Result` (`summary`, `statements`). `touch:` (default `true`) also sets `updated_at` to the current time; `dry_run: true` only returns the statements: SQL UPDATEs, or for MongoDB `Exwiw::Adapter::MongodbAdapter::MaskUpdateBulkWrite`s (`collection_name`, `operations`, and `#to_extended_json` for the line `mask-update` prints). `profile:` applies a [profile](#profile-overlays), and `allow_constant_columns:` is `--allow-constant-column`.
+- A relation with no condition of its own (`User`, `User.all`, `User.unscoped`, or only the default scope) is refused, as it would mask every row. A default scope that embeds a changing value such as the current time is not recognized as the default scope, so the check does not catch it. Rows a default scope hides (e.g. soft-deleted ones) are not masked unless the relation includes them (`with_deleted`).
+- It opens no transaction: it runs in the caller's, if any (for Mongoid, in the session Mongoid has open). All statements are built before any runs, so a mask that cannot be applied changes nothing; wrap the call in a transaction to make database errors all-or-nothing too, and split a large relation with `in_batches`. The updates bypass callbacks, so nothing that runs on save (search indexes, events, caches) sees them. Mongoid reads from the primary, and an embedded document class is refused (mask the parent).
+- The config file is `./exwiw.yml` unless the class (or a base class, or a concern's `class_methods`) defines `exwiw_config_path`. The schema directory is `exwiw_schema_dir` when the class defines it, e.g. per database with `Rails.root.join("exwiw/schema", connection_db_config.name)`; otherwise the config file's `schema_dir`, else `schema` next to the `exwiw_config_path` file, else `exwiw/schema`. A loaded schema is kept for 60 seconds.
+
 ### Config file (`exwiw.yml`)
 
 Options can be kept in a YAML file passed with `--config=PATH`. Without `--config`, `exwiw.yml` (or `exwiw.yaml`) in the current directory is used if it exists. Options passed on the command line take precedence.
