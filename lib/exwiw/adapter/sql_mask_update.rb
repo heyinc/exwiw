@@ -12,10 +12,9 @@ module Exwiw
       #
       # @param table [Exwiw::TableConfig] table to mask
       # @param _table_by_name [Hash{String => Exwiw::TableConfig}] every declared table by name
-      # @param allow_constant_columns [Array<String>] credential-looking "table.column"s accepted as non-NULL masks
       # @return [Exwiw::MaskUpdateRunner::Checked]
       # @raise [Exwiw::MaskUpdateRunner::Error] when the table declares no mask, masks or does not select its primary key, or for an unaccepted credential-looking column
-      def check_mask_update(table, _table_by_name, allow_constant_columns: [])
+      def check_mask_update(table, _table_by_name)
         masked = masked_columns(table)
         if masked.empty?
           raise MaskUpdateRunner::Error,
@@ -31,9 +30,9 @@ module Exwiw
         end
 
         masks = masked.map { |c| [c.name, safe_for_credential?(c)] }
-        allowed = MaskUpdateRunner.check_credential_columns!(table.name, masks, allow_constant_columns)
+        allowed = MaskUpdateRunner.check_credential_columns!(table.name, masks, table.columns.select(&:allow_guessable_mask).map(&:name))
 
-        MaskUpdateRunner::Checked.new(columns: masked.map(&:name), allowed_constant_columns: allowed)
+        MaskUpdateRunner::Checked.new(columns: masked.map(&:name), allowed_guessable_columns: allowed)
       end
 
       # Builds one UPDATE per row of `results`, setting every masked column to the value `results` holds for it.

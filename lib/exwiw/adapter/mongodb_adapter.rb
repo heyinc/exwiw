@@ -237,10 +237,9 @@ module Exwiw
       #
       # @param config [Exwiw::MongodbCollectionConfig] collection to mask
       # @param config_by_name [Hash{String => Exwiw::MongodbCollectionConfig}] every declared collection by name
-      # @param allow_constant_columns [Array<String>] credential-looking "collection.path"s accepted as non-NULL masks
       # @return [Exwiw::MaskUpdateRunner::Checked]
       # @raise [Exwiw::MaskUpdateRunner::Error] when the collection declares no mask or masks its primary key, or for an unaccepted credential-looking path
-      def check_mask_update(config, config_by_name, allow_constant_columns: [])
+      def check_mask_update(config, config_by_name)
         @embedded_children_by_parent = index_embedded_children(config_by_name)
 
         names = mask_target_names(mask_plan(config))
@@ -252,9 +251,9 @@ module Exwiw
         end
         # A MongoDB mask can neither say NULL nor draw random bytes, so a credential-looking path always needs an allowance.
         safe_paths = names.map { |n| [n, false] }
-        allowed = MaskUpdateRunner.check_credential_columns!(config.name, safe_paths, allow_constant_columns)
+        allowed = MaskUpdateRunner.check_credential_columns!(config.name, safe_paths, allow_guessable_mask_paths(config))
 
-        MaskUpdateRunner::Checked.new(columns: names, allowed_constant_columns: allowed)
+        MaskUpdateRunner::Checked.new(columns: names, allowed_guessable_columns: allowed)
       end
 
       # One `bulkWrite` of `updateOne`s on a collection: what #mask_update_statements returns. `operations` are what
@@ -312,6 +311,14 @@ module Exwiw
       # @return [void]
       def write_mask_update(io, statement)
         io.puts statement.to_extended_json
+      end
+
+      # Paths (in mask_target_names' form) of the fields that set `allow_guessable_mask`, embedded collections included.
+      private def allow_guessable_mask_paths(config, prefix = nil)
+        own = config.fields.select(&:allow_guessable_mask).map { |f| [prefix, f.name].compact.join(".") }
+        own + embedded_children_of(config).flat_map do |child|
+          allow_guessable_mask_paths(child, [prefix, child.embedded_in.path].compact.join("."))
+        end
       end
 
       private def mask_target_names(plan, prefix = nil)

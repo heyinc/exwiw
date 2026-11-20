@@ -395,21 +395,23 @@ module Exwiw
           hosts: ["#{mongo.fetch(:host)}:#{mongo.fetch(:port)}"], database: "exwiw_maskable_spec",
         }
         model.delete_all
-        write_schema(
+        write_schema(users_schema)
+      end
+
+      let(:users_schema) do
+        {
           name: "maskable_spec_users", primary_key: "_id", belongs_tos: [],
           fields: [
             { name: "_id" },
             { name: "name" },
             { name: "email", replace_with: "masked{_id}@example.com" },
-            { name: "token", replace_with: "fixed" },
+            { name: "token", replace_with: "fixed", allow_guessable_mask: true },
             { name: "updated_at" },
           ],
-        )
+        }
       end
 
       after { model.delete_all }
-
-      let(:options) { { allow_constant_columns: ["maskable_spec_users.token"] } }
 
       def create_user(name)
         model.create!(name: name, email: "#{name}@x", token: "t", updated_at: long_ago)
@@ -419,7 +421,7 @@ module Exwiw
         a = create_user("a")
         b = create_user("b")
 
-        result = model.where(name: "a").mask_with_exwiw!(**options)
+        result = model.where(name: "a").mask_with_exwiw!
 
         expect(result.summary).to have_attributes(target_count: 1, columns: %w[email token])
         expect(result.statements.sole).to have_attributes(
@@ -435,7 +437,7 @@ module Exwiw
       it "leaves updated_at alone with touch: false" do
         a = create_user("a")
 
-        model.where(name: "a").mask_with_exwiw!(touch: false, **options)
+        model.where(name: "a").mask_with_exwiw!(touch: false)
 
         expect(a.reload).to have_attributes(email: "masked#{a._id}@example.com", updated_at: long_ago)
       end
@@ -443,7 +445,7 @@ module Exwiw
       it "only returns the bulk writes with dry_run: true" do
         a = create_user("a")
 
-        result = model.where(name: "a").mask_with_exwiw!(dry_run: true, **options)
+        result = model.where(name: "a").mask_with_exwiw!(dry_run: true)
 
         expect(result.statements.size).to eq(1)
         expect(BSON::ExtJSON.parse(result.statements.sole.to_extended_json).first).to eq("maskable_spec_users")
@@ -454,7 +456,7 @@ module Exwiw
         a = create_user("a")
         b = create_user("b")
 
-        expect(a.mask_with_exwiw!(**options).summary.target_count).to eq(1)
+        expect(a.mask_with_exwiw!.summary.target_count).to eq(1)
         expect(a.email).to eq("masked#{a._id}@example.com")
         expect(b.reload.email).to eq("b@x")
       end
@@ -464,10 +466,10 @@ module Exwiw
         soft = MaskableSpecModels::MongoidSoftUser
 
         [model, model.all, model.unscoped, soft, soft.all, soft.unscoped].each do |criteria|
-          expect { criteria.mask_with_exwiw!(**options) }.to raise_error(MaskUpdateRunner::Error, /no condition narrowing the documents/)
+          expect { criteria.mask_with_exwiw! }.to raise_error(MaskUpdateRunner::Error, /no condition narrowing the documents/)
         end
         expect(model.pluck(:email)).to eq(["a@x"])
-        expect(soft.where(name: "a").mask_with_exwiw!(**options).summary.target_count).to eq(1)
+        expect(soft.where(name: "a").mask_with_exwiw!.summary.target_count).to eq(1)
       end
 
       context "with a String _id that reads as a number" do
@@ -512,7 +514,7 @@ module Exwiw
         model.mongo_client.subscribe(Mongo::Monitoring::COMMAND, subscriber)
 
         session_id = model.with_session do |session|
-          model.where(name: "a").mask_with_exwiw!(**options)
+          model.where(name: "a").mask_with_exwiw!
           session.session_id
         end
 
@@ -524,6 +526,7 @@ module Exwiw
       end
 
       it "writes nothing when a document cannot be masked as declared" do
+        write_schema(users_schema.merge(fields: users_schema[:fields].map { |f| f.except(:allow_guessable_mask) }))
         a = create_user("a")
 
         expect { model.where(name: "a").mask_with_exwiw! }.to raise_error(MaskUpdateRunner::Error, /look like credentials/)

@@ -184,7 +184,7 @@ A collection name can also be shared by embedded and non-embedded models, in two
 
 The collision is reported on stderr, because the embedded documents of the same name are **not** covered by that config: to mask them, add a config by hand with an `embedded_in` and a `name` / file name of your own choosing (generation and `tidy_mongoid` both leave `embedded_in` configs alone, so a hand-written one is stable). This is deliberately not recorded as a `comment` on the generated config — a generated comment takes precedence when merging, so it would overwrite a note you wrote about this very situation on every run.
 
-Regeneration preserves hand-edited `replace_with`, `filter`, `ignore`, `bulk_insert_chunk_size`, and `query_timeout_ms` values, like the ActiveRecord generator. Indexes are not written to the config — they are introspected from the live database at dump time (see [Output](#output)). Polymorphic `belongs_to` is not yet expanded by this task.
+Regeneration preserves hand-edited `replace_with`, `allow_guessable_mask`, `filter`, `ignore`, `bulk_insert_chunk_size`, and `query_timeout_ms` values, like the ActiveRecord generator. Indexes are not written to the config — they are introspected from the live database at dump time (see [Output](#output)). Polymorphic `belongs_to` is not yet expanded by this task.
 
 ### Safe mode, `tidy_mongoid` and `check_mongoid`
 

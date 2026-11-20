@@ -48,12 +48,11 @@ module Exwiw
         # @param dry_run [Boolean] only build the bulk writes, without executing them
         # @param profile [String, nil] the schema profile to apply. The schema is found through the class methods
         #   `exwiw_config_path` and `exwiw_schema_dir` when the class defines them (see Exwiw::Maskable.schema_for)
-        # @param allow_constant_columns [Array<String>] credential-looking "collection.path"s accepted as constant masks
         # @return [Exwiw::Maskable::Result] statements are Exwiw::Adapter::MongodbAdapter::MaskUpdateBulkWrite
         #   (`#to_extended_json` gives the line `mask-update` prints)
         # @raise [Exwiw::MaskUpdateRunner::Error] when nothing narrows the documents, the class is embedded, or the documents
         #   cannot be masked as declared; nothing is written then
-        def mask_with_exwiw!(touch: true, dry_run: false, profile: nil, allow_constant_columns: [])
+        def mask_with_exwiw!(touch: true, dry_run: false, profile: nil)
           if embedded?
             raise MaskUpdateRunner::Error,
                   "#{name} is embedded; its masks apply through the parent's documents, so mask the parent instead"
@@ -76,7 +75,7 @@ module Exwiw
             table_name: collection_name.to_s,
             ids: all.read(mode: :primary).pluck(:_id),
             extra_assignments: touch && fields.key?("updated_at") ? { "updated_at" => Time.now.utc } : {},
-            allow_constant_columns: allow_constant_columns, logger: logger,
+            logger: logger,
           )
           unless dry_run
             bulk_writes.each do |bulk_write|

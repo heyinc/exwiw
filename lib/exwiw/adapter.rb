@@ -99,10 +99,9 @@ module Exwiw
       #
       # @param _table [Exwiw::TableConfig, Exwiw::MongodbCollectionConfig] the table (collection) to mask
       # @param _table_by_name [Hash{String => Object}] every declared table by name, as for #build_query
-      # @param allow_constant_columns [Array<String>] "table.column"s whose credential-looking name the caller accepts masking to non-NULL
       # @return [Exwiw::MaskUpdateRunner::Checked]
       # @raise [Exwiw::MaskUpdateRunner::Error] when the table cannot be masked as declared
-      def check_mask_update(_table, _table_by_name, allow_constant_columns: [])
+      def check_mask_update(_table, _table_by_name)
         raise NotImplementedError, "#{self.class.name} does not implement #check_mask_update"
       end
 
