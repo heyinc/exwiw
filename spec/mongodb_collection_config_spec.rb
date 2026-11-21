@@ -234,6 +234,13 @@ module Exwiw
           expect { described_class.from(json) }.to raise_error(ArgumentError, /cannot be combined/)
         end
 
+        it 'rejects combining unset or replace_with_random with another mask' do
+          [{ "unset" => true, "replace_with" => "x" }, { "replace_with_random" => "hex:16", "unset" => true }].each do |masks|
+            json = config_with_field({ "name" => "name" }.merge(masks))
+            expect { described_class.from(json) }.to raise_error(ArgumentError, /cannot be combined/)
+          end
+        end
+
         it 'rejects an unknown fake-data type' do
           json = config_with_field(
             "name" => "name", "replace_with_fake_data" => { "seed" => "_id", "type" => "wat" },
@@ -489,6 +496,21 @@ module Exwiw
         buyer = merged.fields.find { |f| f.name == 'buyer_name' }
         expect(buyer.replace_with_fake_data.type).to eq('human_name')
         expect(buyer.replace_with_fake_data.seed).to eq('_id')
+      end
+
+      it 'preserves a user-owned unset and replace_with_random on fields across regeneration' do
+        current_masked = described_class.from_symbol_keys(
+          name: 'orders', primary_key: '_id', belongs_tos: [],
+          fields: [{ name: '_id' }, { name: 'token', replace_with_random: 'hex:32' }, { name: 'password', unset: true }],
+        )
+        regenerated = described_class.from_symbol_keys(
+          name: 'orders', primary_key: '_id', belongs_tos: [],
+          fields: [{ name: '_id' }, { name: 'token' }, { name: 'password' }],
+        )
+        merged = current_masked.merge(regenerated)
+        expect(merged.fields.map(&:to_hash)).to eq([
+          { "name" => "_id" }, { "name" => "token", "replace_with_random" => "hex:32" }, { "name" => "password", "unset" => true },
+        ])
       end
 
       it 'carries the user-owned query_timeout_ms forward (the generator never emits it)' do

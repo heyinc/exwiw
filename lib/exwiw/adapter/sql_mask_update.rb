@@ -5,9 +5,6 @@ module Exwiw
     # Mask-UPDATE output shared by the SQL adapters, the counterpart of SqlBulkInsert: it formats the rows
     # MaskUpdateRunner reads with #build_query and #execute as UPDATE statements.
     module SqlMaskUpdate
-      # A `random_bytes` of fewer bytes is guessable; more than the maximum is just wasteful.
-      RANDOM_BYTES_RANGE = (16..1024)
-
       def self.included(base)
         base.extend(ClassMethods)
       end
@@ -35,23 +32,14 @@ module Exwiw
         # @param column [Exwiw::TableColumn]
         # @return [Boolean]
         def mask_declared?(column)
-          !!(column.raw_sql || !column.replace_with.nil? || column.map || column.replace_with_fake_data)
+          !!(column.raw_sql || !column.replace_with.nil? || column.map || column.replace_with_fake_data ||
+            column.replace_with_random || column.unset)
         end
 
-        # NULL, or one of the adapter's RANDOM_SECRET_PATTERNS (evaluated per row by the SELECT, then written as a literal).
-        #
         # @param column [Exwiw::TableColumn]
-        # @return [Boolean]
+        # @return [Boolean] whether the mask leaves nothing to guess
         def safe_for_credential?(column)
-          sql = column.raw_sql.to_s.strip
-          sql.casecmp?("NULL") || random_secret_expression?(sql)
-        end
-
-        private def random_secret_expression?(sql)
-          self::RANDOM_SECRET_PATTERNS.any? do |pattern|
-            match = pattern.match(sql)
-            match && (match.names.empty? || RANDOM_BYTES_RANGE.cover?(match[:bytes].to_i))
-          end
+          !!(column.unset || column.replace_with_random)
         end
       end
 
@@ -65,7 +53,7 @@ module Exwiw
         described = self.class.describe_masks(table, table_by_name)
         unless MaskRules.masked?(described)
           raise MaskUpdateRunner::Error,
-                "table '#{table.name}' declares no mask (replace_with / raw_sql / map / replace_with_fake_data) on any column"
+                "table '#{table.name}' declares no mask on any column"
         end
         if MaskRules.masks_primary_key?(described)
           raise MaskUpdateRunner::Error,

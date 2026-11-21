@@ -1114,9 +1114,7 @@ module Exwiw
                       Print the UPDATE statements (canonical Extended JSON lines for mongodb) that
                       mask the rows given by --target-table and --ids with the masks
                       declared in the schema config. The database is only read; apply
-                      the output yourself. A column whose name looks like a credential
-                      may only be masked to NULL (raw_sql "NULL") or a random raw_sql
-                      such as hex(randomblob(16)), unless it sets allow_guessable_credential: true.
+                      the output yourself. Masks are applied as written.
             schema    Maintain the schema config (generate | check | tidy) by
                       reading a live database, for applications that cannot be
                       loaded to generate it from their models. Requires --from-db;

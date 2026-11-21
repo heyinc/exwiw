@@ -135,6 +135,27 @@ module Exwiw
         plan = build(adapter, [tokens], [1], table_name: "mask_update_credential_spec")
         expect(plan.summary.columns).to eq(%w[api_token])
       end
+
+      it "unsets an unset field, sets a random one, and leaves an absent or null value as it is" do
+        collection.insert_one("_id" => 2, "name" => "m", "secret" => nil)
+        config = MongodbCollectionConfig.from_symbol_keys(
+          name: "mask_update_credential_spec", primary_key: "_id", belongs_tos: [],
+          fields: [{ name: "_id" }, { name: "api_token", replace_with_random: "hex:16" }, { name: "secret", unset: true },
+                   { name: "name", unset: true }],
+        )
+        plan = build(adapter, [config], [1, 2], table_name: "mask_update_credential_spec")
+        _, operations = BSON::ExtJSON.parse_obj(JSON.parse(plan.script))
+        updates = operations.to_h { |op| [op["updateOne"]["filter"]["_id"], op["updateOne"]["update"]] }
+
+        expect(updates[1]).to match("$set" => { "api_token" => a_string_matching(/\A[0-9a-f]{32}\z/) }, "$unset" => { "name" => "" })
+        expect(updates[2]).to eq("$unset" => { "secret" => "", "name" => "" })
+
+        collection.bulk_write(operations.map { |op| { update_one: op["updateOne"].transform_keys(&:to_sym) } })
+        expect(collection.find.sort("_id" => 1).to_a).to match([
+          { "_id" => 1, "api_token" => a_string_matching(/\A[0-9a-f]{32}\z/) },
+          { "_id" => 2 },
+        ])
+      end
     end
 
     describe "against a SQLite database" do
@@ -403,8 +424,8 @@ module Exwiw
         table(columns: [{ name: "id" }, { name: "email", replace_with: "masked{id}" }] + extra)
       end
 
-      it "accepts one masked to NULL" do
-        plan = build(adapter, [accounts(password_digest: { raw_sql: "NULL" })])
+      it "sets an unset column to NULL" do
+        plan = build(adapter, [accounts(password_digest: { unset: true })])
         db.execute_batch(plan.script)
 
         expect(db.execute("SELECT password_digest FROM accounts")).to eq([[nil]])
@@ -417,15 +438,16 @@ module Exwiw
         expect(db.execute("SELECT api_token, password_digest FROM accounts")).to eq([%w[KNOWN D]])
       end
 
-      it "applies hex(randomblob(16)) as a different 32-char hex value per row" do
+      it "applies replace_with_random as a different hex value per row, and keeps NULL" do
         db.execute("INSERT INTO accounts VALUES (2, 'b@x', 'd2', 'real-token-2', 'osaka')")
-        plan = build(adapter, [accounts(api_token: { raw_sql: "hex(randomblob(16))" })], [1, 2])
+        db.execute("INSERT INTO accounts VALUES (3, 'c@x', 'd3', NULL, 'kyoto')")
+        plan = build(adapter, [accounts(api_token: { replace_with_random: "hex:16" })], [1, 2, 3])
         db.execute_batch(plan.script)
 
         values = db.execute("SELECT api_token FROM accounts ORDER BY id").flatten
-        expect(values).to all(match(/\A[0-9A-F]{32}\z/))
-        expect(values).not_to include("real-token", "real-token-2")
-        expect(values.uniq.size).to eq(2)
+        expect(values.first(2)).to all(match(/\A[0-9a-f]{32}\z/))
+        expect(values.first(2).uniq.size).to eq(2)
+        expect(values.last).to be_nil
       end
 
       it "rejects a map returning a value an UPDATE cannot hold" do
@@ -565,48 +587,14 @@ module Exwiw
       end
     end
 
-    describe "random expressions for credential-looking columns" do
-      {
-        postgresql: [
-          "gen_random_uuid()::text", "replace(gen_random_uuid()::text, '-', '')", "encode(gen_random_bytes(16), 'hex')",
-          "encode(gen_random_bytes(1024), 'hex')", "GEN_RANDOM_UUID ( ) :: TEXT", "  encode( gen_random_bytes( 32 ) , 'HEX' )  ",
-          "REPLACE(gen_random_uuid()::text,'-','')",
-        ],
-        mysql: ["HEX(RANDOM_BYTES(16))", "LOWER(HEX(RANDOM_BYTES(16)))", "hex(random_bytes(1024))", "lower( hex( random_bytes( 32 ) ) )"],
-        sqlite: ["hex(randomblob(16))", "lower(hex(randomblob(16)))", "HEX(RANDOMBLOB(1024))", "Lower( Hex( randomblob( 32 ) ) )"],
-      }.each do |adapter_name, expressions|
-        expressions.each do |expression|
-          it "accepts #{expression.inspect} on #{adapter_name}" do
-            column = TableColumn.from_symbol_keys(name: "api_token", raw_sql: expression)
+    describe "masks that leave nothing to guess" do
+      it "counts only unset and replace_with_random" do
+        safe = { unset: true, replace_with_random: "hex:16" }.map { |key, value| TableColumn.from_symbol_keys(name: "t", key => value) }
+        guessable = [{ raw_sql: "NULL" }, { raw_sql: "hex(randomblob(16))" }, { replace_with: "x" }, { map: "proc { nil }" }]
+                    .map { |mask| TableColumn.from_symbol_keys(name: "t", **mask) }
 
-            expect(Adapter.class_for(adapter_name).safe_for_credential?(column)).to be(true)
-          end
-        end
-      end
-
-      {
-        postgresql: [
-          "random()", "gen_random_uuid()", "gen_random_uuid()::text || 'x'", "'k' || gen_random_uuid()::text",
-          "CASE WHEN true THEN gen_random_uuid()::text ELSE 'KNOWN' END", "encode(gen_random_bytes(15), 'hex')",
-          "encode(gen_random_bytes(1025), 'hex')", "encode(gen_random_bytes(016), 'hex')", "hex(randomblob(16))", "HEX(RANDOM_BYTES(16))",
-          "'KNOWN'",
-        ],
-        mysql: [
-          "RAND()", "UUID()", "HEX(RANDOM_BYTES(15))", "HEX(RANDOM_BYTES(1025))", "CONCAT('k', HEX(RANDOM_BYTES(16)))",
-          "CASE WHEN 1 THEN HEX(RANDOM_BYTES(16)) ELSE 'KNOWN' END", "gen_random_uuid()::text", "hex(randomblob(16))", "'KNOWN'",
-        ],
-        sqlite: [
-          "random()", "hex(randomblob(15))", "hex(randomblob(1025))", "'k' || hex(randomblob(16))",
-          "CASE WHEN 1 THEN hex(randomblob(16)) ELSE 'KNOWN' END", "gen_random_uuid()::text", "HEX(RANDOM_BYTES(16))", "'KNOWN'",
-        ],
-      }.each do |adapter_name, expressions|
-        expressions.each do |expression|
-          it "does not accept #{expression.inspect} on #{adapter_name}" do
-            column = TableColumn.from_symbol_keys(name: "api_token", raw_sql: expression)
-
-            expect(Adapter.class_for(adapter_name).safe_for_credential?(column)).to be(false)
-          end
-        end
+        expect(safe.map { |c| Adapter::SqliteAdapter.safe_for_credential?(c) }).to eq([true, true])
+        expect(guessable.map { |c| Adapter::SqliteAdapter.safe_for_credential?(c) }).to eq([false] * 4)
       end
     end
 

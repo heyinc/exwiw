@@ -272,21 +272,23 @@ module Exwiw
       end
     end
 
-    # The Ruby-side masking modes (`map` / `replace_with_fake_data`) are strictly
-    # exclusive — with each other and with the SQL-side modes. Only the new keys
-    # are restricted: the legacy raw_sql > replace_with precedence stays lenient.
+    # The masking modes are strictly exclusive, except the legacy raw_sql > replace_with precedence, which stays
+    # lenient.
     # Deliberately static (no faker require, no proc eval) so schema
     # regeneration never executes config Ruby; the seed column and the map proc
     # are resolved at dump time by RowTransformer.build.
     private def validate_ruby_side_masking!(column)
-      ruby_side = [column.map && "map", column.replace_with_fake_data && "replace_with_fake_data"].compact
-      return if ruby_side.empty?
+      strict = [
+        column.map && "map", column.replace_with_fake_data && "replace_with_fake_data",
+        column.replace_with_random && "replace_with_random", column.unset && "unset"
+      ].compact
+      return if strict.empty?
 
-      sql_side = [column.raw_sql && "raw_sql", !column.replace_with.nil? && "replace_with"].select { |v| v }
-      if ruby_side.size > 1 || sql_side.any?
+      legacy = [column.raw_sql && "raw_sql", !column.replace_with.nil? && "replace_with"].select { |v| v }
+      if strict.size > 1 || legacy.any?
         raise ArgumentError,
-              "Table '#{name}' column '#{column.name}': #{(ruby_side + sql_side).join('/')} cannot be combined; " \
-              "use at most one of map/replace_with_fake_data, without raw_sql/replace_with."
+              "Table '#{name}' column '#{column.name}': #{(strict + legacy).join('/')} cannot be combined; " \
+              "use at most one of map/replace_with_fake_data/replace_with_random/unset, without raw_sql/replace_with."
       end
 
       fake_data = column.replace_with_fake_data

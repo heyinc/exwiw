@@ -785,6 +785,14 @@ module Exwiw
         }.to raise_error(ArgumentError, /cannot be combined/)
       end
 
+      it 'rejects combining unset or replace_with_random with another mask' do
+        [{ unset: true, replace_with: 'x' }, { replace_with_random: 'hex:16', raw_sql: 'NULL' },
+         { unset: true, replace_with_random: 'hex:16' }].each do |masks|
+          expect { config_with_columns([{ name: 'id' }, { name: 'name', **masks }]) }
+            .to raise_error(ArgumentError, /column 'name'.*cannot be combined/)
+        end
+      end
+
       it 'still allows the legacy raw_sql + replace_with combination' do
         expect {
           config_with_columns([{ name: 'id' }, { name: 'name', raw_sql: "'x'", replace_with: 'y' }])

@@ -5,8 +5,8 @@ require "digest"
 require_relative "japanese_names"
 
 module Exwiw
-  # Applies the Ruby-process-side masking modes — `map` and
-  # `replace_with_fake_data` — to the rows streamed out of a SQL adapter's
+  # Applies the Ruby-process-side masking modes — `map`,
+  # `replace_with_fake_data` and `replace_with_random` — to the rows streamed out of a SQL adapter's
   # #execute. Unlike replace_with/raw_sql, which compile into the SELECT and
   # run in the database, these run in the exwiw process, so they can execute
   # arbitrary Ruby (`map`) or derive deterministic fake values (`fake data`).
@@ -144,7 +144,7 @@ module Exwiw
       return nil unless table.respond_to?(:columns)
 
       columns = table.columns
-      return nil if columns.nil? || columns.none? { |c| c.map || c.replace_with_fake_data }
+      return nil if columns.nil? || columns.none? { |c| c.map || c.replace_with_fake_data || c.replace_with_random }
 
       new(table)
     end
@@ -308,6 +308,8 @@ module Exwiw
           [index, compile_map(column)]
         elsif column.replace_with_fake_data
           [index, compile_fake(column, index)]
+        elsif column.replace_with_random
+          [index, compile_random(column, index)]
         end
       end
       @replacement_buffer = Array.new(@transforms.size)
@@ -362,6 +364,11 @@ module Exwiw
           raise "map proc for column '#{table_name}.#{column_name}' raised: #{e.class}: #{e.message}"
         end
       end
+    end
+
+    private def compile_random(column, column_index)
+      generate = RandomMask.generator(column.replace_with_random)
+      ->(row) { row[column_index].nil? ? nil : generate.call }
     end
 
     private def compile_fake(column, column_index)

@@ -29,7 +29,9 @@ module Exwiw
           belongs_tos: [{ foreign_key: "shop_id", table_name: "shops" }],
           columns: [
             { name: "id" }, { name: "shop_id" },
-            { name: "api_token", raw_sql: "hex(randomblob(16))" },
+            { name: "api_token", replace_with_random: "hex:16" },
+            { name: "password", unset: true },
+            { name: "salt", raw_sql: "NULL" },
             { name: "email", replace_with: "x", allow_unmasked: true },
           ],
         )
@@ -39,15 +41,19 @@ module Exwiw
           ["id", false, false, true, false],
           ["shop_id", false, false, true, false],
           ["api_token", true, true, false, false],
+          ["password", true, true, false, false],
+          ["salt", true, false, false, false],
           ["email", true, false, false, true],
         ])
-        expect(Adapter::PostgresqlAdapter.describe_masks(table, {}).columns[2].safe).to be(false)
       end
 
-      it "describes a MongoDB collection with its embedded fields under their paths, never safe" do
+      it "describes a MongoDB collection with its embedded fields under their paths" do
         users = MongodbCollectionConfig.from_symbol_keys(
           name: "users", primary_key: "_id", belongs_tos: [],
-          fields: [{ name: "_id" }, { name: "token", replace_with: "x" }],
+          fields: [
+            { name: "_id" }, { name: "token", replace_with: "x" }, { name: "secret", replace_with_random: "hex:16" },
+            { name: "password", unset: true },
+          ],
         )
         cards = MongodbCollectionConfig.from_symbol_keys(
           name: "cards", primary_key: "_id", belongs_tos: [],
@@ -63,6 +69,8 @@ module Exwiw
         expect(described.columns.map { |c| [c.path, c.name, c.masked, c.safe, c.exempt] }).to eq([
           ["_id", "_id", false, false, true],
           ["token", "token", true, false, false],
+          ["secret", "secret", true, true, false],
+          ["password", "password", true, true, false],
           ["wallet.cards._id", "_id", false, false, true],
           ["wallet.cards.card_number", "card_number", false, false, false],
         ])

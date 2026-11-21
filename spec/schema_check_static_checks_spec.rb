@@ -36,6 +36,10 @@ module Exwiw
       CheckConfig.parse(value, profiles: profiles)
     end
 
+    let(:guessable_reason) do
+      "masked to a guessable value; mask it with unset or replace_with_random, or set allow_guessable_credential"
+    end
+
     def report(check: { "integrity" => true, "guessable_credentials" => true, "unmasked_sensitive" => true }, adapter: "sqlite", config_class: TableConfig)
       described_class.new(
         schema_dir: schema_dir, regenerator: ->(_dir) {}, profiles: profiles, config_class: config_class,
@@ -47,7 +51,8 @@ module Exwiw
       write("users", table("users", [
                              { "name" => "id" },
                              { "name" => "email", "replace_with" => "user{id}@example.com" },
-                             { "name" => "api_token", "raw_sql" => "hex(randomblob(16))" },
+                             { "name" => "api_token", "replace_with_random" => "hex:16" },
+                             { "name" => "password_digest", "unset" => true },
                              { "name" => "phone", "allow_unmasked" => true },
                              { "name" => "nickname" },
                            ]))
@@ -111,7 +116,7 @@ module Exwiw
       it "reports an allow_guessable_credential that guards nothing" do
         write("users", table("users", [
                                { "name" => "id" },
-                               { "name" => "api_token", "raw_sql" => "NULL", "allow_guessable_credential" => true },
+                               { "name" => "api_token", "unset" => true, "allow_guessable_credential" => true },
                                { "name" => "city", "replace_with" => "x", "allow_guessable_credential" => true },
                                { "name" => "secret", "allow_guessable_credential" => true },
                                { "name" => "password", "replace_with" => "x", "allow_guessable_credential" => true },
@@ -129,15 +134,16 @@ module Exwiw
                                   { "name" => "api_token", "replace_with" => "token-{id}" },
                                   { "name" => "password_digest", "map" => "->(_) { 'x' }" },
                                   { "name" => "session_secret", "replace_with" => "KNOWN", "allow_guessable_credential" => true },
-                                  { "name" => "access_key", "raw_sql" => "NULL" },
-                                  { "name" => "reset_token", "raw_sql" => "lower(hex(randomblob(16)))" },
+                                  { "name" => "access_key", "unset" => true },
+                                  { "name" => "reset_token", "replace_with_random" => "hex:32" },
+                                  { "name" => "private_key", "raw_sql" => "NULL" },
+                                  { "name" => "client_secret", "raw_sql" => "lower(hex(randomblob(16)))" },
                                   { "name" => "salt" },
                                 ]))
 
-        expect(report(check: only_credentials)["guessable_credentials"]).to eq(%w[api_token password_digest].map do |column|
-          "accounts.#{column} [base]: masked to a guessable value; mask it with raw_sql \"NULL\" or a random expression, " \
-            "or set allow_guessable_credential"
-        end)
+        expect(report(check: only_credentials)["guessable_credentials"]).to eq(
+          %w[api_token client_secret password_digest private_key].map { |column| "accounts.#{column} [base]: #{guessable_reason}" },
+        )
       end
 
       it "adds the configured patterns to the built-in one, and judges allow_guessable_credential by them" do
@@ -166,12 +172,6 @@ module Exwiw
           .to eq(%w[accounts.encrypted_password accounts.encrypted_private_jwk accounts.signing_privatekey])
       end
 
-      it "judges the random expression by the adapter's own functions" do
-        write("accounts", table("accounts", [{ "name" => "id" }, { "name" => "api_token", "raw_sql" => "gen_random_uuid()::text" }]))
-
-        expect(report(check: only_credentials, adapter: "postgresql")["guessable_credentials"]).to eq([])
-        expect(report(check: only_credentials, adapter: "sqlite")["guessable_credentials"].size).to eq(1)
-      end
     end
 
     describe "unmasked_sensitive" do
@@ -270,6 +270,8 @@ module Exwiw
                                     { "name" => "_id" },
                                     { "name" => "email" },
                                     { "name" => "api_token", "replace_with" => "x" },
+                                    { "name" => "refresh_token", "replace_with_random" => "hex:16" },
+                                    { "name" => "password", "unset" => true },
                                     { "name" => "nickname", "allow_guessable_credential" => true },
                                   ]))
         write("addresses", collection("addresses", [
@@ -285,11 +287,9 @@ module Exwiw
 
         expect(result["unmasked_sensitive"].map { |entry| entry[/\A\S+/] }).to eq(%w[users.email users.profile.addresses.city users.profile.addresses.zip_code])
         expect(result["guessable_credentials"]).to eq([
-          "users.api_token [base]: masked to a guessable value, and a MongoDB mask cannot be NULL or random; " \
-          "set allow_guessable_credential, or ignore the field",
+          "users.api_token [base]: #{guessable_reason}",
           "users.nickname [base]: sets allow_guessable_credential, but is not a credential-looking column masked to a guessable value; remove it",
-          "users.profile.addresses.secret [base]: masked to a guessable value, and a MongoDB mask cannot be NULL or random; " \
-          "set allow_guessable_credential, or ignore the field",
+          "users.profile.addresses.secret [base]: #{guessable_reason}",
         ])
         expect(result["unmasked_sensitive"]).to include(
           "users.profile.addresses.city [base]: sets allow_unmasked, but its name matches no mask pattern; remove it",
@@ -353,10 +353,10 @@ module Exwiw
     end
 
     describe "databases" do
-      it "labels each finding with its database directory and judges it with that database's adapter" do
-        write("accounts", table("accounts", [{ "name" => "id" }, { "name" => "api_token", "raw_sql" => "gen_random_uuid()::text" }]),
+      it "labels each finding with its database directory" do
+        write("accounts", table("accounts", [{ "name" => "id" }, { "name" => "api_token", "replace_with_random" => "hex:16" }]),
               dir: File.join(schema_dir, "primary"))
-        write("accounts", table("accounts", [{ "name" => "id" }, { "name" => "api_token", "raw_sql" => "gen_random_uuid()::text" }]),
+        write("accounts", table("accounts", [{ "name" => "id" }, { "name" => "api_token", "replace_with" => "x" }]),
               dir: File.join(schema_dir, "legacy"))
         adapters = { "primary" => "postgresql", "legacy" => "mysql" }
 

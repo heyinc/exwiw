@@ -217,14 +217,7 @@ module Exwiw
         end
         findings
       when "guessable_credentials"
-        reason =
-          if adapter_class.const_defined?(:RANDOM_SECRET_PATTERNS)
-            "masked to a guessable value; mask it with raw_sql \"NULL\" or a random expression, " \
-              "or set allow_guessable_credential"
-          else
-            "masked to a guessable value, and a MongoDB mask cannot be NULL or random; " \
-              "set allow_guessable_credential, or ignore the field"
-          end
+        reason = "masked to a guessable value; mask it with unset or replace_with_random, or set allow_guessable_credential"
         MaskRules.unaccepted_credentials(table, credential_patterns).map { |path| [path, reason] } +
           MaskRules.stray_guessable_allowances(table, credential_patterns).map do |path|
             [path, "sets allow_guessable_credential, but is not a credential-looking column masked to a guessable value; " \

@@ -16,6 +16,10 @@ module Exwiw
     # (MongodbAdapter#apply_mask_plan!), after `replace_with`.
     attribute :replace_with_fake_data, Serdes::OptionalType.new(FakeData), skip_serializing_if_nil: true,
                                        merge: { exclusive: :mask }
+    # SQL: NULL. MongoDB: the key is removed (`$unset`).
+    attribute :unset, Serdes::OptionalType.new(TrueFlag.new), skip_serializing_if_nil: true, merge: { exclusive: :mask }
+    attribute :replace_with_random, Serdes::OptionalType.new(RandomMask.new), skip_serializing_if_nil: true,
+                                    merge: { exclusive: :mask }
     # The Mongoid model's Ruby accessor when the stored document key (`name`)
     # was renamed via `field :ctry, as: :country`. Purely informational — exwiw
     # masks/projects by `name` (the storage key) — but surfacing the accessor
