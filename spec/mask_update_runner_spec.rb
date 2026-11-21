@@ -536,10 +536,7 @@ module Exwiw
           expect(plan.summary).to have_attributes(
             target_count: 2, columns: %w[name email], missing_primary_key_values: [987_654]
           )
-          expect(plan.script.lines.map(&:strip)).to match([
-            /\AUPDATE users SET name = .*, email = .* WHERE users\.id = 1;\z/,
-            /\AUPDATE users SET name = .*, email = .* WHERE users\.id = 2;\z/,
-          ])
+          expect(plan.script.lines.map(&:strip)).to match([/\AUPDATE users AS t .*'masked1'.*'masked2'.* t\.id = v\.id.*;\z/])
         end
       end
 
@@ -789,9 +786,76 @@ module Exwiw
 
         _, statements = apply(DataSource.given("postgresql", conn), [table(columns: columns)], [1])
 
-        expect(statements).to eq([%(UPDATE accounts SET updated_at = '2000-01-02 03:04:05' WHERE accounts.id = 1;)])
+        expect(statements).to eq([
+          "UPDATE accounts AS t SET updated_at = v.updated_at FROM (VALUES ((NULL::accounts).id, (NULL::accounts).updated_at), " \
+          "('1', '2000-01-02 03:04:05')) AS v(id, updated_at) WHERE t.id = v.id;",
+        ])
+        conn.exec(statements.sole)
+        expect(conn.exec("SELECT updated_at::text FROM accounts").values).to eq([["2000-01-02 03:04:05"]])
       ensure
         conn&.close
+      end
+
+      connectors = {
+        sqlite: lambda { |_config|
+          db = SQLite3::Database.new(":memory:")
+          [db, ->(sql) { db.execute(sql).map { |row| row.map { |v| v&.to_s } } }]
+        },
+        postgresql: lambda { |config|
+          conn = PG.connect(host: config[:host], port: config[:port], user: config[:username], password: config[:password], dbname: "exwiw_test")
+          [conn, ->(sql) { conn.exec(sql).values }]
+        },
+        mysql: lambda { |config|
+          client = Mysql2::Client.new(host: config[:host], port: config[:port].to_i, username: config[:username], password: config[:password], database: "exwiw_test")
+          [client, ->(sql) { client.query(sql, as: :array).to_a.map { |row| row.map { |v| v.nil? ? nil : v.to_s } } }]
+        },
+      }
+
+      connectors.each do |name, connect|
+        it "masks each of #{MaskUpdateRunner::CHUNK_SIZE + 100} rows with its own values across chunks on #{name}" do
+          conn, query = connect.call(name == :sqlite ? nil : database_config(name))
+          ids = (1..MaskUpdateRunner::CHUNK_SIZE + 100).to_a
+          query.("CREATE TEMPORARY TABLE accounts (id int PRIMARY KEY, email varchar(32), n int, label varchar(32), updated_at varchar(32))")
+          query.("INSERT INTO accounts VALUES #{ids.map { |id| "(#{id}, 'old', 0, 'old', 'old')" }.join(', ')}")
+          columns = [
+            { name: "id" }, { name: "email", replace_with: "e{id}" }, { name: "n", raw_sql: "id * 3" },
+            { name: "label", map: "->(r) { \"L\#{r['id'].to_i * 7}\" }" }, { name: "updated_at" },
+          ]
+
+          summary, statements = apply(
+            DataSource.given(name.to_s, conn), [table(columns: columns)], ids.reverse, extra_assignments: { "updated_at" => "now" },
+          )
+          statements.each { |sql| query.(sql) }
+
+          expect(statements.size).to eq(name == :sqlite ? ids.size : 2)
+          expect(summary).to have_attributes(target_count: ids.size, missing_primary_key_values: [])
+          expect(query.("SELECT id, email, n, label, updated_at FROM accounts ORDER BY id"))
+            .to eq(ids.map { |id| [id.to_s, "e#{id}", (id * 3).to_s, "L#{id * 7}", "now"] })
+        ensure
+          conn&.close
+        end
+      end
+
+      connectors.slice(:postgresql, :mysql).each do |name, connect|
+        it "writes values of any column type through the one UPDATE of a chunk on #{name}" do
+          conn, query = connect.call(database_config(name))
+          query.("CREATE TEMPORARY TABLE accounts (id varchar(8) PRIMARY KEY, n int, born date, ok boolean, note varchar(8))")
+          query.("INSERT INTO accounts VALUES ('k1', 1, '1990-01-01', false, 'a'), ('k2', 2, '1990-01-01', false, 'b')")
+          columns = [
+            { name: "id" }, { name: "n", raw_sql: "42" }, { name: "born", replace_with: "2000-01-02" },
+            { name: "ok", raw_sql: "true" }, { name: "note", raw_sql: "NULL" },
+          ]
+
+          _, statements = apply(DataSource.given(name.to_s, conn), [table(columns: columns)], %w[k1 k2])
+          statements.each { |sql| query.(sql) }
+
+          expect(statements.size).to eq(1)
+          ok = name == :postgresql ? "t" : "1"
+          expect(query.("SELECT id, n, born, ok, note FROM accounts ORDER BY id"))
+            .to eq(%w[k1 k2].map { |id| [id, "42", "2000-01-02", ok, nil] })
+        ensure
+          conn&.close
+        end
       end
 
       %i[mysql2 trilogy].each do |driver|
@@ -805,7 +869,11 @@ module Exwiw
 
           _, statements = apply(DataSource.given("mysql", client), [accounts], [1])
 
-          expect(statements).to eq(["UPDATE accounts SET email = 'masked1' WHERE accounts.id = 1;"])
+          expect(statements).to eq(
+            ["UPDATE accounts AS t JOIN (SELECT 1 AS id, 'masked1' AS email) AS v ON t.id = v.id SET t.email = v.email;"]
+          )
+          client.query(statements.sole)
+          expect(client.query("SELECT email FROM accounts").to_a.map { |row| row.is_a?(Hash) ? row["email"] : row.first }).to eq(["masked1"])
         ensure
           client&.close
         end

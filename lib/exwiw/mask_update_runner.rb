@@ -15,7 +15,24 @@ module Exwiw
 
     # What `MaskUpdateRunner#run` returns: the rows found (`target_count`), the columns (MongoDB: field paths) the
     # statements set, the given primary keys with no row, and the credential-looking columns accepted by `allow_guessable_credential`.
-    Summary = Data.define(:table_name, :target_count, :columns, :missing_primary_key_values, :allowed_guessable_columns)
+    Summary = Data.define(:table_name, :target_count, :columns, :missing_primary_key_values, :allowed_guessable_columns) do
+      # Sums up the summaries of runs on the same table, e.g. one per batch; columns come from the schema, so any
+      # non-empty one will do (a run with no ids reports none).
+      #
+      # @param table_name [String]
+      # @param summaries [Array<Summary>] possibly none
+      # @return [Summary]
+      def self.merge(table_name, summaries)
+        checked = summaries.find { |s| !s.columns.empty? }
+        new(
+          table_name: table_name,
+          target_count: summaries.sum(&:target_count),
+          columns: checked&.columns || [],
+          missing_primary_key_values: summaries.flat_map(&:missing_primary_key_values),
+          allowed_guessable_columns: checked&.allowed_guessable_columns || [],
+        )
+      end
+    end
 
     # What an adapter's `check_mask_update` returns: the columns (MongoDB: field paths) the statements will set, and the
     # credential-looking ones accepted by `allow_guessable_credential`.

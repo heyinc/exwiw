@@ -40,12 +40,7 @@ module Exwiw
     # @return [Array(Exwiw::MaskUpdateRunner::Summary, Array)] the summary and the statements, none executed
     # @raise [Exwiw::MaskUpdateRunner::Error] when the rows cannot be masked as declared
     def self.plan(source:, schema:, table_name:, ids:, extra_assignments:, logger:)
-      if ids.empty?
-        summary = MaskUpdateRunner::Summary.new(
-          table_name: table_name, target_count: 0, columns: [], missing_primary_key_values: [], allowed_guessable_columns: [],
-        )
-        return [summary, []]
-      end
+      return [MaskUpdateRunner::Summary.merge(table_name, []), []] if ids.empty?
 
       statements = []
       summary = MaskUpdateRunner.new(

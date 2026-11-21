@@ -80,7 +80,8 @@ module Exwiw
         MaskUpdateRunner::Checked.new(columns: masked_columns(table).map(&:name), allowed_guessable_columns: allowed)
       end
 
-      # Builds one UPDATE per row of `results`, setting every masked column to the value `results` holds for it.
+      # Builds the UPDATEs that set every masked column of the rows of `results` to the values `results` holds for
+      # them: one per chunk, joining the target table with the values (one per row on SQLite, see #mask_update_chunk).
       # Rows are matched by what the database returns (a case-insensitive collation can return "abc" for "ABC").
       #
       # @param results [Enumerable<Array>] rows of the query #build_query builds, already through the RowTransformer
@@ -92,15 +93,15 @@ module Exwiw
       def mask_update_statements(results, table, primary_key_values, extra_assignments = {})
         masked = masked_columns(table)
         extras = extra_assignments.reject { |name, _| masked.any? { |c| c.name == name } }.map do |name, value|
-          "#{quote_identifier(name)} = #{extra_literal(table, name, value)}"
+          [name, extra_literal(table, name, value)]
         end
         pk_index = table.columns.index { |c| c.name == table.primary_key }
-        masked_indexes = masked.map { |c| table.columns.index(c) }
+        masked_at = masked.map { |c| [c, table.columns.index(c)] }
         given_by_key = primary_key_values.to_h { |v| [v.to_s, v] }
         given_folded = primary_key_values.to_set { |v| v.to_s.downcase }
 
         found = Set.new
-        statements = results.map do |row|
+        rows = results.map do |row|
           returned = row[pk_index]
           # MySQL converts a string like '12x' to 12 when comparing with an integer key, so such a row is not the one asked for.
           unless given_by_key.key?(returned.to_s) || given_folded.include?(returned.to_s.downcase)
@@ -111,13 +112,12 @@ module Exwiw
           end
 
           found << returned.to_s.downcase
-          assignments = masked.each_with_index.map do |c, i|
-            "#{quote_identifier(c.name)} = #{literal_for(table, c, row[masked_indexes[i]])}"
-          end
-          update_statement(table, assignments + extras, [given_by_key.fetch(returned.to_s, returned)])
+          values = masked_at.to_h { |c, i| [c.name, literal_for(table, c, row[i])] }
+          [given_by_key.fetch(returned.to_s, returned), values]
         end
 
-        [statements, statements.size, primary_key_values.reject { |v| found.include?(v.to_s.downcase) }]
+        statements = rows.empty? ? [] : mask_update_chunk(table, masked.map(&:name), rows, extras)
+        [statements, rows.size, primary_key_values.reject { |v| found.include?(v.to_s.downcase) }]
       end
 
       # Writes a statement of #mask_update_statements as one line of SQL.
@@ -151,6 +151,16 @@ module Exwiw
         escape_value(value)
       rescue UnsupportedValueError => e
         raise MaskUpdateRunner::Error, "'#{table.name}.#{column.name}' cannot be masked to this value: #{e.message}"
+      end
+
+      # One UPDATE per row, as SQLite (in-process, no round trip to save) is slower with a join; `rows` are [given key, {column name => literal}].
+      private def mask_update_chunk(table, names, rows, extras)
+        rows.map do |key, values|
+          assignments = names.map { |name| [name, values.fetch(name)] }.concat(extras).map do |name, literal|
+            "#{quote_identifier(name)} = #{literal}"
+          end
+          update_statement(table, assignments, [key])
+        end
       end
 
       private def update_statement(table, assignments, primary_key_values)
