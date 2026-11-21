@@ -115,8 +115,8 @@ exwiw mask-update \
 
 - exwiw only reads. The output has no header and no transaction control; review it and apply it yourself. Whether the declared masks are safe values for the database you apply it to is not checked: a mask written for a development copy is applied as written.
 - Every masked value is computed when the statements are generated, by the same SELECT `export` runs, and written as a literal: one UPDATE per row on SQLite, and on PostgreSQL and MySQL one per batch of up to 1,000 rows, joining the table with the rows' values. Apply them soon after generating; a row changed in between is overwritten with a value computed from its old data.
-- Applying the same statements twice leaves the same values. Generating them again after masking reads the masked values, so a mask that reads the column (`{column}`), `map` or `replace_with_fake_data` can give different values the second time, and a random `raw_sql` always does.
-- Masks are applied as written, whatever the column's name. A credential (a password digest, a token, ...) masked to a constant, a value derived from the primary key, or a fake or `map` value stays guessable, so mask it to NULL (`"raw_sql": "NULL"`) or to a random expression as its `raw_sql` (the table below; use one for a column that cannot be NULL), and enable the [`guessable_credentials`](#static-checks-check) check to find the others. A random value is drawn when the statements are generated and written into them, so treat the output as a secret.
+- Applying the same statements twice leaves the same values. Generating them again after masking reads the masked values, so a mask that reads the column (`{column}`), `map` or `replace_with_fake_data` can give different values the second time, and `replace_with_random` always does.
+- Masks are applied as written, whatever the column's name. A credential (a password digest, a token, ...) masked to a constant, a value derived from the primary key, or a fake or `map` value stays guessable, so mask it with [`unset`](#unset) or [`replace_with_random`](#replace_with_random) (for a column that cannot be NULL), and enable the [`guessable_credentials`](#static-checks-check) check to find the others. A random value is drawn when the statements are generated and written into them, so treat the output as a secret.
 - The literals assume MySQL is applied over a `utf8mb4` connection without `NO_BACKSLASH_ESCAPES`, and PostgreSQL with `standard_conforming_strings` on.
 - It is an error when the table is not declared or is `ignore: true`, has no primary key or a composite one, declares no mask, or masks its primary key.
 
@@ -145,14 +145,6 @@ client[name].bulk_write(
   operations.map { |op| { update_one: { filter: op["updateOne"]["filter"], update: op["updateOne"]["update"] } } }
 )
 ```
-
-The `raw_sql` forms the `guessable_credentials` check counts as random (the whole expression, case-insensitive; `N` is 16 to 1024):
-
-| Adapter | `raw_sql` |
-|---|---|
-| PostgreSQL | `gen_random_uuid()::text`, `replace(gen_random_uuid()::text, '-', '')`, `encode(gen_random_bytes(N), 'hex')` (needs the `pgcrypto` extension) |
-| MySQL | `HEX(RANDOM_BYTES(N))`, `LOWER(HEX(RANDOM_BYTES(N)))` |
-| SQLite | `hex(randomblob(N))`, `lower(hex(randomblob(N)))` |
 
 #### Masking from a Rails application (`mask_with_exwiw!`)
 
@@ -299,7 +291,7 @@ exwiw schema show --profile=dev --table=users   # prints the merged config; need
 - Only the names in `profiles` are recognized: without them, `users.dev.json` is an ordinary config file. Profile names use lowercase letters, digits, `_` and `-`. A profile applies only when `--profile` names it (export, explain, `mask-update` and `schema show`), one per run; naming an undeclared profile is an error.
 - An overlay must have the `name` of a config in the same directory (with multiple databases, in that database's subdirectory), and each config can have one overlay per profile.
 - A key in the overlay replaces the base value; a nested object such as `batch_scope` is replaced as a whole. `columns` (`fields` for MongoDB) are matched by `name`, and `belongs_tos` by `table_name`, `foreign_key`, `foreign_type` and `type_value`; the matched entry is merged key by key. An overlay can only change entries the base has, not add new ones.
-- Setting one of `replace_with`, `raw_sql`, `map`, `replace_with_fake_data` and `allow_unmasked` on a column removes the others, so the overlay's mask is the one that applies, and `"allow_unmasked": true` exports the column unmasked for that profile. To remove `allow_unmasked` in an overlay, set it to `null`. `allow_unmasked` and `allow_guessable_credential` accept only `true`: `false` is rejected, as it would count as setting the flag and remove the base's mask.
+- Setting one of `replace_with`, `raw_sql`, `map`, `replace_with_fake_data`, `replace_with_random`, `unset` and `allow_unmasked` on a column removes the others, so the overlay's mask is the one that applies, and `"allow_unmasked": true` exports the column unmasked for that profile. To remove `unset` or `allow_unmasked` in an overlay, set it to `null`. `unset`, `allow_unmasked` and `allow_guessable_credential` accept only `true`: `false` is rejected, as it would count as setting the flag and remove the base's mask.
 - `null` removes an optional key. `name`, required keys and lists cannot be set to `null`.
 - The merged config is loaded and validated like any config; a profile that cannot be merged or produces an invalid config fails every command that reads it.
 - The schema generators, `tidy` and `check` never read or write overlays as base configs. `tidy` removes overlay entries for tables, columns and `belongs_tos` that are gone from the base (and the overlay file when its table is gone). `check` reports them as `overlay_stale` (see [Checking the config against the schema](#checking-the-config-against-the-schema)), and fails when an overlay does not merge.
@@ -560,6 +552,28 @@ Replaces the value with realistic fake data from the [faker](https://github.com/
 - Add `gem "faker"` to your Gemfile. A config that uses only `ja` name types does not need it.
 - It runs in the exwiw process, so `explain` does not show it. The cost is small; see [`docs/row-transform-masking-notes.md`](docs/row-transform-masking-notes.md).
 
+### `replace_with_random`
+
+Replaces the value with random bytes as lowercase hex, different for every row. Use it for a credential (a token, a secret key) that must not be guessable but cannot be NULL, such as one under a unique index:
+
+```jsonc
+{ "name": "api_token", "replace_with_random": "hex:32" } // 64 hex characters
+```
+
+- The format is `hex:<bytes>`, with 16 to 1024 bytes. No other format is supported.
+- `NULL` stays `NULL`.
+- The value comes from Ruby's `SecureRandom` in the exwiw process, so `explain` does not show it.
+
+### `unset`
+
+Removes the value: the column is exported as `NULL`, and a MongoDB field is left out of the document (`$unset` in `mask-update`). Use it for a credential the copy does not need:
+
+```jsonc
+{ "name": "password_digest", "unset": true }
+```
+
+It accepts only `true`; in an overlay, `"unset": null` removes it. Unlike the `replace_with` keys, which keep `NULL` as it is, a MongoDB field holding `null` is removed too, so every masked document ends up without the field: an application reading it sees the field as not set, and an ODM fills in the field's default (Mongoid's `default:`), which it does not for `null`.
+
 Only one masking key can be set on a column.
 
 ## Generating the schema config
@@ -645,13 +659,13 @@ check:
 - Each check takes `true` (the same as `{}`), a mapping of options, or `false`. Without `check`, only `integrity` runs.
 - `profiles` names the configs to judge: `base` is the base config with no overlay, the others are declared profiles. By default a check judges the base config and every declared profile. A finding shows the profiles it occurs in: `users.api_token [base, dev]: ...`.
 - Tables that `mask-update` refuses are skipped: `ignore: true`, Rails-managed and composite primary key tables. A MongoDB embedded collection is judged through its parent, under the field's path (`users.profile.addresses.zip_code`). Ignored columns are not judged.
-- The adapter decides which random expressions count as safe. The rake task takes it from the Rails database configuration named like each database directory (the default connection's for a single database); `check_mongoid` uses MongoDB, and `exwiw schema check` its `--adapter`. An adapter that cannot be found fails the check.
+- Each database directory is judged with its adapter. The rake task takes it from the Rails database configuration named like each database directory (the default connection's for a single database); `check_mongoid` uses MongoDB, and `exwiw schema check` its `--adapter`. An adapter that cannot be found fails the check.
 - An invalid `check` section fails the check (`exwiw schema check` exits with the "could not run" status).
 
 The checks:
 
 - `integrity`: every profile's config loads, and every table selects its primary key unmasked. A masked or unselected (ignored) primary key breaks the rows that reference the table, and `mask-update`, which addresses rows by it.
-- `guessable_credentials`: a column (MongoDB: a field path) whose name looks like a credential, masked to anything but NULL or the adapter's random expression (see [`exwiw mask-update`](#exwiw-mask-update)), unless it sets `allow_guessable_credential: true`. A MongoDB mask is never NULL or random. Also an `allow_guessable_credential` that guards no such column. The built-in names are `password`, `digest`, `salt`, `secret`, `token`, `credential`, `passcode`, `api_key`, `access_key`, `private_key` (also without `_`) and `jwk` (case-insensitive, anywhere in the name), and cannot be removed; `patterns` adds regular expressions (case-insensitive) to them, which `unmasked_sensitive` counts too.
+- `guessable_credentials`: a column (MongoDB: a field path) whose name looks like a credential, masked to anything but [`unset`](#unset) or [`replace_with_random`](#replace_with_random), unless it sets `allow_guessable_credential: true`. Also an `allow_guessable_credential` that guards no such column. The built-in names are `password`, `digest`, `salt`, `secret`, `token`, `credential`, `passcode`, `api_key`, `access_key`, `private_key` (also without `_`) and `jwk` (case-insensitive, anywhere in the name), and cannot be removed; `patterns` adds regular expressions (case-insensitive) to them, which `unmasked_sensitive` counts too.
 - `unmasked_sensitive`: a column (MongoDB: the last segment of a field path) whose name matches a mask pattern but that declares no mask and no `"allow_unmasked": true`, in every table. The primary key and `belongs_to` foreign keys are exempt, as exwiw never masks them. Also an `allow_unmasked` on a column that is masked, exempt, or matches no pattern. The built-in patterns are case-insensitive and cannot be removed; `patterns` adds regular expressions (case-insensitive) to them:
   - the credential names above, with the `patterns` of `guessable_credentials`; `otp`; `encrypted`
   - `email`, `e_mail`; `phone`, `mobile` (as a whole name, or `mobile_number` and the like), `tel`, `fax`; `address`; `zip`, `postal`

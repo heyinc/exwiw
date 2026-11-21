@@ -16,6 +16,10 @@ module Exwiw
     attribute :map, optional(String), skip_serializing_if_nil: true, merge: { exclusive: :mask }
     attribute :replace_with_fake_data, Serdes::OptionalType.new(FakeData), skip_serializing_if_nil: true,
                                        merge: { exclusive: :mask }
+    # SQL: NULL. MongoDB: the key is removed (`$unset`).
+    attribute :unset, Serdes::OptionalType.new(TrueFlag.new), skip_serializing_if_nil: true, merge: { exclusive: :mask }
+    attribute :replace_with_random, Serdes::OptionalType.new(RandomMask.new), skip_serializing_if_nil: true,
+                                    merge: { exclusive: :mask }
     # User-owned fields preserved across schema regeneration (see
     # TableConfig#merge). `ignore:true` drops the column from extraction (SELECT /
     # INSERT) once the config is loaded (see TableConfig#reject_ignored_members!).

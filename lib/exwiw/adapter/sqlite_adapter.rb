@@ -7,12 +7,6 @@ module Exwiw
       include SqlBulkInsert
       include SqlMaskUpdate
 
-      # Whole-expression forms of a random string accepted for a credential-looking column.
-      RANDOM_SECRET_PATTERNS = [
-        /\Ahex\s*\(\s*randomblob\s*\(\s*(?<bytes>[1-9]\d*)\s*\)\s*\)\z/i,
-        /\Alower\s*\(\s*hex\s*\(\s*randomblob\s*\(\s*(?<bytes>[1-9]\d*)\s*\)\s*\)\s*\)\z/i,
-      ].freeze
-
       # A lazy, streaming stand-in for the materialized rows #execute used to
       # return (`connection.execute(sql)`). It walks the result one row at a time
       # via SQLite's statement cursor (Statement#each -> sqlite3_step) instead of

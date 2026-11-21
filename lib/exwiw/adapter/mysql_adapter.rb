@@ -9,12 +9,6 @@ module Exwiw
       include SqlBulkInsert
       include SqlMaskUpdate
 
-      # Whole-expression forms of a cryptographically random string accepted for a credential-looking column.
-      RANDOM_SECRET_PATTERNS = [
-        /\AHEX\s*\(\s*RANDOM_BYTES\s*\(\s*(?<bytes>[1-9]\d*)\s*\)\s*\)\z/i,
-        /\ALOWER\s*\(\s*HEX\s*\(\s*RANDOM_BYTES\s*\(\s*(?<bytes>[1-9]\d*)\s*\)\s*\)\s*\)\z/i,
-      ].freeze
-
       # A lazy, streaming stand-in for the materialized rows #execute used to
       # return (`connection.query(sql).rows`). It pulls rows off the wire one at
       # a time (mysql2 single-row stream) instead of buffering the whole result

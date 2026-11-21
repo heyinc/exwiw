@@ -252,9 +252,8 @@ module Exwiw
         own = config.fields.map do |f|
           MaskRules::Column.new(
             path: [prefix, f.name].compact.join("."), name: f.name,
-            masked: !f.replace_with.nil? || !f.replace_with_fake_data.nil?,
-            # A MongoDB mask can neither say NULL nor draw random bytes.
-            safe: false,
+            masked: !f.replace_with.nil? || !f.replace_with_fake_data.nil? || !f.replace_with_random.nil? || f.unset == true,
+            safe: !f.replace_with_random.nil? || f.unset == true,
             allow_guessable_credential: f.allow_guessable_credential == true, allow_unmasked: f.allow_unmasked == true,
             exempt: f.name == config.primary_key || foreign_keys.include?(f.name),
           )
@@ -275,7 +274,7 @@ module Exwiw
         described = self.class.describe_masks(config, config_by_name)
 
         unless MaskRules.masked?(described)
-          raise MaskUpdateRunner::Error, "collection '#{config.name}' declares no mask (replace_with / replace_with_fake_data) on any field"
+          raise MaskUpdateRunner::Error, "collection '#{config.name}' declares no mask on any field"
         end
         if MaskRules.masks_primary_key?(described)
           raise MaskUpdateRunner::Error, "collection '#{config.name}' masks '#{config.primary_key}', which is immutable in MongoDB"
@@ -303,9 +302,10 @@ module Exwiw
         end
       end
 
-      # Builds one `bulkWrite` whose `updateOne`s `$set` every masked leaf of each document in `results`. Documents
-      # are masked with the same plan #to_bulk_insert uses while the assignments are recorded. Call #build_query
-      # first. Keys the plan drops are never assigned, so they are neither set nor unset.
+      # Builds one `bulkWrite` whose `updateOne`s `$set` every masked leaf of each document in `results`, and `$unset`
+      # every `unset` one. Documents are masked with the same plan #to_bulk_insert uses while the assignments are
+      # recorded. Call #build_query first. Keys the plan drops (`ignore`) are never assigned, so they are neither set nor
+      # unset.
       #
       # @param results [Enumerable<Hash>] the documents named by `primary_key_values`, as #execute returns them
       # @param config [Exwiw::MongodbCollectionConfig] collection to mask
@@ -319,12 +319,13 @@ module Exwiw
         found_ids = Set.new
         operations = results.filter_map do |doc|
           found_ids << doc[config.primary_key]
-          sets = {}
-          apply_mask_plan!(doc, plan, sets)
-          sets.merge!(extras)
-          next if sets.empty?
+          updates = { "$set" => {}, "$unset" => {} }
+          apply_mask_plan!(doc, plan, updates)
+          updates["$set"].merge!(extras)
+          updates.reject! { |_, fields| fields.empty? }
+          next if updates.empty?
 
-          { "updateOne" => { "filter" => { config.primary_key => doc[config.primary_key] }, "update" => { "$set" => sets } } }
+          { "updateOne" => { "filter" => { config.primary_key => doc[config.primary_key] }, "update" => updates } }
         end
         statements = operations.empty? ? [] : [MaskUpdateBulkWrite.new(collection_name: config.name, operations: operations)]
 
@@ -342,7 +343,9 @@ module Exwiw
       end
 
       private def mask_target_names(plan, prefix = nil)
-        own = (plan.masked_fields.map(&:first) + plan.faked_fields.map(&:first)).map { |n| [prefix, n].compact.join(".") }
+        names = plan.masked_fields.map(&:first) + plan.unset_fields + plan.faked_fields.map(&:first) +
+                plan.random_fields.map(&:first)
+        own = names.map { |n| [prefix, n].compact.join(".") }
         own + plan.embedded.flat_map { |e| mask_target_names(e.plan, [prefix, *e.prefix, e.last].compact.join(".")) }
       end
 
@@ -839,10 +842,11 @@ module Exwiw
       # document of that collection. `masked_fields` is `[field_name,
       # template_segments]` for each field carrying a `replace_with`;
       # `faked_fields` is `[field_name, deriver, seed_field]` for each field
-      # carrying a `replace_with_fake_data`; `dropped_fields` is the name of each
-      # field marked `ignore:true`; `embedded` is one EmbeddedMask per embedded
-      # child.
-      MaskPlan = Struct.new(:masked_fields, :faked_fields, :dropped_fields, :embedded)
+      # carrying a `replace_with_fake_data`; `random_fields` is `[field_name,
+      # generator]` for each `replace_with_random`; `unset_fields` and
+      # `dropped_fields` are the names of the fields marked `unset` and
+      # `ignore:true`; `embedded` is one EmbeddedMask per embedded child.
+      MaskPlan = Struct.new(:masked_fields, :faked_fields, :random_fields, :unset_fields, :dropped_fields, :embedded)
 
       # A pre-resolved embedded-child mask: the parent path split once into
       # `prefix` (the containers to descend into) and `last` (the field holding
@@ -875,6 +879,10 @@ module Exwiw
           acc << [field.name, mask]
         end
         faked_fields = build_faked_fields(config)
+        random_fields = config.fields.filter_map do |field|
+          [field.name, RandomMask.generator(field.replace_with_random)] if field.replace_with_random
+        end
+        unset_fields = config.fields.select(&:unset).map(&:name)
         # Mostly for an embedded config, but a top-level one fetches an ignored
         # field too when it is a propagation key (a child's `references`), and
         # this is what keeps it out of the dump.
@@ -883,7 +891,7 @@ module Exwiw
           *prefix, last = child.embedded_in.path.split(".")
           EmbeddedMask.new(prefix, last, build_mask_plan(child))
         end
-        MaskPlan.new(masked_fields, faked_fields, dropped_fields, embedded)
+        MaskPlan.new(masked_fields, faked_fields, random_fields, unset_fields, dropped_fields, embedded)
       end
 
       # Compile each `replace_with_fake_data` field into `[field_name, deriver,
@@ -914,18 +922,21 @@ module Exwiw
       end
 
       # Apply a precompiled MaskPlan to a document in place: drop each
-      # `ignore:true` field, then render each `replace_with` field, then each
-      # `replace_with_fake_data` field, then descend into each embedded child
-      # (recursing into its own plan). Fake fields are applied after replace_with
-      # so a fake seed reads the already-masked value — matching the SQL
-      # adapters, where replace_with runs in the database before the Ruby-side
-      # fake transform sees the row.
+      # `ignore:true` field, then render each `replace_with` field, remove each
+      # `unset` one, then each `replace_with_fake_data` field, each
+      # `replace_with_random` one, then descend into each embedded child
+      # (recursing into its own plan). The order follows the SQL adapters, where
+      # replace_with and unset run in the database before the Ruby-side
+      # transforms, which all read the row as the database returned it: so a fake
+      # seed reads a replace_with or unset value, but not a random one.
       #
       # Dropping comes first so an ignored field is invisible to the masking that
       # follows, as on a top-level collection — normally not fetched, and dropped
       # here when the projection pulled it in as a propagation key.
-      # With `sets` (a Hash), also records each masked leaf as dotted path => new value, for #mask_update_statements.
-      private def apply_mask_plan!(doc, plan, sets = nil, path = nil)
+      # With `updates` (`{"$set" => {}, "$unset" => {}}`), also records each masked leaf by its dotted path, for
+      # #mask_update_statements.
+      private def apply_mask_plan!(doc, plan, updates = nil, path = nil)
+        sets = updates&.fetch("$set")
         plan.dropped_fields.each { |name| doc.delete(name) }
         plan.masked_fields.each do |name, mask|
           # Preserve a NULL / absent source value instead of clobbering it into a
@@ -936,6 +947,12 @@ module Exwiw
           doc[name] = mask.is_a?(Array) ? render_template(mask, doc) : mask
           sets[[path, name].compact.join(".")] = doc[name] if sets
         end
+        plan.unset_fields.each do |name|
+          next unless doc.key?(name)
+
+          doc.delete(name)
+          updates["$unset"][[path, name].compact.join(".")] = "" if updates
+        end
         plan.faked_fields.each do |name, deriver, seed_field|
           # NULL-preserving like replace_with (an absent key stays absent). The
           # seed is read from the current doc; a nil/absent seed hashes ""
@@ -943,6 +960,12 @@ module Exwiw
           next if doc[name].nil?
 
           doc[name] = deriver.call(doc[seed_field])
+          sets[[path, name].compact.join(".")] = doc[name] if sets
+        end
+        plan.random_fields.each do |name, generate|
+          next if doc[name].nil?
+
+          doc[name] = generate.call
           sets[[path, name].compact.join(".")] = doc[name] if sets
         end
         plan.embedded.each do |child|
@@ -953,9 +976,9 @@ module Exwiw
           case (value = container[child.last])
           when Array
             value.each_with_index do |sub, i|
-              apply_mask_plan!(sub, child.plan, sets, [*child_path, i].compact.join(".")) if sub.is_a?(Hash)
+              apply_mask_plan!(sub, child.plan, updates, [*child_path, i].compact.join(".")) if sub.is_a?(Hash)
             end
-          when Hash then apply_mask_plan!(value, child.plan, sets, child_path.compact.join("."))
+          when Hash then apply_mask_plan!(value, child.plan, updates, child_path.compact.join("."))
           end
         end
       end

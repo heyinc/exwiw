@@ -165,6 +165,8 @@ module Exwiw
 
           pf.replace_with = receiver.replace_with
           pf.replace_with_fake_data = receiver.replace_with_fake_data
+          pf.replace_with_random = receiver.replace_with_random
+          pf.unset = receiver.unset
           pf.comment = receiver.comment
           pf.ignore = receiver.ignore
           pf.allow_guessable_credential = receiver.allow_guessable_credential
@@ -176,8 +178,7 @@ module Exwiw
     end
 
     # Ruby-side masking validation, mirroring TableConfig#validate_ruby_side_masking!
-    # for the SQL adapters: `replace_with_fake_data` is exclusive with
-    # `replace_with` on the same field, the type must be supported, and the seed
+    # for the SQL adapters: a field takes at most one mask, the type must be supported, and the seed
     # must name a field of this collection (bare or `name.`-qualified) or its
     # primary key. Deliberately static (no faker require, no pool build) so
     # schema regeneration never triggers value generation; the seed is resolved
@@ -185,14 +186,18 @@ module Exwiw
     # MongodbAdapter#build_mask_plan.
     private def validate_fake_data!
       fields.each do |field|
+        modes = [
+          !field.replace_with.nil? && "replace_with", field.replace_with_fake_data && "replace_with_fake_data",
+          field.replace_with_random && "replace_with_random", field.unset && "unset"
+        ].select { |v| v }
+        if modes.size > 1
+          raise ArgumentError,
+                "MongodbCollectionConfig '#{name}' field '#{field.name}': #{modes.join('/')} cannot be combined; " \
+                "use only one."
+        end
+
         fake_data = field.replace_with_fake_data
         next unless fake_data
-
-        unless field.replace_with.nil?
-          raise ArgumentError,
-                "MongodbCollectionConfig '#{name}' field '#{field.name}': replace_with and " \
-                "replace_with_fake_data cannot be combined; use only one."
-        end
 
         supported_types = RowTransformer::PERSON_TYPES.keys + RowTransformer::FAKE_TYPES.keys
         unless supported_types.include?(fake_data.type)

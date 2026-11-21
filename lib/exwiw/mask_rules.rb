@@ -6,7 +6,7 @@ module Exwiw
   # `describe_masks`.
   module MaskRules
     # A column (MongoDB: a field path, embedded fields included) as the rules see it. `name` is the last path segment,
-    # `masked` says a mask is declared, `safe` that it is NULL or a random expression (never for MongoDB), and `exempt`
+    # `masked` says a mask is declared, `safe` that it is `unset` or `replace_with_random`, and `exempt`
     # that it is the primary key or a belongs_to foreign key, which exwiw never masks.
     Column = Data.define(:path, :name, :masked, :safe, :allow_guessable_credential, :allow_unmasked, :exempt)
 

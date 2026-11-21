@@ -233,7 +233,9 @@ module Exwiw
 
       private def map_column_value(columns)
         columns.map do |c|
-          if c.raw_sql
+          if c.unset
+            QueryAst::ColumnValue::RawSql.new(name: c.name, value: "NULL")
+          elsif c.raw_sql
             QueryAst::ColumnValue::RawSql.new(name: c.name, value: c.raw_sql)
           elsif !c.replace_with.nil?
             QueryAst::ColumnValue::ReplaceWith.new(name: c.name, value: c.replace_with)

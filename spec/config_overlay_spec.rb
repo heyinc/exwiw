@@ -84,6 +84,21 @@ module Exwiw
         expect(remasked["columns"][0]).to eq("name" => "email", "raw_sql" => "NULL")
       end
 
+      it "treats unset and replace_with_random as members of the mask group, and removes either with null" do
+        merged = merge("name" => "users", "columns" => [
+          { "name" => "name", "unset" => true },
+          { "name" => "email", "replace_with_random" => "hex:16" },
+        ])
+        expect(merged["columns"][1]).to eq("name" => "name", "unset" => true)
+        expect(merged["columns"][2]).to eq("name" => "email", "replace_with_random" => "hex:16", "comment" => "keep")
+
+        unset_base = base.merge("columns" => [{ "name" => "email", "unset" => true }])
+        cancelled = ConfigOverlay.merge(TableConfig, unset_base,
+                                        { "name" => "users", "columns" => [{ "name" => "email", "unset" => nil }] },
+                                        owner: "users.dev.json")
+        expect(cancelled["columns"][0]).to eq("name" => "email")
+      end
+
       it "removes an optional key set to null" do
         merged = merge("name" => "users", "filter" => nil, "columns" => [{ "name" => "email", "replace_with" => nil }])
 
