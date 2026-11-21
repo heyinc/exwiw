@@ -63,6 +63,19 @@ module Exwiw
           with_connection { |connection| mask_with_connection(connection, **options) }
         end
 
+        # Whether the schema lets `mask_with_exwiw!` mask this model's rows: the table is declared, is not
+        # `ignore: true`, rails-managed or keyed by a composite primary key, declares a mask on some column, and selects
+        # its primary key without masking it. Reads the schema only, not the table, so a caller can skip a model
+        # `mask_with_exwiw!` would refuse rather than rescue its error.
+        #
+        #   models.select(&:exwiw_maskable?).each { |model| model.where(user_id: id).mask_with_exwiw! }
+        #
+        # @param profile [String, nil] the schema profile to apply, as for #mask_with_exwiw!
+        # @return [Boolean]
+        def exwiw_maskable?(profile: nil)
+          Maskable.maskable?(self, TableConfig, table_name, profile)
+        end
+
         private def mask_with_connection(connection, touch:, dry_run:, profile:, batch:)
           now = connection.quoted_date(current_time_from_proper_timezone) if touch
           source = DataSource.given(Maskable::ActiveRecordModel.exwiw_adapter_name(connection), connection.raw_connection)

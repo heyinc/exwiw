@@ -88,16 +88,11 @@ module Exwiw
       adapter = @source.build_adapter(@logger)
       table_by_name = @schema.table_by_name
 
+      reason = @schema.mask_update_refusal(@dump_target.table_name)
+      raise Error, reason if reason
+
       table = table_by_name[@dump_target.table_name.to_s]
-      raise Error, "table '#{@dump_target.table_name}' is not declared in the schema (#{@schema.dir})" if table.nil?
-
-      reason = table.unmaskable_reason
-      raise Error, reason if reason
-
       primary_key_values = normalize_primary_key_values(table, @dump_target.default_ids)
-      reason = table.mask_refusal(table_by_name)
-      raise Error, reason if reason
-
       columns = adapter.mask_update_columns(table, table_by_name)
 
       row_transformer = RowTransformer.build(table)

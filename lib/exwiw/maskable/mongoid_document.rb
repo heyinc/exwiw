@@ -85,6 +85,19 @@ module Exwiw
           Result.new(summary: summary, statements: bulk_writes)
         end
 
+        # Whether the schema lets `mask_with_exwiw!` mask this model's documents: the class is not embedded, and its
+        # collection is declared, is not `ignore: true`, and declares a mask on some field other than `_id`. Reads the
+        # schema only, not the collection, so a caller can skip a model `mask_with_exwiw!` would refuse rather than
+        # rescue its error.
+        #
+        # @param profile [String, nil] the schema profile to apply, as for #mask_with_exwiw!
+        # @return [Boolean]
+        def exwiw_maskable?(profile: nil)
+          return false if embedded?
+
+          Maskable.maskable?(self, MongodbCollectionConfig, collection_name.to_s, profile)
+        end
+
         # The default scope's lambda calls `where` on the class, which would chain onto the current criteria, so the
         # current scope is set aside while it runs.
         private def exwiw_default_selector
