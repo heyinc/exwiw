@@ -6,7 +6,8 @@ module Exwiw
   #
   #   check:
   #     integrity: {}                  # on unless `false`
-  #     guessable_credentials: true    # off unless set
+  #     guessable_credentials:         # off unless set
+  #       patterns: ['(^|_)pin(_|$)']  # added to MaskRules::CREDENTIAL_NAME, and to the mask patterns
   #     unmasked_sensitive:            # off unless set
   #       patterns: ['(^|_)kana(_|$)'] # added to MaskRules::DEFAULT_MASK_PATTERNS
   #       profiles: [base, dev]        # base + every declared profile when omitted
@@ -14,7 +15,7 @@ module Exwiw
     CHECKS = %w[integrity guessable_credentials unmasked_sensitive].freeze
     DEFAULTS = { "integrity" => true, "guessable_credentials" => false, "unmasked_sensitive" => false }.freeze
     OPTIONS = {
-      "integrity" => %w[profiles], "guessable_credentials" => %w[profiles], "unmasked_sensitive" => %w[profiles patterns],
+      "integrity" => %w[profiles], "guessable_credentials" => %w[profiles patterns], "unmasked_sensitive" => %w[profiles patterns],
     }.freeze
 
     # The reserved profile name for the base config, with no overlay merged in.
@@ -23,7 +24,10 @@ module Exwiw
     # @return [Hash{String => Array<String, nil>}] each enabled check's profiles (nil is the base config)
     attr_reader :profiles_by_check
 
-    # @return [Array<Regexp>] the built-in mask patterns followed by the configured ones
+    # @return [Array<Regexp>] the built-in credential pattern followed by the configured ones
+    attr_reader :credential_patterns
+
+    # @return [Array<Regexp>] the built-in mask patterns followed by the configured credential and mask ones
     attr_reader :mask_patterns
 
     # @param value [Object] the raw `check` value (nil when absent)
@@ -41,15 +45,20 @@ module Exwiw
       end
 
       profiles_by_check = {}
-      patterns = []
+      patterns = Hash.new { |h, k| h[k] = [] }
       CHECKS.each do |check|
         options = item_options(check, value.fetch(check, DEFAULTS.fetch(check)), source)
         next if options.nil?
 
         profiles_by_check[check] = item_profiles(check, options["profiles"], profiles, source, options.key?("profiles"))
-        patterns = item_patterns(options["patterns"], source) if options.key?("patterns")
+        patterns[check] = item_patterns(check, options["patterns"], source) if options.key?("patterns")
       end
-      new(profiles_by_check: profiles_by_check, mask_patterns: MaskRules::DEFAULT_MASK_PATTERNS + patterns)
+      credential = patterns["guessable_credentials"]
+      new(
+        profiles_by_check: profiles_by_check,
+        credential_patterns: [MaskRules::CREDENTIAL_NAME] + credential,
+        mask_patterns: MaskRules::DEFAULT_MASK_PATTERNS + credential + patterns["unmasked_sensitive"],
+      )
     end
 
     # The checks a config file without `check:` runs.
@@ -61,9 +70,12 @@ module Exwiw
     end
 
     # @param profiles_by_check [Hash{String => Array<String, nil>}]
+    # @param credential_patterns [Array<Regexp>]
     # @param mask_patterns [Array<Regexp>]
-    def initialize(profiles_by_check:, mask_patterns: MaskRules::DEFAULT_MASK_PATTERNS)
+    def initialize(profiles_by_check:, credential_patterns: [MaskRules::CREDENTIAL_NAME],
+                   mask_patterns: MaskRules::DEFAULT_MASK_PATTERNS)
       @profiles_by_check = profiles_by_check.freeze
+      @credential_patterns = credential_patterns.freeze
       @mask_patterns = mask_patterns.freeze
     end
 
@@ -120,15 +132,15 @@ module Exwiw
       raw.uniq.map { |name| name == BASE_PROFILE ? nil : name }
     end
 
-    private_class_method def self.item_patterns(raw, source)
+    private_class_method def self.item_patterns(check, raw, source)
       unless raw.is_a?(Array) && raw.all? { |pattern| pattern.is_a?(String) }
-        raise ArgumentError, "'check.unmasked_sensitive.patterns' must be a list of regular expressions (got #{raw.inspect}) in #{source}"
+        raise ArgumentError, "'check.#{check}.patterns' must be a list of regular expressions (got #{raw.inspect}) in #{source}"
       end
 
       raw.map do |pattern|
         Regexp.new(pattern, Regexp::IGNORECASE)
       rescue RegexpError => e
-        raise ArgumentError, "'check.unmasked_sensitive.patterns' has an invalid regular expression #{pattern.inspect} in #{source}: #{e.message}"
+        raise ArgumentError, "'check.#{check}.patterns' has an invalid regular expression #{pattern.inspect} in #{source}: #{e.message}"
       end
     end
   end

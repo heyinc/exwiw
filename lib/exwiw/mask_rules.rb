@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 module Exwiw
-  # The static rules over a table's masks. `mask-update` enforces them before it reads a row and `schema check` reports
-  # them from the committed config, so both go through these functions and cannot disagree. Each adapter class
-  # describes a loaded table for them with `describe_masks`.
+  # The rules over a table's masks. `mask-update` enforces the primary key ones before it reads a row, and `schema
+  # check` reports them all from the committed config. Each adapter class describes a loaded table for them with
+  # `describe_masks`.
   module MaskRules
     # A column (MongoDB: a field path, embedded fields included) as the rules see it. `name` is the last path segment,
     # `masked` says a mask is declared, `safe` that it is NULL or a random expression (never for MongoDB), and `exempt`
@@ -50,21 +50,26 @@ module Exwiw
     end
 
     # @param table [Exwiw::MaskRules::Table]
+    # @param patterns [Array<Regexp>] the credential name patterns
     # @return [Array<String>] the credential-looking paths masked to a guessable value, allowed or not
-    def guessable_credentials(table)
-      table.columns.select { |column| column.masked && !column.safe && column.path.match?(CREDENTIAL_NAME) }.map(&:path)
+    def guessable_credentials(table, patterns = [CREDENTIAL_NAME])
+      table.columns.select do |column|
+        column.masked && !column.safe && patterns.any? { |pattern| column.path.match?(pattern) }
+      end.map(&:path)
     end
 
     # @param table [Exwiw::MaskRules::Table]
+    # @param patterns [Array<Regexp>] the credential name patterns
     # @return [Array<String>] the paths of #guessable_credentials that do not set `allow_guessable_credential`
-    def unaccepted_credentials(table)
-      guessable_credentials(table) - guessable_allowances(table)
+    def unaccepted_credentials(table, patterns = [CREDENTIAL_NAME])
+      guessable_credentials(table, patterns) - guessable_allowances(table)
     end
 
     # @param table [Exwiw::MaskRules::Table]
+    # @param patterns [Array<Regexp>] the credential name patterns
     # @return [Array<String>] the paths that set `allow_guessable_credential` but are not among #guessable_credentials
-    def stray_guessable_allowances(table)
-      guessable_allowances(table) - guessable_credentials(table)
+    def stray_guessable_allowances(table, patterns = [CREDENTIAL_NAME])
+      guessable_allowances(table) - guessable_credentials(table, patterns)
     end
 
     # @param name [String] a column name, or the last segment of a field path

@@ -46,11 +46,11 @@ module Exwiw
         expect { parse({ "secrets" => true }) }.to raise_error(ArgumentError, /unknown check\(s\) secrets under 'check'/)
       end
 
-      it "rejects an unknown option, and patterns anywhere but unmasked_sensitive" do
+      it "rejects an unknown option, and patterns on integrity" do
         expect { parse({ "unmasked_sensitive" => { "pattern" => [] } }) }
           .to raise_error(ArgumentError, /unknown option\(s\) pattern under 'check.unmasked_sensitive'.*allowed: profiles, patterns/)
-        expect { parse({ "guessable_credentials" => { "patterns" => [] } }) }
-          .to raise_error(ArgumentError, /unknown option\(s\) patterns under 'check.guessable_credentials'/)
+        expect { parse({ "integrity" => { "patterns" => [] } }) }
+          .to raise_error(ArgumentError, /unknown option\(s\) patterns under 'check.integrity'/)
       end
     end
 
@@ -85,6 +85,15 @@ module Exwiw
 
         expect(config.mask_patterns.first(MaskRules::DEFAULT_MASK_PATTERNS.size)).to eq(MaskRules::DEFAULT_MASK_PATTERNS)
         expect(config.mask_patterns.last).to eq(/(^|_)kana(_|$)/i)
+        expect(config.credential_patterns).to eq([MaskRules::CREDENTIAL_NAME])
+      end
+
+      it "appends the configured credential patterns to the credential defaults and to the mask patterns" do
+        config = parse({ "guessable_credentials" => { "patterns" => ["(^|_)pin(_|$)"] },
+                         "unmasked_sensitive" => { "patterns" => ["kana"] } })
+
+        expect(config.credential_patterns).to eq([MaskRules::CREDENTIAL_NAME, /(^|_)pin(_|$)/i])
+        expect(config.mask_patterns.last(2)).to eq([/(^|_)pin(_|$)/i, /kana/i])
       end
 
       it "names an invalid regular expression" do

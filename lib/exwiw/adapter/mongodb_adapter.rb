@@ -269,7 +269,7 @@ module Exwiw
       # @param config [Exwiw::MongodbCollectionConfig] collection to mask
       # @param config_by_name [Hash{String => Exwiw::MongodbCollectionConfig}] every declared collection by name
       # @return [Exwiw::MaskUpdateRunner::Checked]
-      # @raise [Exwiw::MaskUpdateRunner::Error] when the collection declares no mask or masks its primary key, or for an unaccepted credential-looking path
+      # @raise [Exwiw::MaskUpdateRunner::Error] when the collection declares no mask or masks its primary key
       def check_mask_update(config, config_by_name)
         @embedded_children_by_parent = index_embedded_children(config_by_name)
         described = self.class.describe_masks(config, config_by_name)
@@ -280,9 +280,8 @@ module Exwiw
         if MaskRules.masks_primary_key?(described)
           raise MaskUpdateRunner::Error, "collection '#{config.name}' masks '#{config.primary_key}', which is immutable in MongoDB"
         end
-        allowed = MaskUpdateRunner.check_credential_columns!(described)
 
-        MaskUpdateRunner::Checked.new(columns: mask_target_names(mask_plan(config)), allowed_guessable_columns: allowed)
+        MaskUpdateRunner::Checked.new(columns: mask_target_names(mask_plan(config)))
       end
 
       # One `bulkWrite` of `updateOne`s on a collection: what #mask_update_statements returns. `operations` are what

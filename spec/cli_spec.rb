@@ -1297,13 +1297,13 @@ module Exwiw
         expect { run_cli(argv) }.to output(/-- \[1\/1\] shops/).to_stdout
       end
 
-      it 'exits 1 with the reason for a credential-looking column masked to something guessable' do
+      it 'exits 1 with the reason for a table that masks its primary key' do
         File.write(File.join(@schema_dir, 'vault.json'),
                    JSON.pretty_generate('name' => 'vault', 'primary_key' => 'id',
-                                        'columns' => [{ 'name' => 'id' }, { 'name' => 'api_token', 'replace_with' => 'x' }]))
+                                        'columns' => [{ 'name' => 'id', 'replace_with' => 'x' }, { 'name' => 'api_token', 'replace_with' => 'x' }]))
 
         expect { run_cli(mask_update_argv(target: ['--target-table=vault', '--ids=1'])) }
-          .to raise_error(SystemExit).and output(/vault\.api_token look like credentials/).to_stderr
+          .to raise_error(SystemExit).and output(/table 'vault' masks its primary key 'id'/).to_stderr
       end
     end
   end

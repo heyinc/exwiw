@@ -11,11 +11,9 @@ module Exwiw
 
     CHUNK_SIZE = 1_000
 
-    CREDENTIAL_NAME = MaskRules::CREDENTIAL_NAME
-
     # What `MaskUpdateRunner#run` returns: the rows found (`target_count`), the columns (MongoDB: field paths) the
-    # statements set, the given primary keys with no row, and the credential-looking columns accepted by `allow_guessable_credential`.
-    Summary = Data.define(:table_name, :target_count, :columns, :missing_primary_key_values, :allowed_guessable_columns) do
+    # statements set, and the given primary keys with no row.
+    Summary = Data.define(:table_name, :target_count, :columns, :missing_primary_key_values) do
       # Sums up the summaries of runs on the same table, e.g. one per batch; columns come from the schema, so any
       # non-empty one will do (a run with no ids reports none).
       #
@@ -29,14 +27,12 @@ module Exwiw
           target_count: summaries.sum(&:target_count),
           columns: checked&.columns || [],
           missing_primary_key_values: summaries.flat_map(&:missing_primary_key_values),
-          allowed_guessable_columns: checked&.allowed_guessable_columns || [],
         )
       end
     end
 
-    # What an adapter's `check_mask_update` returns: the columns (MongoDB: field paths) the statements will set, and the
-    # credential-looking ones accepted by `allow_guessable_credential`.
-    Checked = Data.define(:columns, :allowed_guessable_columns)
+    # What an adapter's `check_mask_update` returns: the columns (MongoDB: field paths) the statements will set.
+    Checked = Data.define(:columns)
 
     # @param source [Exwiw::DataSource] the database to read
     # @param schema [Exwiw::Schema] the loaded schema configs
@@ -123,32 +119,8 @@ module Exwiw
         target_count: record_count,
         columns: checked.columns,
         missing_primary_key_values: missing,
-        allowed_guessable_columns: checked.allowed_guessable_columns,
       )
       [adapter, statements, summary]
-    end
-
-    # A credential-looking column may only be masked to NULL or a cryptographically random SQL expression (the adapter's RANDOM_SECRET_PATTERNS): a constant, id-derived, fake or map value is guessable.
-    #
-    # @param table [Exwiw::MaskRules::Table] the table (collection) being masked, as its adapter describes it
-    # @return [Array<String>] the "table.column" entries that needed `allow_guessable_credential`
-    # @raise [Exwiw::MaskUpdateRunner::Error] for an unaccepted credential-looking column, or an `allow_guessable_credential` that guards nothing
-    def self.check_credential_columns!(table)
-      qualify = ->(paths) { paths.map { |path| "#{table.name}.#{path}" } }
-      unaccepted = MaskRules.unaccepted_credentials(table)
-      unless unaccepted.empty?
-        raise Error,
-              "#{qualify.(unaccepted).join(', ')} look like credentials but are not masked to NULL or a random value, so the value written would be " \
-              "guessable; mask them with raw_sql \"NULL\" or a random expression such as gen_random_uuid()::text (PostgreSQL), " \
-              "HEX(RANDOM_BYTES(16)) (MySQL) or hex(randomblob(16)) (SQLite), or set allow_guessable_credential: true on them"
-      end
-
-      stray = MaskRules.stray_guessable_allowances(table)
-      return qualify.(MaskRules.guessable_credentials(table)) if stray.empty?
-
-      raise Error,
-            "#{qualify.(stray).join(', ')} set allow_guessable_credential, but are not credential-looking " \
-            "columns masked to a guessable value; remove it"
     end
 
     # Why `table` cannot be masked in place at all, shared with the schema check, which skips such tables.

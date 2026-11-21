@@ -240,9 +240,6 @@ module Exwiw
       unless summary.missing_primary_key_values.empty?
         lines << "primary key values not found: #{summary.missing_primary_key_values.join(', ')}"
       end
-      unless summary.allowed_guessable_columns.empty?
-        lines << "credential-looking columns masked to a guessable value (allow_guessable_credential): #{summary.allowed_guessable_columns.join(', ')}"
-      end
       lines
     end
 

@@ -203,6 +203,7 @@ module Exwiw
     # @return [Array<Array(String, String)>] each finding's path and reason
     private def check_findings(check, table, adapter_class)
       patterns = @checks.mask_patterns
+      credential_patterns = @checks.credential_patterns
       case check
       when "integrity"
         findings = []
@@ -224,8 +225,8 @@ module Exwiw
             "masked to a guessable value, and a MongoDB mask cannot be NULL or random; " \
               "set allow_guessable_credential, or ignore the field"
           end
-        MaskRules.unaccepted_credentials(table).map { |path| [path, reason] } +
-          MaskRules.stray_guessable_allowances(table).map do |path|
+        MaskRules.unaccepted_credentials(table, credential_patterns).map { |path| [path, reason] } +
+          MaskRules.stray_guessable_allowances(table, credential_patterns).map do |path|
             [path, "sets allow_guessable_credential, but is not a credential-looking column masked to a guessable value; " \
                    "remove it"]
           end

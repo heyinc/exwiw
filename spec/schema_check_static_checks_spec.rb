@@ -140,6 +140,18 @@ module Exwiw
         end)
       end
 
+      it "adds the configured patterns to the built-in one, and judges allow_guessable_credential by them" do
+        write("accounts", table("accounts", [
+                                  { "name" => "id" },
+                                  { "name" => "pin_code", "replace_with" => "0000" },
+                                  { "name" => "shop_pin", "replace_with" => "0000", "allow_guessable_credential" => true },
+                                ]))
+
+        result = report(check: { "integrity" => false, "guessable_credentials" => { "patterns" => ["(^|_)pin(_|$)"] } })
+        expect(result["guessable_credentials"].map { |entry| entry[/\A\S+/] }).to eq(%w[accounts.pin_code])
+        expect(report(check: only_credentials)["guessable_credentials"].map { |entry| entry[/\A\S+/] }).to eq(%w[accounts.shop_pin])
+      end
+
       it "judges the random expression by the adapter's own functions" do
         write("accounts", table("accounts", [{ "name" => "id" }, { "name" => "api_token", "raw_sql" => "gen_random_uuid()::text" }]))
 

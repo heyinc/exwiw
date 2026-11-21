@@ -60,7 +60,7 @@ module Exwiw
       # @param table [Exwiw::TableConfig] table to mask
       # @param table_by_name [Hash{String => Exwiw::TableConfig}] every declared table by name
       # @return [Exwiw::MaskUpdateRunner::Checked]
-      # @raise [Exwiw::MaskUpdateRunner::Error] when the table declares no mask, masks or does not select its primary key, or for an unaccepted credential-looking column
+      # @raise [Exwiw::MaskUpdateRunner::Error] when the table declares no mask, or masks or does not select its primary key
       def check_mask_update(table, table_by_name)
         described = self.class.describe_masks(table, table_by_name)
         unless MaskRules.masked?(described)
@@ -76,8 +76,7 @@ module Exwiw
                 "table '#{table.name}' does not select its primary key '#{table.primary_key}' (is it ignored?), so its rows cannot be addressed"
         end
 
-        allowed = MaskUpdateRunner.check_credential_columns!(described)
-        MaskUpdateRunner::Checked.new(columns: masked_columns(table).map(&:name), allowed_guessable_columns: allowed)
+        MaskUpdateRunner::Checked.new(columns: masked_columns(table).map(&:name))
       end
 
       # Builds the UPDATEs that set every masked column of the rows of `results` to the values `results` holds for

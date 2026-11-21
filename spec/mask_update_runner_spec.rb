@@ -128,34 +128,12 @@ module Exwiw
       let(:tokens) do
         MongodbCollectionConfig.from_symbol_keys(
           name: "mask_update_credential_spec", primary_key: "_id", belongs_tos: [],
-          fields: [{ name: "_id" }, { name: "api_token", replace_with: "KNOWN", **allowance }],
+          fields: [{ name: "_id" }, { name: "api_token", replace_with: "KNOWN" }],
         )
       end
-      let(:allowance) { {} }
-
-      it "always needs an allowance, since MongoDB has no NULL or random mask" do
-        expect { build(adapter, [tokens], [1], table_name: "mask_update_credential_spec") }
-          .to raise_error(MaskUpdateRunner::Error, /mask_update_credential_spec\.api_token look like credentials/)
-      end
-
-      context "when the field sets allow_guessable_credential" do
-        let(:allowance) { { allow_guessable_credential: true } }
-
-        it "accepts it and reports it" do
-          plan = build(adapter, [tokens], [1], table_name: "mask_update_credential_spec")
-          expect(plan.summary.allowed_guessable_columns).to eq(["mask_update_credential_spec.api_token"])
-        end
-
-        it "reads the allowance of an embedded collection's field under its path" do
-          keys = MongodbCollectionConfig.from_symbol_keys(
-            name: "mask_update_credential_spec_keys", primary_key: "_id", belongs_tos: [],
-            fields: [{ name: "secret", replace_with: "KNOWN", allow_guessable_credential: true }],
-            embedded_in: { collection_name: "mask_update_credential_spec", path: "keys" },
-          )
-          plan = build(adapter, [tokens, keys], [1], table_name: "mask_update_credential_spec")
-          expect(plan.summary.allowed_guessable_columns)
-            .to eq(%w[mask_update_credential_spec.api_token mask_update_credential_spec.keys.secret])
-        end
+      it "writes a guessable mask as declared" do
+        plan = build(adapter, [tokens], [1], table_name: "mask_update_credential_spec")
+        expect(plan.summary.columns).to eq(%w[api_token])
       end
     end
 
@@ -197,7 +175,7 @@ module Exwiw
         expect(plan.summary).to eq(
           MaskUpdateRunner::Summary.new(
             table_name: "accounts", target_count: 2, columns: %w[email code phone label],
-            missing_primary_key_values: [404], allowed_guessable_columns: [],
+            missing_primary_key_values: [404],
           )
         )
       end
@@ -430,20 +408,13 @@ module Exwiw
         db.execute_batch(plan.script)
 
         expect(db.execute("SELECT password_digest FROM accounts")).to eq([[nil]])
-        expect(plan.summary.allowed_guessable_columns).to eq([])
       end
 
-      {
-        "a constant" => { replace_with: "KNOWN-DIGEST" },
-        "an id-derived value" => { replace_with: "masked-{id}" },
-        "a fake value" => { replace_with_fake_data: { seed: "id", type: "phone_number" } },
-        "a raw_sql expression" => { raw_sql: "CASE WHEN accounts.api_token IS NULL THEN NULL ELSE 'KNOWN' END" },
-        "a map" => { map: "->(r) { 'KNOWN' }" },
-      }.each do |label, mask|
-        it "rejects #{label}" do
-          expect { build(adapter, [accounts(api_token: mask)]) }
-            .to raise_error(MaskUpdateRunner::Error, /accounts\.api_token look like credentials/)
-        end
+      it "writes a guessable mask as declared, with or without allow_guessable_credential" do
+        plan = build(adapter, [accounts(api_token: { replace_with: "KNOWN" }, password_digest: { replace_with: "D", allow_guessable_credential: true })])
+        db.execute_batch(plan.script)
+
+        expect(db.execute("SELECT api_token, password_digest FROM accounts")).to eq([%w[KNOWN D]])
       end
 
       it "applies hex(randomblob(16)) as a different 32-char hex value per row" do
@@ -455,38 +426,6 @@ module Exwiw
         expect(values).to all(match(/\A[0-9A-F]{32}\z/))
         expect(values).not_to include("real-token", "real-token-2")
         expect(values.uniq.size).to eq(2)
-        expect(plan.summary.allowed_guessable_columns).to eq([])
-      end
-
-      it "rejects an allowance for a column masked by a random expression" do
-        expect { build(adapter, [accounts(api_token: { raw_sql: "hex(randomblob(16))", allow_guessable_credential: true })]) }
-          .to raise_error(MaskUpdateRunner::Error, /accounts\.api_token set allow_guessable_credential/)
-      end
-
-      it "writes the mask to a column that sets allow_guessable_credential, and reports it" do
-        plan = build(adapter, [accounts(api_token: { replace_with: "KNOWN", allow_guessable_credential: true })])
-        db.execute_batch(plan.script)
-
-        expect(db.execute("SELECT api_token FROM accounts")).to eq([["KNOWN"]])
-        expect(plan.summary.allowed_guessable_columns).to eq(["accounts.api_token"])
-      end
-
-      it "rejects an allowance that guards nothing, even on an unmasked column" do
-        tables = [accounts(password_digest: { raw_sql: "NULL", allow_guessable_credential: true }, city: { allow_guessable_credential: true })]
-        expect { build(adapter, tables) }
-          .to raise_error(MaskUpdateRunner::Error, /accounts\.password_digest, accounts\.city set allow_guessable_credential/)
-      end
-
-      it "treats passcode, api_key and access_key names as credentials too" do
-        %i[shop_passcode google_api_key access_key_url].each do |name|
-          expect { build(adapter, [accounts(name => { replace_with: "x" })]) }
-            .to raise_error(MaskUpdateRunner::Error, /accounts\.#{name} look like credentials/)
-        end
-      end
-
-      it "leaves columns whose names do not look like credentials alone" do
-        plan = build(adapter, [accounts(city: { replace_with: "x" })])
-        expect(plan.summary.columns).to include("city")
       end
 
       it "rejects a map returning a value an UPDATE cannot hold" do
@@ -494,18 +433,6 @@ module Exwiw
           expect { build(adapter, [accounts(city: { map: code })]) }
             .to raise_error(MaskUpdateRunner::Error, /'accounts.city' cannot be masked to this value: cannot write/)
         end
-      end
-    end
-
-    describe "MongoDB credential-looking paths" do
-      it "judges the whole dotted path and needs an allowance since MongoDB has no NULL mask" do
-        collection = MongodbCollectionConfig.from_symbol_keys(
-          name: "users", primary_key: "_id", belongs_tos: [], fields: [{ name: "services.password.bcrypt", replace_with: "x" }],
-        )
-        mongo = Adapter.build(connection_config(:mongodb), logger)
-
-        expect { build(mongo, [collection], table_name: "users") }
-          .to raise_error(MaskUpdateRunner::Error, /users\.services\.password\.bcrypt look like credentials/)
       end
     end
 
@@ -639,14 +566,6 @@ module Exwiw
     end
 
     describe "random expressions for credential-looking columns" do
-      let(:logger) { Logger.new(nil) }
-
-      def guard(adapter_name, raw_sql)
-        adapter = Adapter.build(connection_config(adapter_name), logger)
-        columns = [{ name: "id" }, { name: "api_token", raw_sql: raw_sql }]
-        build(adapter, [table(columns: columns)])
-      end
-
       {
         postgresql: [
           "gen_random_uuid()::text", "replace(gen_random_uuid()::text, '-', '')", "encode(gen_random_bytes(16), 'hex')",
@@ -682,19 +601,11 @@ module Exwiw
         ],
       }.each do |adapter_name, expressions|
         expressions.each do |expression|
-          it "rejects #{expression.inspect} on #{adapter_name}" do
-            expect { guard(adapter_name, expression) }
-              .to raise_error(MaskUpdateRunner::Error, /accounts\.api_token look like credentials.*gen_random_uuid\(\)::text.*HEX\(RANDOM_BYTES\(16\)\).*hex\(randomblob\(16\)\)/)
-          end
-        end
-      end
+          it "does not accept #{expression.inspect} on #{adapter_name}" do
+            column = TableColumn.from_symbol_keys(name: "api_token", raw_sql: expression)
 
-      it "rejects replace_with, map and fake data without reaching the database" do
-        masks = [{ replace_with: "KNOWN" }, { map: "->(r) { 'KNOWN' }" }, { replace_with_fake_data: { seed: "id", type: "phone_number" } }]
-        masks.each do |mask|
-          adapter = Adapter.build(connection_config(:postgresql), logger)
-          columns = [{ name: "id" }, { name: "api_token" }.merge(mask)]
-          expect { build(adapter, [table(columns: columns)]) }.to raise_error(MaskUpdateRunner::Error, /accounts\.api_token look like credentials/)
+            expect(Adapter.class_for(adapter_name).safe_for_credential?(column)).to be(false)
+          end
         end
       end
     end

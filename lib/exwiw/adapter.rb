@@ -105,7 +105,7 @@ module Exwiw
       # Checks that the table (collection) can be masked as declared, before any row is read. Exwiw::MaskUpdateRunner
       # calls this after validating the table and the primary key values. An implementation judges what
       # .describe_masks returns with Exwiw::MaskRules: it raises for a table that declares no mask or masks its primary
-      # key, and passes the description to Exwiw::MaskUpdateRunner.check_credential_columns!.
+      # key.
       #
       # @param _table [Exwiw::TableConfig, Exwiw::MongodbCollectionConfig] the table (collection) to mask
       # @param _table_by_name [Hash{String => Object}] every declared table by name, as for #build_query
