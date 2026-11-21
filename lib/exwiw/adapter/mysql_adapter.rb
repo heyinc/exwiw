@@ -410,6 +410,22 @@ module Exwiw
         end
       end
 
+      # One UPDATE per chunk, joined with a UNION ALL of the rows' values (VALUES ROW needs MySQL 8.0.19).
+      private def mask_update_chunk(table, names, rows, extras)
+        pk = quote_identifier(table.primary_key)
+        selects = rows.each_with_index.map do |(key, values), i|
+          as = ->(name) { i.zero? ? " AS #{quote_identifier(name)}" : "" }
+          cells = ["#{escape_value(key)}#{as.(table.primary_key)}", *names.map { |name| "#{values.fetch(name)}#{as.(name)}" }]
+          "SELECT #{cells.join(', ')}"
+        end
+        sets = names.map { |name| "t.#{quote_identifier(name)} = v.#{quote_identifier(name)}" } +
+               extras.map { |name, literal| "t.#{quote_identifier(name)} = #{literal}" }
+        [
+          "UPDATE #{quote_table_name(table.name)} AS t JOIN (#{selects.join(' UNION ALL ')}) AS v ON t.#{pk} = v.#{pk} " \
+          "SET #{sets.join(', ')};",
+        ]
+      end
+
       private def escape_single_quote(value)
         value.gsub("'", "''")
       end
