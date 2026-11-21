@@ -93,6 +93,49 @@ module Exwiw
       columns.map(&:name)
     end
 
+    # Why this table cannot be masked in place at all, whatever its masks; the schema check skips such tables.
+    #
+    # @return [String, nil] the reason, or nil when it can be masked
+    def unmaskable_reason
+      return "table '#{name}' has a composite primary key, which is not supported" if type == UNSUPPORTED_COMPOSITE_PRIMARY_KEY
+      return "table '#{name}' is declared ignore: true" if ignore
+
+      "table '#{name}' is rails-managed and declares no columns to mask" if rails_managed?
+    end
+
+    # Describes this table for Exwiw::MaskRules: what `mask-update` and the schema check judge.
+    #
+    # @param _table_by_name [Hash{String => Exwiw::TableConfig}] every declared table by name
+    # @return [Exwiw::MaskRules::Table]
+    def describe_masks(_table_by_name)
+      foreign_keys = belongs_tos.map(&:foreign_key)
+      described = columns.map do |c|
+        MaskRules::Column.new(
+          path: c.name, name: c.name, masked: c.mask_declared?, safe: c.safe_for_credential?,
+          allow_guessable_credential: c.allow_guessable_credential == true, allow_unmasked: c.allow_unmasked == true,
+          exempt: c.name == primary_key || foreign_keys.include?(c.name),
+        )
+      end
+      MaskRules::Table.new(
+        name: name, primary_key: primary_key, selects_primary_key: columns.any? { |c| c.name == primary_key }, columns: described,
+      )
+    end
+
+    # Why the rows cannot be masked in place as the masks are declared, before any row is read.
+    #
+    # @param table_by_name [Hash{String => Exwiw::TableConfig}] every declared table by name
+    # @return [String, nil] the reason, or nil when they can be masked
+    def mask_refusal(table_by_name)
+      described = describe_masks(table_by_name)
+      return "table '#{name}' declares no mask on any column" unless MaskRules.masked?(described)
+      if MaskRules.masks_primary_key?(described)
+        return "table '#{name}' masks its primary key '#{primary_key}', which selects the rows to update"
+      end
+      return if described.selects_primary_key
+
+      "table '#{name}' does not select its primary key '#{primary_key}' (is it ignored?), so its rows cannot be addressed"
+    end
+
     # Drop the belongs_tos/columns flagged `ignore:true` so they are excluded
     # from extraction (dependency ordering, SELECT projection, INSERT). The
     # config files on disk keep these entries; this is applied to the runtime

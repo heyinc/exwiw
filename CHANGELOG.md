@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **The masks are judged by the config classes rather than the adapters.** `TableConfig` and `MongodbCollectionConfig` gain `#unmaskable_reason`, `#describe_masks(config_by_name)` and `#mask_refusal(config_by_name)`, and columns (fields) `#mask_declared?` and `#safe_for_credential?`; `mask-update` and `schema check` use them. `Exwiw::MaskUpdateRunner.unmaskable_reason`, `Exwiw::MaskUpdateRunner::Checked`, the adapters' `.describe_masks`, `.mask_declared?`, `.safe_for_credential?` and `#check_mask_update` are removed (an adapter now implements `#mask_update_columns`). The CLI and `mask_with_exwiw!` are unchanged.
+
 ## [1.3.0] - 2026-11-21
 
 ### Added

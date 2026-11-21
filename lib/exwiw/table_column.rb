@@ -46,5 +46,15 @@ module Exwiw
     def to_hash
       super.compact # drop unusing option
     end
+
+    # @return [Boolean] whether a mask is declared
+    def mask_declared?
+      !!(raw_sql || !replace_with.nil? || map || replace_with_fake_data || replace_with_random || unset)
+    end
+
+    # @return [Boolean] whether the mask leaves nothing to guess
+    def safe_for_credential?
+      !!(unset || replace_with_random)
+    end
   end
 end

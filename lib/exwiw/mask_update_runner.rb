@@ -31,9 +31,6 @@ module Exwiw
       end
     end
 
-    # What an adapter's `check_mask_update` returns: the columns (MongoDB: field paths) the statements will set.
-    Checked = Data.define(:columns)
-
     # @param source [Exwiw::DataSource] the database to read
     # @param schema [Exwiw::Schema] the loaded schema configs
     # @param dump_target [Exwiw::DumpTarget] `table_name` and `ids` (default ID space) name the rows to mask by primary key
@@ -94,9 +91,14 @@ module Exwiw
       table = table_by_name[@dump_target.table_name.to_s]
       raise Error, "table '#{@dump_target.table_name}' is not declared in the schema (#{@schema.dir})" if table.nil?
 
-      validate_table!(table)
+      reason = table.unmaskable_reason
+      raise Error, reason if reason
+
       primary_key_values = normalize_primary_key_values(table, @dump_target.default_ids)
-      checked = adapter.check_mask_update(table, table_by_name)
+      reason = table.mask_refusal(table_by_name)
+      raise Error, reason if reason
+
+      columns = adapter.mask_update_columns(table, table_by_name)
 
       row_transformer = RowTransformer.build(table)
       statements = []
@@ -117,33 +119,10 @@ module Exwiw
       summary = Summary.new(
         table_name: table.name,
         target_count: record_count,
-        columns: checked.columns,
+        columns: columns,
         missing_primary_key_values: missing,
       )
       [adapter, statements, summary]
-    end
-
-    # Why `table` cannot be masked in place at all, shared with the schema check, which skips such tables.
-    #
-    # @param table [Exwiw::TableConfig, Exwiw::MongodbCollectionConfig]
-    # @return [String, nil] the reason, or nil when it can be masked
-    def self.unmaskable_reason(table)
-      if table.respond_to?(:type) && table.type == TableConfig::UNSUPPORTED_COMPOSITE_PRIMARY_KEY
-        return "table '#{table.name}' has a composite primary key, which is not supported"
-      end
-      return "table '#{table.name}' is declared ignore: true" if table.ignore
-      if table.respond_to?(:rails_managed?) && table.rails_managed?
-        return "table '#{table.name}' is rails-managed and declares no columns to mask"
-      end
-      return unless table.respond_to?(:embedded?) && table.embedded?
-
-      "collection '#{table.name}' is embedded in '#{table.embedded_in.collection_name}'; " \
-        "its masks apply through the parent collection's documents, so pass the parent instead"
-    end
-
-    private def validate_table!(table)
-      reason = self.class.unmaskable_reason(table)
-      raise Error, reason if reason
     end
 
     private def normalize_primary_key_values(table, primary_key_values)

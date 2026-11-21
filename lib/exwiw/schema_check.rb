@@ -180,9 +180,9 @@ module Exwiw
           schema = Schema.load(dir: dir, config_class: @config_class, profiles: @profiles, profile: profile)
           schema.check_adapter!(adapter_class)
           schema.configs.each do |config|
-            next if MaskUpdateRunner.unmaskable_reason(config)
+            next if config.unmaskable_reason
 
-            table = adapter_class.describe_masks(config, schema.table_by_name)
+            table = config.describe_masks(schema.table_by_name)
             label = database ? "#{database}/#{config.name}" : config.name
             enabled.each do |check|
               next unless @checks.profiles_by_check.fetch(check).include?(profile)

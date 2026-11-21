@@ -593,8 +593,8 @@ module Exwiw
         guessable = [{ raw_sql: "NULL" }, { raw_sql: "hex(randomblob(16))" }, { replace_with: "x" }, { map: "proc { nil }" }]
                     .map { |mask| TableColumn.from_symbol_keys(name: "t", **mask) }
 
-        expect(safe.map { |c| Adapter::SqliteAdapter.safe_for_credential?(c) }).to eq([true, true])
-        expect(guessable.map { |c| Adapter::SqliteAdapter.safe_for_credential?(c) }).to eq([false] * 4)
+        expect(safe.map(&:safe_for_credential?)).to eq([true, true])
+        expect(guessable.map(&:safe_for_credential?)).to eq([false] * 4)
       end
     end
 
