@@ -165,11 +165,14 @@ module Exwiw
                                   { "name" => "encrypted_password", "replace_with" => "x" },
                                   { "name" => "encrypted_private_jwk", "replace_with" => "x" },
                                   { "name" => "signing_privatekey", "replace_with" => "x" },
+                                  { "name" => "activation_digest", "replace_with" => "x{id}" },
+                                  { "name" => "salt", "replace_with" => "x" },
+                                  { "name" => "password_digest", "replace_with" => "x" },
                                   { "name" => "access_token_expires_at", "replace_with" => "2000-01-01" },
                                 ]))
 
         expect(report(check: only_credentials)["guessable_credentials"].map { |entry| entry[/\A\S+/] })
-          .to eq(%w[accounts.encrypted_password accounts.encrypted_private_jwk accounts.signing_privatekey])
+          .to eq(%w[accounts.encrypted_password accounts.encrypted_private_jwk accounts.password_digest accounts.signing_privatekey])
       end
 
     end
@@ -218,10 +221,12 @@ module Exwiw
         )
       end
 
-      it "counts what is stored encrypted, and leaves out timestamps" do
+      it "counts what is stored encrypted or hashed, and leaves out timestamps" do
         write("users", table("users", [
                                { "name" => "id" },
                                { "name" => "encrypted_card_expiry" },
+                               { "name" => "pin_digest" },
+                               { "name" => "salt" },
                                { "name" => "email_updated_at" },
                                { "name" => "phone_verified_at", "allow_unmasked" => true },
                              ]))
@@ -229,6 +234,7 @@ module Exwiw
         expect(report(check: only_unmasked)["unmasked_sensitive"]).to eq([
           "users.encrypted_card_expiry [base]: looks sensitive but is not masked; add a mask, or set allow_unmasked if the real value is needed",
           "users.phone_verified_at [base]: sets allow_unmasked, but its name matches no mask pattern; remove it",
+          *%w[pin_digest salt].map { |column| "users.#{column} [base]: looks sensitive but is not masked; add a mask, or set allow_unmasked if the real value is needed" },
         ])
       end
 

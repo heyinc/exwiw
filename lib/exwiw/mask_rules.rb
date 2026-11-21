@@ -13,9 +13,10 @@ module Exwiw
     # A table (collection) as the rules see it. `selects_primary_key` is false when the SELECT would not read the key.
     Table = Data.define(:name, :primary_key, :selects_primary_key, :columns)
 
-    # A name that looks like a credential: masking one to a guessable value defeats the mask. `encrypted` is left out, as
-    # it says how a value is stored rather than what it is (DEFAULT_MASK_PATTERNS keeps it).
-    CREDENTIAL_NAME = /password|digest|salt|secret|token|credential|passcode|api_key|access_key|private_?key|jwk/i
+    # A name that looks like a credential: masking one to a guessable value defeats the mask. `encrypted`, `digest` and
+    # `salt` are left out, as they say how a value is stored rather than what it is, and a guessable digest or salt matches
+    # no input (DEFAULT_MASK_PATTERNS keeps them, as a real digest of a short secret can be brute-forced).
+    CREDENTIAL_NAME = /password|secret|token|credential|passcode|api_key|access_key|private_?key|jwk/i
 
     # Names that match a pattern but cannot hold the value it is after: a timestamp (`email_updated_at`,
     # `access_token_expires_at`).
@@ -23,10 +24,10 @@ module Exwiw
 
     # Names that look like they hold sensitive data, in the spirit of Rails' filter_parameters.
     DEFAULT_MASK_PATTERNS = [
-      # Credentials, one-time passwords, and what is stored encrypted
+      # Credentials, one-time passwords, and what is stored encrypted or hashed
       CREDENTIAL_NAME,
       /(^|_)otp(_|$)/i,
-      /encrypted/i,
+      /encrypted|digest|salt/i,
       # Contact details
       /e_?mail/i,
       # `mobile` only as a whole name (or `mobile_number` ...), so that `mobile_order_count` does not match.
