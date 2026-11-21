@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-21
+
 ### Added
 
 - **`exwiw mask-update` prints the UPDATE statements that mask given rows of one table in place.** It uses the same masks `export` applies (`replace_with`, `raw_sql`, `map`, `replace_with_fake_data`), takes the rows from `--target-table` and `--ids` (with `--mode=primary-key` and `--no-recursive`, both required until the scope-column mode and related tables are supported), honors `--profile`, and only reads the database. It prints one UPDATE per row on SQLite, and on PostgreSQL and MySQL one per batch of up to 1,000 rows, joining the table with the rows' values (`UPDATE ... FROM (VALUES ...)`, `UPDATE ... JOIN (SELECT ... UNION ALL ...)`); for MongoDB it prints one line of canonical Extended JSON per batch, `["<collection>", <operations>]`, that `mongosh` (`EJSON.parse`) or a driver (`bulk_write`) can apply. Masks are applied as written; the opt-in `guessable_credentials` check of `schema check` reports a credential-looking column masked to a guessable value rather than `unset` or `replace_with_random`. See [`exwiw mask-update`](README.md#exwiw-mask-update). The Ruby API is `Exwiw::MaskUpdateRunner`: `#run` writes the output, and `#apply` yields the statements once all are built (SQL strings, or MongoDB bulk writes whose `driver_operations` the Ruby driver's `bulk_write` takes) for a caller that executes them itself; `extra_assignments:` also sets columns to fixed values, such as `updated_at`.
