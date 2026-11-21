@@ -6,14 +6,16 @@ module Exwiw
   #
   #   check:
   #     integrity: {}                  # on unless `false`
-  #     credentials: true              # off unless set
-  #     masks:                         # off unless set
+  #     guessable_credentials: true    # off unless set
+  #     unmasked_sensitive:            # off unless set
   #       patterns: ['(^|_)kana(_|$)'] # added to MaskRules::DEFAULT_MASK_PATTERNS
   #       profiles: [base, dev]        # base + every declared profile when omitted
   class CheckConfig
-    CHECKS = %w[integrity credentials masks].freeze
-    DEFAULTS = { "integrity" => true, "credentials" => false, "masks" => false }.freeze
-    OPTIONS = { "integrity" => %w[profiles], "credentials" => %w[profiles], "masks" => %w[profiles patterns] }.freeze
+    CHECKS = %w[integrity guessable_credentials unmasked_sensitive].freeze
+    DEFAULTS = { "integrity" => true, "guessable_credentials" => false, "unmasked_sensitive" => false }.freeze
+    OPTIONS = {
+      "integrity" => %w[profiles], "guessable_credentials" => %w[profiles], "unmasked_sensitive" => %w[profiles patterns],
+    }.freeze
 
     # The reserved profile name for the base config, with no overlay merged in.
     BASE_PROFILE = "base"
@@ -120,13 +122,13 @@ module Exwiw
 
     private_class_method def self.item_patterns(raw, source)
       unless raw.is_a?(Array) && raw.all? { |pattern| pattern.is_a?(String) }
-        raise ArgumentError, "'check.masks.patterns' must be a list of regular expressions (got #{raw.inspect}) in #{source}"
+        raise ArgumentError, "'check.unmasked_sensitive.patterns' must be a list of regular expressions (got #{raw.inspect}) in #{source}"
       end
 
       raw.map do |pattern|
         Regexp.new(pattern, Regexp::IGNORECASE)
       rescue RegexpError => e
-        raise ArgumentError, "'check.masks.patterns' has an invalid regular expression #{pattern.inspect} in #{source}: #{e.message}"
+        raise ArgumentError, "'check.unmasked_sensitive.patterns' has an invalid regular expression #{pattern.inspect} in #{source}: #{e.message}"
       end
     end
   end

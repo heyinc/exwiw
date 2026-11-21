@@ -36,7 +36,7 @@ module Exwiw
       CheckConfig.parse(value, profiles: profiles)
     end
 
-    def report(check: { "integrity" => true, "credentials" => true, "masks" => true }, adapter: "sqlite", config_class: TableConfig)
+    def report(check: { "integrity" => true, "guessable_credentials" => true, "unmasked_sensitive" => true }, adapter: "sqlite", config_class: TableConfig)
       described_class.new(
         schema_dir: schema_dir, regenerator: ->(_dir) {}, profiles: profiles, config_class: config_class,
         checks: check.is_a?(CheckConfig) ? check : checks(check), adapter: adapter,
@@ -52,7 +52,7 @@ module Exwiw
                              { "name" => "nickname" },
                            ]))
 
-      expect(report.slice("integrity", "credentials", "masks")).to eq("integrity" => [], "credentials" => [], "masks" => [])
+      expect(report.slice("integrity", "guessable_credentials", "unmasked_sensitive")).to eq("integrity" => [], "guessable_credentials" => [], "unmasked_sensitive" => [])
       expect(described_class.clean?(report)).to be(true)
     end
 
@@ -63,8 +63,8 @@ module Exwiw
         result = report(check: CheckConfig.default)
 
         expect(result).to include("integrity" => [])
-        expect(result).not_to have_key("credentials")
-        expect(result).not_to have_key("masks")
+        expect(result).not_to have_key("guessable_credentials")
+        expect(result).not_to have_key("unmasked_sensitive")
       end
 
       it "adds no key for a disabled check" do
@@ -78,23 +78,35 @@ module Exwiw
       it "reports a masked primary key" do
         write("users", table("users", [{ "name" => "id", "raw_sql" => "NULL" }, { "name" => "email", "replace_with" => "x" }]))
 
-        expect(report(check: only_integrity)["integrity"])
-          .to eq(["users.id [base]: the primary key is masked, but mask-update addresses rows by it; remove the mask"])
-      end
-
-      it "reports a masked table that does not select its primary key" do
-        write("users", table("users", [{ "name" => "id", "ignore" => true }, { "name" => "email", "replace_with" => "x" }]))
-
         expect(report(check: only_integrity)["integrity"]).to eq(
-          ["users.id [base]: the table declares masks but does not select its primary key (is it ignored?), so mask-update cannot address its rows"],
+          ["users.id [base]: the primary key is masked, which breaks the rows referencing it and mask-update, " \
+           "which addresses rows by it; remove the mask"],
         )
       end
 
-      it "does not report a table that declares no mask, which only fails when someone masks it" do
-        write("users", table("users", [{ "name" => "id", "ignore" => true }, { "name" => "email" }]))
+      it "reports a table that does not select its primary key, whether or not it declares masks" do
+        write("users", table("users", [{ "name" => "id", "ignore" => true }, { "name" => "email", "replace_with" => "x" }]))
+        write("logs", table("logs", [{ "name" => "id", "ignore" => true }, { "name" => "body" }]))
+
+        expect(report(check: only_integrity)["integrity"]).to eq(%w[logs users].map do |name|
+          "#{name}.id [base]: the primary key is not selected (is it ignored?), which breaks the rows referencing it " \
+            "and mask-update, which addresses rows by it; select it"
+        end)
+      end
+
+      it "leaves the allowances to the checks they belong to" do
+        write("users", table("users", [
+                               { "name" => "id" },
+                               { "name" => "city", "replace_with" => "x", "allow_guessable_credential" => true },
+                               { "name" => "nickname", "allow_unmasked" => true },
+                             ]))
 
         expect(report(check: only_integrity)["integrity"]).to eq([])
       end
+    end
+
+    describe "guessable_credentials" do
+      let(:only_credentials) { { "integrity" => false, "guessable_credentials" => true } }
 
       it "reports an allow_guessable_credential that guards nothing" do
         write("users", table("users", [
@@ -105,40 +117,11 @@ module Exwiw
                                { "name" => "password", "replace_with" => "x", "allow_guessable_credential" => true },
                              ]))
 
-        expect(report(check: only_integrity)["integrity"]).to eq(%w[api_token city secret].map do |column|
+        expect(report(check: only_credentials)["guessable_credentials"]).to eq(%w[api_token city secret].map do |column|
           "users.#{column} [base]: sets allow_guessable_credential, but is not a credential-looking column " \
             "masked to a guessable value; remove it"
         end)
       end
-
-      it "reports an allow_unmasked that allows nothing, saying why" do
-        write("users", table("users", [
-                               { "name" => "id", "allow_unmasked" => true },
-                               { "name" => "shop_id", "allow_unmasked" => true },
-                               { "name" => "email", "replace_with" => "x", "allow_unmasked" => true },
-                               { "name" => "nickname", "allow_unmasked" => true },
-                               { "name" => "phone", "allow_unmasked" => true },
-                             ], belongs_tos: [{ "foreign_key" => "shop_id", "table_name" => "shops" }]))
-        write("shops", table("shops", [{ "name" => "id" }]))
-
-        expect(report(check: only_integrity)["integrity"]).to eq([
-          "users.email [base]: sets allow_unmasked, but it is masked; remove it",
-          "users.id [base]: sets allow_unmasked, but it is the primary key or a belongs_to foreign key, which are never masked; remove it",
-          "users.nickname [base]: sets allow_unmasked, but its name matches no mask pattern; remove it",
-          "users.shop_id [base]: sets allow_unmasked, but it is the primary key or a belongs_to foreign key, which are never masked; remove it",
-        ])
-      end
-
-      it "counts the configured patterns when judging allow_unmasked" do
-        write("users", table("users", [{ "name" => "id" }, { "name" => "name_kana", "allow_unmasked" => true }]))
-
-        expect(report(check: { "masks" => { "patterns" => ["(^|_)kana(_|$)"] } })["integrity"]).to eq([])
-        expect(report(check: only_integrity)["integrity"].join).to include("users.name_kana [base]: sets allow_unmasked")
-      end
-    end
-
-    describe "credentials" do
-      let(:only_credentials) { { "integrity" => false, "credentials" => true } }
 
       it "reports a credential-looking column masked to a guessable value, unless it allows that" do
         write("accounts", table("accounts", [
@@ -151,7 +134,7 @@ module Exwiw
                                   { "name" => "salt" },
                                 ]))
 
-        expect(report(check: only_credentials)["credentials"]).to eq(%w[api_token password_digest].map do |column|
+        expect(report(check: only_credentials)["guessable_credentials"]).to eq(%w[api_token password_digest].map do |column|
           "accounts.#{column} [base]: masked to a guessable value; mask it with raw_sql \"NULL\" or a random expression, " \
             "or set allow_guessable_credential"
         end)
@@ -160,13 +143,39 @@ module Exwiw
       it "judges the random expression by the adapter's own functions" do
         write("accounts", table("accounts", [{ "name" => "id" }, { "name" => "api_token", "raw_sql" => "gen_random_uuid()::text" }]))
 
-        expect(report(check: only_credentials, adapter: "postgresql")["credentials"]).to eq([])
-        expect(report(check: only_credentials, adapter: "sqlite")["credentials"].size).to eq(1)
+        expect(report(check: only_credentials, adapter: "postgresql")["guessable_credentials"]).to eq([])
+        expect(report(check: only_credentials, adapter: "sqlite")["guessable_credentials"].size).to eq(1)
       end
     end
 
-    describe "masks" do
-      let(:only_masks) { { "integrity" => false, "masks" => true } }
+    describe "unmasked_sensitive" do
+      let(:only_unmasked) { { "integrity" => false, "unmasked_sensitive" => true } }
+
+      it "reports an allow_unmasked that allows nothing, saying why" do
+        write("users", table("users", [
+                               { "name" => "id", "allow_unmasked" => true },
+                               { "name" => "shop_id", "allow_unmasked" => true },
+                               { "name" => "email", "replace_with" => "x", "allow_unmasked" => true },
+                               { "name" => "nickname", "allow_unmasked" => true },
+                               { "name" => "phone", "allow_unmasked" => true },
+                             ], belongs_tos: [{ "foreign_key" => "shop_id", "table_name" => "shops" }]))
+        write("shops", table("shops", [{ "name" => "id" }]))
+
+        expect(report(check: only_unmasked)["unmasked_sensitive"]).to eq([
+          "users.email [base]: sets allow_unmasked, but it is masked; remove it",
+          "users.id [base]: sets allow_unmasked, but it is the primary key or a belongs_to foreign key, which are never masked; remove it",
+          "users.nickname [base]: sets allow_unmasked, but its name matches no mask pattern; remove it",
+          "users.shop_id [base]: sets allow_unmasked, but it is the primary key or a belongs_to foreign key, which are never masked; remove it",
+        ])
+      end
+
+      it "counts the configured patterns when judging allow_unmasked" do
+        write("users", table("users", [{ "name" => "id" }, { "name" => "name_kana", "allow_unmasked" => true }]))
+
+        expect(report(check: { "integrity" => false, "unmasked_sensitive" => { "patterns" => ["(^|_)kana(_|$)"] } })["unmasked_sensitive"])
+          .to eq([])
+        expect(report(check: only_unmasked)["unmasked_sensitive"].join).to include("users.name_kana [base]: sets allow_unmasked")
+      end
 
       it "reports an unmasked column whose name looks sensitive" do
         write("users", table("users", [
@@ -178,7 +187,7 @@ module Exwiw
                                { "name" => "nickname" },
                              ]))
 
-        expect(report(check: only_masks)["masks"]).to eq(
+        expect(report(check: only_unmasked)["unmasked_sensitive"]).to eq(
           ["users.email [base]: looks sensitive but is not masked; add a mask, or set allow_unmasked if the real value is needed"],
         )
       end
@@ -189,14 +198,14 @@ module Exwiw
         write("addresses", table("addresses", [{ "name" => "id" }, { "name" => "city" }]))
         write("emails", table("emails", [{ "name" => "email" }, { "name" => "body", "raw_sql" => "NULL" }], primary_key: "email"))
 
-        expect(report(check: only_masks)["masks"]).to eq([])
+        expect(report(check: only_unmasked)["unmasked_sensitive"]).to eq([])
       end
 
       it "adds the configured patterns to the defaults" do
         write("users", table("users", [{ "name" => "id" }, { "name" => "email" }, { "name" => "name_kana" }]))
 
-        result = report(check: { "integrity" => false, "masks" => { "patterns" => ["(^|_)kana(_|$)"] } })
-        expect(result["masks"].map { |entry| entry[/\A\S+/] }).to eq(%w[users.email users.name_kana])
+        result = report(check: { "integrity" => false, "unmasked_sensitive" => { "patterns" => ["(^|_)kana(_|$)"] } })
+        expect(result["unmasked_sensitive"].map { |entry| entry[/\A\S+/] }).to eq(%w[users.email users.name_kana])
       end
     end
 
@@ -207,7 +216,7 @@ module Exwiw
         write("pairs", table("pairs", [{ "name" => "email" }], primary_key: nil, ignore: true,
                                                                type: TableConfig::UNSUPPORTED_COMPOSITE_PRIMARY_KEY))
 
-        expect(report.slice("integrity", "credentials", "masks")).to eq("integrity" => [], "credentials" => [], "masks" => [])
+        expect(report.slice("integrity", "guessable_credentials", "unmasked_sensitive")).to eq("integrity" => [], "guessable_credentials" => [], "unmasked_sensitive" => [])
       end
     end
 
@@ -232,17 +241,20 @@ module Exwiw
       end
 
       it "reports through the parent, under the embedded field's path" do
-        result = mongo_report({ "integrity" => true, "credentials" => true, "masks" => true })
+        result = mongo_report({ "integrity" => true, "guessable_credentials" => true, "unmasked_sensitive" => true })
 
-        expect(result["masks"].map { |entry| entry[/\A\S+/] }).to eq(%w[users.email users.profile.addresses.zip_code])
-        expect(result["credentials"]).to eq(%w[users.api_token users.profile.addresses.secret].map do |path|
-          "#{path} [base]: masked to a guessable value, and a MongoDB mask cannot be NULL or random; " \
-            "set allow_guessable_credential, or ignore the field"
-        end)
-        expect(result["integrity"]).to eq([
+        expect(result["unmasked_sensitive"].map { |entry| entry[/\A\S+/] }).to eq(%w[users.email users.profile.addresses.city users.profile.addresses.zip_code])
+        expect(result["guessable_credentials"]).to eq([
+          "users.api_token [base]: masked to a guessable value, and a MongoDB mask cannot be NULL or random; " \
+          "set allow_guessable_credential, or ignore the field",
           "users.nickname [base]: sets allow_guessable_credential, but is not a credential-looking column masked to a guessable value; remove it",
-          "users.profile.addresses.city [base]: sets allow_unmasked, but its name matches no mask pattern; remove it",
+          "users.profile.addresses.secret [base]: masked to a guessable value, and a MongoDB mask cannot be NULL or random; " \
+          "set allow_guessable_credential, or ignore the field",
         ])
+        expect(result["unmasked_sensitive"]).to include(
+          "users.profile.addresses.city [base]: sets allow_unmasked, but its name matches no mask pattern; remove it",
+        )
+        expect(result["integrity"]).to eq([])
       end
 
       it "accepts a guessable credential that allows it, and a sensitive field that allows being unmasked" do
@@ -254,8 +266,8 @@ module Exwiw
         write("addresses", collection("addresses", [{ "name" => "_id" }, { "name" => "zip_code", "replace_with" => "000" }],
                                       embedded_in: { "collection_name" => "users", "path" => "addresses" }))
 
-        result = mongo_report({ "integrity" => true, "credentials" => true, "masks" => true })
-        expect(result.slice("integrity", "credentials", "masks")).to eq("integrity" => [], "credentials" => [], "masks" => [])
+        result = mongo_report({ "integrity" => true, "guessable_credentials" => true, "unmasked_sensitive" => true })
+        expect(result.slice("integrity", "guessable_credentials", "unmasked_sensitive")).to eq("integrity" => [], "guessable_credentials" => [], "unmasked_sensitive" => [])
       end
 
       it "reports a masked _id" do
@@ -263,7 +275,8 @@ module Exwiw
         File.delete(File.join(schema_dir, "addresses.json"))
 
         expect(mongo_report({ "integrity" => true })["integrity"])
-          .to eq(["users._id [base]: the primary key is masked, but mask-update addresses rows by it; remove the mask"])
+          .to eq(["users._id [base]: the primary key is masked, which breaks the rows referencing it and mask-update, " \
+                  "which addresses rows by it; remove the mask"])
       end
     end
 
@@ -278,12 +291,12 @@ module Exwiw
       end
 
       it "lists a finding once with every profile it occurs in" do
-        expect(report(check: { "masks" => true })["masks"].map { |entry| entry[/\A[^:]+/] })
+        expect(report(check: { "unmasked_sensitive" => true })["unmasked_sensitive"].map { |entry| entry[/\A[^:]+/] })
           .to eq(["users.email [base, dev, ci]", "users.phone [base, ci]"])
       end
 
       it "runs a check against the selected profiles only" do
-        expect(report(check: { "masks" => { "profiles" => %w[dev] } })["masks"].map { |entry| entry[/\A[^:]+/] })
+        expect(report(check: { "unmasked_sensitive" => { "profiles" => %w[dev] } })["unmasked_sensitive"].map { |entry| entry[/\A[^:]+/] })
           .to eq(["users.email [dev]"])
       end
 
@@ -294,7 +307,7 @@ module Exwiw
                                                             ))
 
         result = report
-        expect(result["masks"]).to eq([])
+        expect(result["unmasked_sensitive"]).to eq([])
         expect(result["integrity"]).to eq([])
       end
     end
@@ -307,14 +320,14 @@ module Exwiw
               dir: File.join(schema_dir, "legacy"))
         adapters = { "primary" => "postgresql", "legacy" => "mysql" }
 
-        result = report(check: { "credentials" => true }, adapter: ->(database) { adapters.fetch(database) })
-        expect(result["credentials"].map { |entry| entry[/\A\S+/] }).to eq(%w[legacy/accounts.api_token])
+        result = report(check: { "guessable_credentials" => true }, adapter: ->(database) { adapters.fetch(database) })
+        expect(result["guessable_credentials"].map { |entry| entry[/\A\S+/] }).to eq(%w[legacy/accounts.api_token])
       end
 
       it "fails loudly when the adapter is unknown" do
         write("users", table("users", [{ "name" => "id" }]))
 
-        expect { report(adapter: nil) }.to raise_error(ArgumentError, /needs the database adapter to run the integrity, credentials, masks check/)
+        expect { report(adapter: nil) }.to raise_error(ArgumentError, /needs the database adapter to run the integrity, guessable_credentials, unmasked_sensitive check/)
         expect { report(adapter: "oracle") }.to raise_error(ArgumentError, /cannot resolve the adapter of the schema directory: Unsupported adapter/)
       end
 
@@ -333,7 +346,7 @@ module Exwiw
         expect(described_class.clean?(result)).to be(false)
         expect(described_class.stale?(result)).to be(false)
         expect(described_class.drifted?(result)).to be(false)
-        expect(described_class.failed_checks(result)).to eq(%w[masks])
+        expect(described_class.failed_checks(result)).to eq(%w[unmasked_sensitive])
       end
     end
   end

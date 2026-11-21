@@ -622,21 +622,21 @@ bundle exec rake exwiw:schema:check
 - `stale_*`: removed tables and columns that the config still exports, which would make the export fail. Used by `--fail-on=stale` (see [below](#non-rails-applications-exwiw-schema----from-db)).
 - `overlay_stale`: only when `profiles` are declared. Entries of [profile overlays](#profile-overlays) that reference what the regenerated base no longer has, such as `dev:users.columns.legacy_flag`. These are stale too: the overlay would no longer merge. An overlay that does not merge into the committed config makes the check fail with an error instead.
 
-- `integrity`, `credentials`, `masks`: findings of the [static checks](#static-checks-check), one key per enabled check. Regenerating does not fix them.
+- `integrity`, `guessable_credentials`, `unmasked_sensitive`: findings of the [static checks](#static-checks-check), one key per enabled check. Regenerating does not fix them.
 
 With multiple databases each entry starts with the database name (`primary/users.email`). Set `EXWIW_SCHEMA_CHECK_OUTPUT=<path>` to also write the JSON to a file.
 
 #### Static checks (`check`)
 
-`schema:check` also judges the committed config itself, with no database rows: what would make `mask-update` (and `mask_with_exwiw!`) fail, credentials masked to a guessable value, and columns that look sensitive but are not masked. `mask-update` enforces the same rules when it runs. Each check is enabled in the config file:
+`schema:check` also judges the committed config itself, with no database rows. `integrity` applies to every use of exwiw and is on by default; the others are rules you opt into, like a linter's: `guessable_credentials` matters to `mask-update` (and `mask_with_exwiw!`), which enforces it when it runs, and `unmasked_sensitive` guesses from column names, so it reports false positives. Each check is enabled in the config file:
 
 ```yaml
 # exwiw.yml
 profiles: [dev]
 check:
   integrity: {}                   # on by default; `false` turns it off
-  credentials: true               # off by default
-  masks:                          # off by default
+  guessable_credentials: true     # off by default
+  unmasked_sensitive:             # off by default
     patterns: ['(^|_)kana(_|$)']  # added to the built-in patterns
     profiles: [base, dev]         # which configs to judge
 ```
@@ -649,9 +649,9 @@ check:
 
 The checks:
 
-- `integrity`: what is inconsistent whatever the data. A table that declares a mask must not mask its primary key and must select it. `allow_guessable_credential` must guard a credential-looking column masked to a guessable value, and `allow_unmasked` a column that is not masked, is not the primary key or a `belongs_to` foreign key, and matches a mask pattern. (A table with no mask at all is not reported: it only fails when someone masks it.)
-- `credentials`: a column whose name contains `password`, `digest`, `salt`, `secret`, `token`, `credential`, `encrypted`, `passcode`, `api_key` or `access_key`, masked to anything but NULL or the adapter's random expression (see [`exwiw mask-update`](#exwiw-mask-update)), unless it sets `allow_guessable_credential: true`. A MongoDB mask is never NULL or random.
-- `masks`: a column (MongoDB: the last segment of a field path) whose name matches a mask pattern but that declares no mask and no `"allow_unmasked": true`. The primary key and `belongs_to` foreign keys are exempt, as exwiw never masks them. The built-in patterns are case-insensitive and cannot be removed; `patterns` adds regular expressions (case-insensitive) to them:
+- `integrity`: every profile's config loads, and every table selects its primary key unmasked. A masked or unselected (ignored) primary key breaks the rows that reference the table, and `mask-update`, which addresses rows by it.
+- `guessable_credentials`: a column whose name contains `password`, `digest`, `salt`, `secret`, `token`, `credential`, `encrypted`, `passcode`, `api_key` or `access_key`, masked to anything but NULL or the adapter's random expression (see [`exwiw mask-update`](#exwiw-mask-update)), unless it sets `allow_guessable_credential: true`. A MongoDB mask is never NULL or random. Also an `allow_guessable_credential` that guards no such column.
+- `unmasked_sensitive`: a column (MongoDB: the last segment of a field path) whose name matches a mask pattern but that declares no mask and no `"allow_unmasked": true`, in every table. The primary key and `belongs_to` foreign keys are exempt, as exwiw never masks them. Also an `allow_unmasked` on a column that is masked, exempt, or matches no pattern. The built-in patterns are case-insensitive and cannot be removed; `patterns` adds regular expressions (case-insensitive) to them:
   - the credential names above, and `otp`
   - `email`, `e_mail`; `phone`, `mobile` (as a whole name, or `mobile_number` and the like), `tel`, `fax`; `address`; `zip`, `postal`
   - `birth`; `first_name`, `last_name`, `middle_name`, `full_name`, `given_name`, `family_name` (also without `_`)

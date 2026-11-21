@@ -760,38 +760,38 @@ module Exwiw
             generate_plain
 
             expect do
-              expect { capture_stdout { run_cli(check_argv("check:\n  masks: true\n")) } }
+              expect { capture_stdout { run_cli(check_argv("check:\n  unmasked_sensitive: true\n")) } }
                 .to raise_error(SystemExit) { |error| expect(error.status).to eq(CLI::SCHEMA_CHECK_DIRTY_EXIT) }
-            end.to output(/\Aexwiw: the masks check\(s\) found problems in the config, which regenerating does not fix[^\n]*\n\z/).to_stderr
-            expect(JSON.parse(@stdout)['masks']).to include(start_with('users.email [base]: looks sensitive'))
+            end.to output(/\Aexwiw: the unmasked_sensitive check\(s\) found problems in the config, which regenerating does not fix[^\n]*\n\z/).to_stderr
+            expect(JSON.parse(@stdout)['unmasked_sensitive']).to include(start_with('users.email [base]: looks sensitive'))
           end
 
           it 'exits 0 under --fail-on=stale when only a check finds something' do
             generate_plain
 
             expect do
-              expect { capture_stdout { run_cli(check_argv("check:\n  masks: true\n", ['--fail-on=stale'])) } }
+              expect { capture_stdout { run_cli(check_argv("check:\n  unmasked_sensitive: true\n", ['--fail-on=stale'])) } }
                 .not_to raise_error
-            end.to output(/the masks check\(s\) found problems, but nothing the extraction reads is stale/).to_stderr
+            end.to output(/the unmasked_sensitive check\(s\) found problems, but nothing the extraction reads is stale/).to_stderr
           end
 
           it 'exits 0 when the checks find nothing' do
             generate_plain
 
-            expect { capture_stdout { run_cli(check_argv("check:\n  credentials: true\n")) } }.not_to raise_error
-            expect(JSON.parse(@stdout)).to include('integrity' => [], 'credentials' => [])
+            expect { capture_stdout { run_cli(check_argv("check:\n  guessable_credentials: true\n")) } }.not_to raise_error
+            expect(JSON.parse(@stdout)).to include('integrity' => [], 'guessable_credentials' => [])
           end
 
           it 'exits with the error status on an invalid check section' do
             generate_plain
 
-            expect { capture_stdout { run_cli(check_argv("check:\n  masks:\n    patterns: ['kana(']\n")) } }
+            expect { capture_stdout { run_cli(check_argv("check:\n  unmasked_sensitive:\n    patterns: ['kana(']\n")) } }
               .to raise_error(SystemExit) { |error| expect(error.status).to eq(CLI::SCHEMA_CHECK_ERROR_EXIT) }
               .and output(/could not run the schema check.*invalid regular expression "kana\("/).to_stderr
           end
 
           it 'is ignored by the other verbs' do
-            expect { run_cli(check_argv("check:\n  masks: 1\n").tap { |argv| argv[1] = 'generate' }) }
+            expect { run_cli(check_argv("check:\n  unmasked_sensitive: 1\n").tap { |argv| argv[1] = 'generate' }) }
               .to output(/wrote the schema config/).to_stdout
           end
         end

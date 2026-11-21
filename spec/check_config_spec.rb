@@ -18,26 +18,26 @@ module Exwiw
       end
 
       it "keeps the default of an item that is not mentioned" do
-        expect(parse({ "masks" => {} }).enabled).to eq(%w[integrity masks])
+        expect(parse({ "unmasked_sensitive" => {} }).enabled).to eq(%w[integrity unmasked_sensitive])
       end
     end
 
     describe "item values" do
       it "enables an item with true or a mapping, and disables it with false" do
-        config = parse({ "integrity" => false, "credentials" => true, "masks" => {} })
+        config = parse({ "integrity" => false, "guessable_credentials" => true, "unmasked_sensitive" => {} })
 
-        expect(config.enabled).to eq(%w[credentials masks])
+        expect(config.enabled).to eq(%w[guessable_credentials unmasked_sensitive])
         expect(config.enabled?("integrity")).to be(false)
       end
 
       it "rejects any other value" do
-        expect { parse({ "masks" => "yes" }) }
-          .to raise_error(ArgumentError, /'check.masks' must be true, false or a mapping of options \(got "yes"\) in exwiw.yml/)
-        expect { parse({ "masks" => nil }) }.to raise_error(ArgumentError, /'check.masks' must be true, false or a mapping/)
+        expect { parse({ "unmasked_sensitive" => "yes" }) }
+          .to raise_error(ArgumentError, /'check.unmasked_sensitive' must be true, false or a mapping of options \(got "yes"\) in exwiw.yml/)
+        expect { parse({ "unmasked_sensitive" => nil }) }.to raise_error(ArgumentError, /'check.unmasked_sensitive' must be true, false or a mapping/)
       end
 
       it "rejects a check section that is not a mapping" do
-        expect { parse(%w[masks]) }.to raise_error(ArgumentError, /'check' must be a mapping of integrity, credentials, masks/)
+        expect { parse(%w[unmasked_sensitive]) }.to raise_error(ArgumentError, /'check' must be a mapping of integrity, guessable_credentials, unmasked_sensitive/)
       end
     end
 
@@ -46,31 +46,31 @@ module Exwiw
         expect { parse({ "secrets" => true }) }.to raise_error(ArgumentError, /unknown check\(s\) secrets under 'check'/)
       end
 
-      it "rejects an unknown option, and patterns anywhere but masks" do
-        expect { parse({ "masks" => { "pattern" => [] } }) }
-          .to raise_error(ArgumentError, /unknown option\(s\) pattern under 'check.masks'.*allowed: profiles, patterns/)
-        expect { parse({ "credentials" => { "patterns" => [] } }) }
-          .to raise_error(ArgumentError, /unknown option\(s\) patterns under 'check.credentials'/)
+      it "rejects an unknown option, and patterns anywhere but unmasked_sensitive" do
+        expect { parse({ "unmasked_sensitive" => { "pattern" => [] } }) }
+          .to raise_error(ArgumentError, /unknown option\(s\) pattern under 'check.unmasked_sensitive'.*allowed: profiles, patterns/)
+        expect { parse({ "guessable_credentials" => { "patterns" => [] } }) }
+          .to raise_error(ArgumentError, /unknown option\(s\) patterns under 'check.guessable_credentials'/)
       end
     end
 
     describe "profiles" do
       it "maps base to the base config and keeps the declared profiles named" do
-        config = parse({ "masks" => { "profiles" => %w[dev base] } })
+        config = parse({ "unmasked_sensitive" => { "profiles" => %w[dev base] } })
 
-        expect(config.profiles_by_check["masks"]).to eq(["dev", nil])
+        expect(config.profiles_by_check["unmasked_sensitive"]).to eq(["dev", nil])
         expect(config.profiles).to eq([nil, "dev"])
       end
 
       it "rejects an undeclared profile" do
-        expect { parse({ "credentials" => { "profiles" => %w[base staging] } }) }
-          .to raise_error(ArgumentError, /'check.credentials.profiles' names undeclared profile\(s\) staging.*declared profiles: dev/)
+        expect { parse({ "guessable_credentials" => { "profiles" => %w[base staging] } }) }
+          .to raise_error(ArgumentError, /'check.guessable_credentials.profiles' names undeclared profile\(s\) staging.*declared profiles: dev/)
       end
 
       it "rejects an empty or malformed list" do
-        expect { parse({ "masks" => { "profiles" => [] } }) }
-          .to raise_error(ArgumentError, /must be a non-empty list of profile names.*set 'check.masks: false'/)
-        expect { parse({ "masks" => { "profiles" => "base" } }) }
+        expect { parse({ "unmasked_sensitive" => { "profiles" => [] } }) }
+          .to raise_error(ArgumentError, /must be a non-empty list of profile names.*set 'check.unmasked_sensitive: false'/)
+        expect { parse({ "unmasked_sensitive" => { "profiles" => "base" } }) }
           .to raise_error(ArgumentError, /must be a non-empty list of profile names/)
       end
 
@@ -81,20 +81,20 @@ module Exwiw
 
     describe "patterns" do
       it "appends the configured patterns, case-insensitive, to the defaults" do
-        config = parse({ "masks" => { "patterns" => ["(^|_)kana(_|$)"] } })
+        config = parse({ "unmasked_sensitive" => { "patterns" => ["(^|_)kana(_|$)"] } })
 
         expect(config.mask_patterns.first(MaskRules::DEFAULT_MASK_PATTERNS.size)).to eq(MaskRules::DEFAULT_MASK_PATTERNS)
         expect(config.mask_patterns.last).to eq(/(^|_)kana(_|$)/i)
       end
 
       it "names an invalid regular expression" do
-        expect { parse({ "masks" => { "patterns" => ["ok", "kana("] } }) }
-          .to raise_error(ArgumentError, /'check.masks.patterns' has an invalid regular expression "kana\(" in exwiw.yml/)
+        expect { parse({ "unmasked_sensitive" => { "patterns" => ["ok", "kana("] } }) }
+          .to raise_error(ArgumentError, /'check.unmasked_sensitive.patterns' has an invalid regular expression "kana\(" in exwiw.yml/)
       end
 
       it "rejects patterns that are not a list of strings" do
-        expect { parse({ "masks" => { "patterns" => "kana" } }) }
-          .to raise_error(ArgumentError, /'check.masks.patterns' must be a list of regular expressions/)
+        expect { parse({ "unmasked_sensitive" => { "patterns" => "kana" } }) }
+          .to raise_error(ArgumentError, /'check.unmasked_sensitive.patterns' must be a list of regular expressions/)
       end
     end
   end

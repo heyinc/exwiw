@@ -206,24 +206,16 @@ module Exwiw
       case check
       when "integrity"
         findings = []
-        if MaskRules.masked?(table)
-          if MaskRules.masks_primary_key?(table)
-            findings << [table.primary_key, "the primary key is masked, but mask-update addresses rows by it; remove the mask"]
-          end
-          unless table.selects_primary_key
-            findings << [table.primary_key, "the table declares masks but does not select its primary key " \
-                                            "(is it ignored?), so mask-update cannot address its rows"]
-          end
+        if MaskRules.masks_primary_key?(table)
+          findings << [table.primary_key, "the primary key is masked, which breaks the rows referencing it and mask-update, " \
+                                          "which addresses rows by it; remove the mask"]
         end
-        MaskRules.stray_guessable_allowances(table).each do |path|
-          findings << [path, "sets allow_guessable_credential, but is not a credential-looking column masked to a " \
-                             "guessable value; remove it"]
-        end
-        MaskRules.stray_unmasked_allowances(table, patterns).each do |path, why|
-          findings << [path, "sets allow_unmasked, but #{STRAY_UNMASKED_REASONS.fetch(why)}; remove it"]
+        unless table.selects_primary_key
+          findings << [table.primary_key, "the primary key is not selected (is it ignored?), which breaks the rows " \
+                                          "referencing it and mask-update, which addresses rows by it; select it"]
         end
         findings
-      when "credentials"
+      when "guessable_credentials"
         reason =
           if adapter_class.const_defined?(:RANDOM_SECRET_PATTERNS)
             "masked to a guessable value; mask it with raw_sql \"NULL\" or a random expression, " \
@@ -232,11 +224,18 @@ module Exwiw
             "masked to a guessable value, and a MongoDB mask cannot be NULL or random; " \
               "set allow_guessable_credential, or ignore the field"
           end
-        MaskRules.unaccepted_credentials(table).map { |path| [path, reason] }
-      when "masks"
+        MaskRules.unaccepted_credentials(table).map { |path| [path, reason] } +
+          MaskRules.stray_guessable_allowances(table).map do |path|
+            [path, "sets allow_guessable_credential, but is not a credential-looking column masked to a guessable value; " \
+                   "remove it"]
+          end
+      when "unmasked_sensitive"
         MaskRules.unmasked_sensitive(table, patterns).map do |path|
           [path, "looks sensitive but is not masked; add a mask, or set allow_unmasked if the real value is needed"]
-        end
+        end +
+          MaskRules.stray_unmasked_allowances(table, patterns).map do |path, why|
+            [path, "sets allow_unmasked, but #{STRAY_UNMASKED_REASONS.fetch(why)}; remove it"]
+          end
       end
     end
 

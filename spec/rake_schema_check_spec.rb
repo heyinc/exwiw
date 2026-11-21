@@ -44,12 +44,12 @@ module Exwiw
     end
 
     it "runs the checks the config file enables, and says regenerating does not fix them" do
-      File.write("exwiw.yml", "check:\n  masks: true\n")
+      File.write("exwiw.yml", "check:\n  unmasked_sensitive: true\n")
 
       expect do
-        expect { run_task }.to output(/"masks": \[\s*"users.email \[base\]: looks sensitive/).to_stdout
+        expect { run_task }.to output(/"unmasked_sensitive": \[\s*"users.email \[base\]: looks sensitive/).to_stdout
       end.to raise_error(SystemExit) { |error| expect(error.status).to eq(1) }
-        .and output(/the masks check\(s\) found problems in the config, which regenerating does not fix/).to_stderr
+        .and output(/the unmasked_sensitive check\(s\) found problems in the config, which regenerating does not fix/).to_stderr
     end
 
     it "runs integrity alone without a check section" do
@@ -57,9 +57,9 @@ module Exwiw
     end
 
     it "fails on an invalid check section" do
-      File.write("exwiw.yml", "check:\n  masks:\n    profiles: [dev]\n")
+      File.write("exwiw.yml", "check:\n  unmasked_sensitive:\n    profiles: [dev]\n")
 
-      expect { run_task }.to raise_error(ArgumentError, /'check.masks.profiles' names undeclared profile\(s\) dev/)
+      expect { run_task }.to raise_error(ArgumentError, /'check.unmasked_sensitive.profiles' names undeclared profile\(s\) dev/)
     end
   end
 end

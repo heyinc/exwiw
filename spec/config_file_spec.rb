@@ -114,10 +114,10 @@ module Exwiw
       end
 
       it 'reads the check section against the declared profiles' do
-        path = config("profiles: [dev]\ncheck:\n  masks:\n    profiles: [dev]\n")
+        path = config("profiles: [dev]\ncheck:\n  unmasked_sensitive:\n    profiles: [dev]\n")
 
         checks = ConfigFile.check(path, profiles: ConfigFile.profiles(path))
-        expect(checks.profiles_by_check).to eq('integrity' => [nil, 'dev'], 'masks' => ['dev'])
+        expect(checks.profiles_by_check).to eq('integrity' => [nil, 'dev'], 'unmasked_sensitive' => ['dev'])
       end
 
       it 'returns the defaults without a config file or a check section' do
@@ -126,7 +126,7 @@ module Exwiw
       end
 
       it 'raises on an invalid check section, naming the file' do
-        path = config("check:\n  masks:\n    profiles: [staging]\n")
+        path = config("check:\n  unmasked_sensitive:\n    profiles: [staging]\n")
 
         expect { ConfigFile.check(path) }.to raise_error(ArgumentError, /undeclared profile\(s\) staging in #{Regexp.escape(path)}/)
       end
