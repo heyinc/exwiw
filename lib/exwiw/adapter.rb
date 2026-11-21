@@ -32,6 +32,12 @@ module Exwiw
       ADAPTER_ALIASES.fetch(key, key)
     end
 
+    # Reads ActiveRecord's trilogy as mysql, which ADAPTER_ALIASES leaves out only so `--adapter=trilogy` does not seem to pick the driver.
+    def self.normalize_active_record_name(name)
+      normalized = normalize_name(name)
+      normalized == "trilogy" ? "mysql" : normalized
+    end
+
     # A value that has no SQL literal form (see Base#non_string_literal).
     class UnsupportedValueError < ArgumentError; end
 

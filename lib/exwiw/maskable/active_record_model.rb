@@ -94,8 +94,7 @@ module Exwiw
       # @param connection [ActiveRecord::ConnectionAdapters::AbstractAdapter]
       # @return [String] the exwiw adapter name for the connection
       def self.exwiw_adapter_name(connection)
-        # Adapter::ADAPTER_ALIASES leaves out trilogy on purpose, so a given Trilogy client is named as mysql here.
-        connection.adapter_name.casecmp?("trilogy") ? "mysql" : connection.adapter_name
+        Adapter.normalize_active_record_name(connection.adapter_name)
       end
     end
   end

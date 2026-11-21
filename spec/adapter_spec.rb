@@ -34,6 +34,19 @@ module Exwiw
       end
     end
 
+    RSpec.describe ".normalize_active_record_name" do
+      it "reads trilogy as mysql, case-insensitively" do
+        expect(Adapter.normalize_active_record_name("trilogy")).to eq("mysql")
+        expect(Adapter.normalize_active_record_name("Trilogy")).to eq("mysql")
+      end
+
+      it "normalizes the other names as .normalize_name does" do
+        expect(Adapter.normalize_active_record_name("Mysql2")).to eq("mysql")
+        expect(Adapter.normalize_active_record_name("postgresql")).to eq("postgresql")
+        expect(Adapter.normalize_active_record_name(nil)).to be_nil
+      end
+    end
+
     RSpec.describe '.build' do
       let(:logger) { Logger.new(IO::NULL) }
 

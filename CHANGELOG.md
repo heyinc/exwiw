@@ -30,6 +30,8 @@
 
 ### Fixed
 
+- **`rake exwiw:schema:check` works in an application whose database adapter is trilogy** (since 1.3.0.beta2). The static checks read the adapter from the Rails database configuration and stopped with `Unsupported adapter: "trilogy"`, even with no `check:` (`integrity` is on by default). trilogy is now read as mysql there, as `mask_with_exwiw!` already did. `--adapter=trilogy` is still rejected.
+
 - **`--ids` without `--target-table` is accepted when no table has anything to narrow.** A database whose tables are all `ignore: true`, `scope_exempt` or Rails-managed declares no `scope_column`, so such a run stopped with "no table in the schema declares `scope_column`", and the deprecated global `scope_column` had to be set only to get past the check. It now runs in scope-column mode, exports those tables in full and logs the warning 1.2.1 added for this case. `--mode=scope-column` is accepted on such a schema too. When some exported table could be narrowed but none declares a `scope_column`, the error is unchanged.
 
 - **A MongoDB `--ids` value now also matches an `_id` stored as that String.** A digits-only value was read only as an Integer and a 24-digit hex only as an ObjectId, so a collection keyed by String codes (`"0012"`) matched nothing, and `mask-update` reported every key as missing. Such a value now matches both the String and its Integer or ObjectId reading.
