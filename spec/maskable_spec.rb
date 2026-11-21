@@ -211,6 +211,49 @@ module Exwiw
             expect(account.order(:id).pluck(:email)).to eq(accounts.map { |a| "masked#{a.id}@example.com" })
           end
 
+          def count_transactions
+            count = 0
+            allow(connection).to receive(:transaction).and_wrap_original { |m, *args, **opts, &b| count += 1; m.call(*args, **opts, &b) }
+            -> { count }
+          end
+
+          it "masks the relation in batches of CHUNK_SIZE rows, each in its own transaction" do
+            stub_const("Exwiw::MaskUpdateRunner::CHUNK_SIZE", 2)
+            accounts = Array.new(3) { |i| create_account("#{i}@x", "tokyo") }
+            transactions = count_transactions
+
+            result = account.where(city: "tokyo").mask_with_exwiw!
+
+            expect(transactions.call).to eq(2)
+            expect(result.summary).to have_attributes(target_count: 3, columns: %w[email born_at], missing_primary_key_values: [])
+            expect(result.statements.size).to eq(name == :sqlite ? 3 : 2)
+            expect(account.order(:id).pluck(:email)).to eq(accounts.map { |a| "masked#{a.id}@example.com" })
+          end
+
+          it "keeps the batches before a failing one masked" do
+            stub_const("Exwiw::MaskUpdateRunner::CHUNK_SIZE", 2)
+            a, b, c = Array.new(3) { |i| create_account("#{i}@x", "tokyo") }
+            write_schema(
+              name: "maskable_spec_accounts", primary_key: "id",
+              columns: [{ name: "id" }, { name: "email", map: "->(r) { r['id'].to_s == '#{c.id}' ? Object.new : 'x' }" }],
+            )
+
+            expect { account.where(city: "tokyo").mask_with_exwiw! }.to raise_error(MaskUpdateRunner::Error, /cannot be masked/)
+            expect([a, b, c].map { |r| r.reload.email }).to eq(["x", "x", "2@x"])
+          end
+
+          it "masks every row at once in no transaction of its own with batch: false" do
+            stub_const("Exwiw::MaskUpdateRunner::CHUNK_SIZE", 2)
+            accounts = Array.new(3) { |i| create_account("#{i}@x", "tokyo") }
+            transactions = count_transactions
+
+            result = account.where(city: "tokyo").mask_with_exwiw!(batch: false)
+
+            expect(transactions.call).to eq(0)
+            expect(result.summary.target_count).to eq(3)
+            expect(account.order(:id).pluck(:email)).to eq(accounts.map { |a| "masked#{a.id}@example.com" })
+          end
+
           it "masks nothing for an empty relation" do
             create_account("a@x", "tokyo")
 

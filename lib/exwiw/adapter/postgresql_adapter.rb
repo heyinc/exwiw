@@ -560,6 +560,30 @@ module Exwiw
         end
       end
 
+      # One UPDATE per chunk, joined with VALUES whose leading row of `(NULL::table).column`s (matching no row) types
+      # each value column as the table's column, so every other value is written quoted and takes that type.
+      private def mask_update_chunk(table, names, rows, extras)
+        target = quote_table_name(table.name)
+        pk = quote_identifier(table.primary_key)
+        columns = [pk, *names.map { |name| quote_identifier(name) }]
+        tuples = [columns.map { |column| "(NULL::#{target}).#{column}" }]
+        rows.each do |key, values|
+          tuples << [escape_value(key.to_s), *names.map { |name| untyped_literal(values.fetch(name)) }]
+        end
+        sets = columns.drop(1).map { |column| "#{column} = v.#{column}" } +
+               extras.map { |name, literal| "#{quote_identifier(name)} = #{literal}" }
+        [
+          "UPDATE #{target} AS t SET #{sets.join(', ')} " \
+          "FROM (VALUES #{tuples.map { |cells| "(#{cells.join(', ')})" }.join(', ')}) AS v(#{columns.join(', ')}) " \
+          "WHERE t.#{pk} = v.#{pk};",
+        ]
+      end
+
+      # A bare number or boolean would fix the VALUES column's type and clash with a text column.
+      private def untyped_literal(literal)
+        literal == "NULL" || literal.start_with?("'") ? literal : escape_value(literal)
+      end
+
       private def escape_copy_value(value)
         case value
         when nil
