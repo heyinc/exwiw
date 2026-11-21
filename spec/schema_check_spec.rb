@@ -226,5 +226,13 @@ module Exwiw
         expect(report).not_to have_key("overlay_stale")
       end
     end
+
+    describe ".active_record_adapter" do
+      it "reads a trilogy connection as mysql" do
+        allow(ActiveRecord::Base).to receive(:connection_db_config).and_return(double(adapter: "trilogy"))
+
+        expect(described_class.active_record_adapter(nil)).to eq("mysql")
+      end
+    end
   end
 end

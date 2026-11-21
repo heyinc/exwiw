@@ -82,7 +82,7 @@ module Exwiw
               "so its adapter is unknown"
       end
 
-      Adapter.normalize_name(db_config.adapter)
+      Adapter.normalize_active_record_name(db_config.adapter)
     end
 
     # The regeneration step `from_mongoid_application` injects, exposed so a
