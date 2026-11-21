@@ -22,6 +22,8 @@
 
 ### Changed
 
+- **`guessable_credentials` no longer counts `digest` and `salt` as credential names** (since 1.3.0.beta2). A guessable digest or salt matches no input, so masking one to a constant is safe; `password_digest` and `token_digest` are still judged by `password` and `token`. `unmasked_sensitive` still reports an unmasked `digest` or `salt`, as a real digest of a short secret can be brute-forced.
+
 - **`base` can no longer be declared as a profile.** It names the base config in `check:`.
 
 - **`Exwiw::Runner`, `Exwiw::ExplainRunner` and `Exwiw::MaskUpdateRunner` take `source:` and `schema:`** instead of `connection_config:`, `schema_dir:`, `profiles:` and `profile:`. `Exwiw::DataSource.connect(connection_config)` says how to connect (`DataSource.given(adapter_name, connection)` reads through a driver connection the caller holds), and `Exwiw::Schema.load(dir:, config_class:, profiles:, profile:)` loads the schema once so it can be shared across runs. The CLI is unchanged.
