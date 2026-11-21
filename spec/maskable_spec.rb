@@ -448,7 +448,7 @@ module Exwiw
             { name: "_id" },
             { name: "name" },
             { name: "email", replace_with: "masked{_id}@example.com" },
-            { name: "token", replace_with: "fixed", allow_guessable_mask: true },
+            { name: "token", replace_with: "fixed" },
             { name: "updated_at" },
           ],
         }
@@ -569,10 +569,10 @@ module Exwiw
       end
 
       it "writes nothing when a document cannot be masked as declared" do
-        write_schema(users_schema.merge(fields: users_schema[:fields].map { |f| f.except(:allow_guessable_mask) }))
+        write_schema(users_schema.merge(fields: [{ name: "_id", replace_with: "x" }] + users_schema[:fields].drop(1)))
         a = create_user("a")
 
-        expect { model.where(name: "a").mask_with_exwiw! }.to raise_error(MaskUpdateRunner::Error, /look like credentials/)
+        expect { model.where(name: "a").mask_with_exwiw! }.to raise_error(MaskUpdateRunner::Error, /masks '_id'/)
         expect(a.reload.email).to eq("a@x")
       end
     end

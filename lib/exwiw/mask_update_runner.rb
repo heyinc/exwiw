@@ -11,11 +11,9 @@ module Exwiw
 
     CHUNK_SIZE = 1_000
 
-    CREDENTIAL_NAME = /password|digest|salt|secret|token|credential|encrypted|passcode|api_key|access_key/i
-
     # What `MaskUpdateRunner#run` returns: the rows found (`target_count`), the columns (MongoDB: field paths) the
-    # statements set, the given primary keys with no row, and the credential-looking columns accepted by `allow_guessable_mask`.
-    Summary = Data.define(:table_name, :target_count, :columns, :missing_primary_key_values, :allowed_guessable_columns) do
+    # statements set, and the given primary keys with no row.
+    Summary = Data.define(:table_name, :target_count, :columns, :missing_primary_key_values) do
       # Sums up the summaries of runs on the same table, e.g. one per batch; columns come from the schema, so any
       # non-empty one will do (a run with no ids reports none).
       #
@@ -29,14 +27,12 @@ module Exwiw
           target_count: summaries.sum(&:target_count),
           columns: checked&.columns || [],
           missing_primary_key_values: summaries.flat_map(&:missing_primary_key_values),
-          allowed_guessable_columns: checked&.allowed_guessable_columns || [],
         )
       end
     end
 
-    # What an adapter's `check_mask_update` returns: the columns (MongoDB: field paths) the statements will set, and the
-    # credential-looking ones accepted by `allow_guessable_mask`.
-    Checked = Data.define(:columns, :allowed_guessable_columns)
+    # What an adapter's `check_mask_update` returns: the columns (MongoDB: field paths) the statements will set.
+    Checked = Data.define(:columns)
 
     # @param source [Exwiw::DataSource] the database to read
     # @param schema [Exwiw::Schema] the loaded schema configs
@@ -123,50 +119,31 @@ module Exwiw
         target_count: record_count,
         columns: checked.columns,
         missing_primary_key_values: missing,
-        allowed_guessable_columns: checked.allowed_guessable_columns,
       )
       [adapter, statements, summary]
     end
 
-    # A credential-looking column may only be masked to NULL or a cryptographically random SQL expression (the adapter's RANDOM_SECRET_PATTERNS): a constant, id-derived, fake or map value is guessable.
+    # Why `table` cannot be masked in place at all, shared with the schema check, which skips such tables.
     #
-    # @param table_name [String] table (collection) being masked
-    # @param masks [Array<Array(String, Boolean)>] each masked column or field path, and whether its mask is safe (raw_sql NULL, or a random-bytes expression)
-    # @param allowed [Array<String>] the columns or field paths that set `allow_guessable_mask`, masked or not
-    # @return [Array<String>] the "table.column" entries that needed `allow_guessable_mask`
-    # @raise [Exwiw::MaskUpdateRunner::Error] for an unaccepted credential-looking column, or an `allow_guessable_mask` that guards nothing
-    def self.check_credential_columns!(table_name, masks, allowed)
-      qualify = ->(paths) { paths.map { |path| "#{table_name}.#{path}" } }
-      guarded = masks.select { |path, safe| path.match?(CREDENTIAL_NAME) && !safe }.map(&:first)
-      unaccepted = guarded - allowed
-      unless unaccepted.empty?
-        raise Error,
-              "#{qualify.(unaccepted).join(', ')} look like credentials but are not masked to NULL or a random value, so the value written would be " \
-              "guessable; mask them with raw_sql \"NULL\" or a random expression such as gen_random_uuid()::text (PostgreSQL), " \
-              "HEX(RANDOM_BYTES(16)) (MySQL) or hex(randomblob(16)) (SQLite), or set allow_guessable_mask: true on them"
-      end
-
-      stray = allowed - guarded
-      return qualify.(guarded) if stray.empty?
-
-      raise Error,
-            "#{qualify.(stray).join(', ')} set allow_guessable_mask, but are not credential-looking " \
-            "columns masked to a guessable value; remove it"
-    end
-
-    private def validate_table!(table)
+    # @param table [Exwiw::TableConfig, Exwiw::MongodbCollectionConfig]
+    # @return [String, nil] the reason, or nil when it can be masked
+    def self.unmaskable_reason(table)
       if table.respond_to?(:type) && table.type == TableConfig::UNSUPPORTED_COMPOSITE_PRIMARY_KEY
-        raise Error, "table '#{table.name}' has a composite primary key, which is not supported"
+        return "table '#{table.name}' has a composite primary key, which is not supported"
       end
-      raise Error, "table '#{table.name}' is declared ignore: true" if table.ignore
+      return "table '#{table.name}' is declared ignore: true" if table.ignore
       if table.respond_to?(:rails_managed?) && table.rails_managed?
-        raise Error, "table '#{table.name}' is rails-managed and declares no columns to mask"
+        return "table '#{table.name}' is rails-managed and declares no columns to mask"
       end
       return unless table.respond_to?(:embedded?) && table.embedded?
 
-      raise Error,
-            "collection '#{table.name}' is embedded in '#{table.embedded_in.collection_name}'; " \
-            "its masks apply through the parent collection's documents, so pass the parent instead"
+      "collection '#{table.name}' is embedded in '#{table.embedded_in.collection_name}'; " \
+        "its masks apply through the parent collection's documents, so pass the parent instead"
+    end
+
+    private def validate_table!(table)
+      reason = self.class.unmaskable_reason(table)
+      raise Error, reason if reason
     end
 
     private def normalize_primary_key_values(table, primary_key_values)

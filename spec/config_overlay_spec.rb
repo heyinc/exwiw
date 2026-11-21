@@ -71,6 +71,19 @@ module Exwiw
         expect(merged["columns"][2]).to eq("name" => "email", "raw_sql" => "'x'", "comment" => "keep")
       end
 
+      it "treats allow_unmasked as a member of the mask group, either way" do
+        merged = merge("name" => "users", "columns" => [
+          { "name" => "email", "allow_unmasked" => true },
+        ])
+        expect(merged["columns"][2]).to eq("name" => "email", "allow_unmasked" => true, "comment" => "keep")
+
+        unmasked_base = base.merge("columns" => [{ "name" => "email", "allow_unmasked" => true }])
+        remasked = ConfigOverlay.merge(TableConfig, unmasked_base,
+                                       { "name" => "users", "columns" => [{ "name" => "email", "raw_sql" => "NULL" }] },
+                                       owner: "users.dev.json")
+        expect(remasked["columns"][0]).to eq("name" => "email", "raw_sql" => "NULL")
+      end
+
       it "removes an optional key set to null" do
         merged = merge("name" => "users", "filter" => nil, "columns" => [{ "name" => "email", "replace_with" => nil }])
 

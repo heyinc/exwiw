@@ -9,7 +9,7 @@ module Exwiw
   # module exists for contexts that have no CLI in scope — chiefly the
   # `exwiw:schema:*` rake tasks, which otherwise only knew the
   # EXWIW_SCHEMA_DIR_PATH env var and a hard-coded default. It deliberately
-  # reads only what those tasks need (schema_dir, profiles): an absent or
+  # reads only what those tasks need (schema_dir, profiles, check): an absent or
   # unreadable config simply yields nothing so the caller can fall back.
   module ConfigFile
     # Mirrors CLI::DEFAULT_CONFIG_PATHS; .yml wins when both are present.
@@ -48,6 +48,20 @@ module Exwiw
       return [] if config.nil?
 
       SchemaFiles.validate_profiles!(config["profiles"], source: path)
+    end
+
+    # The `check` section (see CheckConfig), the defaults when absent. Raises like #profiles: falling back to the
+    # defaults would silently skip a check the config enables.
+    #
+    # @param path [String, nil] the config file; the default paths when nil
+    # @param profiles [Array<String>] the declared profiles (#profiles)
+    # @return [Exwiw::CheckConfig]
+    # @raise [ArgumentError] if the config file cannot be parsed or `check` is invalid
+    def check(path = nil, profiles: [])
+      path, config = read(path, strict: true)
+      return CheckConfig.default(profiles: profiles) if config.nil?
+
+      CheckConfig.parse(config["check"], profiles: profiles, source: path)
     end
 
     # Unless `strict`, an unparsable or non-mapping config reads as no config; an empty file always does.

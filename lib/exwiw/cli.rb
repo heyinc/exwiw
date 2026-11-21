@@ -52,6 +52,7 @@ module Exwiw
       explain_verbosity
       mongodb_query_timeout_ms
       profiles
+      check
     ].freeze
 
     # MongoDB explain verbosity levels (passed through to the server's explain
@@ -138,6 +139,9 @@ module Exwiw
       @profile = nil
       # `schema show` only: print one table instead of all.
       @show_table = nil
+      # `schema check` only: the config file's raw `check` section, and the file it is in.
+      @check_config = nil
+      @check_config_source = nil
       # nil (not :info) so we can tell "user passed --log-level" from the default,
       # letting a config-file value fill in; the :info default is applied later.
       @log_level = nil
@@ -236,9 +240,6 @@ module Exwiw
       unless summary.missing_primary_key_values.empty?
         lines << "primary key values not found: #{summary.missing_primary_key_values.join(', ')}"
       end
-      unless summary.allowed_guessable_columns.empty?
-        lines << "credential-looking columns masked to a guessable value (allow_guessable_mask): #{summary.allowed_guessable_columns.join(', ')}"
-      end
       lines
     end
 
@@ -329,7 +330,9 @@ module Exwiw
 
       report =
         begin
-          SchemaCheck.new(schema_dir: @schema_dir, regenerator: regenerator, profiles: @profiles).run
+          checks = CheckConfig.parse(@check_config, profiles: @profiles, source: @check_config_source || "the config file")
+          SchemaCheck.new(schema_dir: @schema_dir, regenerator: regenerator, profiles: @profiles,
+                          checks: checks, adapter: @database_adapter).run
         rescue StandardError => e
           # See SCHEMA_CHECK_ERROR_EXIT: not being able to run the check is a
           # different answer from "the config is out of date".
@@ -344,11 +347,21 @@ module Exwiw
 
       return if SchemaCheck.clean?(report)
 
+      failed_checks = SchemaCheck.failed_checks(report)
+      checks_hint = "exwiw: the #{failed_checks.join(', ')} check(s) found problems in the config, which regenerating " \
+                    "does not fix; resolve each entry as it says."
+
       # --fail-on=stale: a pre-extraction gate stops only on the drift that
       # would break the export itself; the report above still carries the rest.
       if @fail_on == "stale" && !SchemaCheck.stale?(report)
-        $stderr.puts "exwiw: the schema config has drifted, but nothing the extraction reads is stale " \
-                     "(--fail-on=stale); run `exwiw schema generate --from-db` at your leisure."
+        if SchemaCheck.drifted?(report)
+          $stderr.puts "exwiw: the schema config has drifted, but nothing the extraction reads is stale " \
+                       "(--fail-on=stale); run `exwiw schema generate --from-db` at your leisure."
+        end
+        unless failed_checks.empty?
+          $stderr.puts "exwiw: the #{failed_checks.join(', ')} check(s) found problems, but nothing the extraction " \
+                       "reads is stale (--fail-on=stale); resolve them at your leisure."
+        end
         return
       end
 
@@ -363,14 +376,20 @@ module Exwiw
                      "so an extraction SELECT would fail on them; " \
                      "run `exwiw schema generate --from-db` (then `exwiw schema tidy --from-db`) to drop them."
         # The default (CI) mode is a one-shot report; the gate deliberately
-        # stays quiet about mask decisions.
-        if @fail_on != "stale" && report.fetch("needs_mask_decision", []).any?
-          $stderr.puts "exwiw: the report also lists `needs_mask_decision` columns; resolve those too."
+        # stays quiet about mask decisions and the static checks.
+        if @fail_on != "stale"
+          if report.fetch("needs_mask_decision", []).any?
+            $stderr.puts "exwiw: the report also lists `needs_mask_decision` columns; resolve those too."
+          end
+          $stderr.puts checks_hint unless failed_checks.empty?
         end
       else
-        $stderr.puts "exwiw: the schema config is out of date or has undecided masking; " \
-                     "run `exwiw schema generate --from-db` (then `exwiw schema tidy --from-db`) " \
-                     "and resolve every `needs_mask_decision` column."
+        if SchemaCheck.drifted?(report)
+          $stderr.puts "exwiw: the schema config is out of date or has undecided masking; " \
+                       "run `exwiw schema generate --from-db` (then `exwiw schema tidy --from-db`) " \
+                       "and resolve every `needs_mask_decision` column."
+        end
+        $stderr.puts checks_hint unless failed_checks.empty?
       end
       exit SCHEMA_CHECK_DIRTY_EXIT
     end
@@ -612,6 +631,9 @@ module Exwiw
         $stderr.puts e.message
         exit 1
       end
+      # Parsed by `schema check` itself, so a mistake there is "could not run the check", not an error elsewhere.
+      @check_config = config["check"]
+      @check_config_source = path
     end
 
     # A profile applies only when --profile names it, and only to export,
@@ -1094,7 +1116,7 @@ module Exwiw
                       declared in the schema config. The database is only read; apply
                       the output yourself. A column whose name looks like a credential
                       may only be masked to NULL (raw_sql "NULL") or a random raw_sql
-                      such as hex(randomblob(16)), unless it sets allow_guessable_mask: true.
+                      such as hex(randomblob(16)), unless it sets allow_guessable_credential: true.
             schema    Maintain the schema config (generate | check | tidy) by
                       reading a live database, for applications that cannot be
                       loaded to generate it from their models. Requires --from-db;
@@ -1141,7 +1163,7 @@ module Exwiw
         end
         opts.on("--parallel-workers=N", Integer, "Fork N workers for the MongoDB dump's parallel schedule (mongodb + export only; N>=2 enables it, default is serial). Output is byte-identical to serial; falls back to serial where fork is unavailable.") { |v| @parallel_workers = v }
         opts.on("--mongodb-query-timeout-ms=N", Integer, "Global server-enforced timeout (ms) for every MongoDB query (mongodb only). Aborts an accidentally heavy/unscoped query past the deadline. Overridden per collection by `query_timeout_ms` in the schema config.") { |v| @mongodb_query_timeout_ms = v }
-        opts.on("--fail-on=CATEGORY", "schema check only: what makes the exit code non-zero. 'any' (default) fails on any drift or undecided masking; 'stale' fails only when the committed config references tables/columns the schema no longer has - the drift that would break an export. The full report is printed either way.") { |v| @fail_on = v }
+        opts.on("--fail-on=CATEGORY", "schema check only: what makes the exit code non-zero. 'any' (default) fails on any drift, undecided masking or static check finding (see check: in the config file); 'stale' fails only when the committed config references tables/columns the schema no longer has - the drift that would break an export. The full report is printed either way.") { |v| @fail_on = v }
         opts.on("--profile=NAME", "Schema profile whose overlay files (<table>.<profile>.json) are merged into the base config (export, explain, mask-update and schema show). Must be declared under `profiles` in the config file. Without it, no profile applies.") { |v| @profile_option = v }
         opts.on("--table=TABLE", "schema show only: print the config of this table/collection only.") { |v| @show_table = v }
         opts.on("--log-level=LEVEL", "Log level (debug, info). default is info") { |v| @log_level = v.to_sym }

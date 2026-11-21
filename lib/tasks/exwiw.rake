@@ -22,6 +22,22 @@ namespace :exwiw do
     # an overlay file as if it were a base config.
     resolve_profiles = lambda { Exwiw::ConfigFile.profiles }
 
+    # The static checks `check:` in the config file enables (see Exwiw::CheckConfig).
+    resolve_checks = lambda { |profiles| Exwiw::ConfigFile.check(profiles: profiles) }
+
+    # What a failing check prints to stderr: regenerating addresses drift, but not the static checks.
+    explain_failure = lambda do |report, regenerate_tasks, unit|
+      if Exwiw::SchemaCheck.drifted?(report)
+        $stderr.puts "exwiw: the schema config is out of date or has undecided masking; " \
+                     "run `rake #{regenerate_tasks}` and resolve every `needs_mask_decision` #{unit}."
+      end
+      failed = Exwiw::SchemaCheck.failed_checks(report)
+      unless failed.empty?
+        $stderr.puts "exwiw: the #{failed.join(', ')} check(s) found problems in the config, which regenerating " \
+                     "does not fix; resolve each entry as it says."
+      end
+    end
+
     desc "Generate schema from application"
     task generate: :environment do
       require "exwiw"
@@ -53,9 +69,11 @@ namespace :exwiw do
     task check: :environment do
       require "exwiw"
 
+      profiles = resolve_profiles.call
       report = Exwiw::SchemaCheck.from_rails_application(
         schema_dir: resolve_schema_dir.call,
-        profiles: resolve_profiles.call,
+        profiles: profiles,
+        checks: resolve_checks.call(profiles),
       ).run
       json = JSON.pretty_generate(report)
       puts json
@@ -63,9 +81,7 @@ namespace :exwiw do
       File.write(ENV["EXWIW_SCHEMA_CHECK_OUTPUT"], json + "\n") if ENV["EXWIW_SCHEMA_CHECK_OUTPUT"]
 
       unless Exwiw::SchemaCheck.clean?(report)
-        $stderr.puts "exwiw: the schema config is out of date or has undecided masking; " \
-                     "run `rake exwiw:schema:generate exwiw:schema:tidy` " \
-                     "and resolve every `needs_mask_decision` column."
+        explain_failure.call(report, "exwiw:schema:generate exwiw:schema:tidy", "column")
         exit 1
       end
     end
@@ -143,9 +159,11 @@ namespace :exwiw do
     task check_mongoid: :environment do
       require "exwiw"
 
+      profiles = resolve_profiles.call
       report = Exwiw::SchemaCheck.from_mongoid_application(
         schema_dir: resolve_schema_dir.call,
-        profiles: resolve_profiles.call,
+        profiles: profiles,
+        checks: resolve_checks.call(profiles),
       ).run
       json = JSON.pretty_generate(report)
       puts json
@@ -153,9 +171,7 @@ namespace :exwiw do
       File.write(ENV["EXWIW_SCHEMA_CHECK_OUTPUT"], json + "\n") if ENV["EXWIW_SCHEMA_CHECK_OUTPUT"]
 
       unless Exwiw::SchemaCheck.clean?(report)
-        $stderr.puts "exwiw: the schema config is out of date or has undecided masking; " \
-                     "run `rake exwiw:schema:generate_mongoid exwiw:schema:tidy_mongoid` " \
-                     "and resolve every `needs_mask_decision` field."
+        explain_failure.call(report, "exwiw:schema:generate_mongoid exwiw:schema:tidy_mongoid", "field")
         exit 1
       end
     end

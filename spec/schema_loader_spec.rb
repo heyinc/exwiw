@@ -123,6 +123,43 @@ module Exwiw
       expect { load(reject_ignored: false) }.to raise_error(ArgumentError, /users.dev.json .*has no columns to extract/)
     end
 
+    it "rejects allow_unmasked: false in an overlay, which would drop the base's mask" do
+      write("users.dev.json", "name" => "users", "columns" => [{ "name" => "email", "allow_unmasked" => false }])
+
+      expect { load }.to raise_error(Serdes::TypeError, /users.dev.json .*allow_unmasked/)
+    end
+
+    it "unmasks a column with allow_unmasked: true and drops it again with null" do
+      write("users.dev.json", "name" => "users", "columns" => [{ "name" => "email", "allow_unmasked" => true }])
+      email = users(load).columns.find { |c| c.name == "email" }
+      expect([email.replace_with, email.allow_unmasked]).to eq([nil, true])
+
+      write("users.json", JSON.parse(File.read(File.join(dir, "users.json"))).tap do |base|
+        base["columns"].find { |c| c["name"] == "email" }.replace("name" => "email", "allow_unmasked" => true)
+      end)
+      write("users.dev.json", "name" => "users", "columns" => [{ "name" => "email", "allow_unmasked" => nil }])
+      email = users(load).columns.find { |c| c.name == "email" }
+      expect(email.allow_unmasked).to be_nil
+    end
+
+    it "rejects allow_guessable_credential: false in a base config" do
+      base = JSON.parse(File.read(File.join(dir, "users.json")))
+      base["columns"].find { |c| c["name"] == "email" }["allow_guessable_credential"] = false
+      write("users.json", base)
+
+      expect { load(profile: nil) }.to raise_error(Serdes::TypeError, /allow_guessable_credential/)
+    end
+
+    it "rejects allow_unmasked: false on a MongoDB field" do
+      Dir.glob(File.join(dir, "*.json")).each { |f| File.delete(f) }
+      FileUtils.cp(Dir.glob("e2e/mongodb-schema/*.json"), dir)
+      base = JSON.parse(File.read(File.join(dir, "users.json")))
+      masked = base["fields"].find { |f| f["replace_with"] }
+      write("users.dev.json", "name" => "users", "fields" => [{ "name" => masked["name"], "allow_unmasked" => false }])
+
+      expect { load(config_class: MongodbCollectionConfig) }.to raise_error(Serdes::TypeError, /allow_unmasked/)
+    end
+
     it "merges a MongoDB collection config" do
       Dir.glob(File.join(dir, "*.json")).each { |f| File.delete(f) }
       FileUtils.cp(Dir.glob("e2e/mongodb-schema/*.json"), dir)

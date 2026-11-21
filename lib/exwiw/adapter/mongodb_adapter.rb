@@ -233,27 +233,55 @@ module Exwiw
         end.join("\n")
       end
 
+      # Describes `config` for MaskRules: its own fields and, under their paths, those of the collections embedded in it.
+      #
+      # @param config [Exwiw::MongodbCollectionConfig] a loaded collection
+      # @param config_by_name [Hash{String => Exwiw::MongodbCollectionConfig}] every declared collection by name
+      # @return [Exwiw::MaskRules::Table]
+      def self.describe_masks(config, config_by_name)
+        children = config_by_name.each_value.select { |c| c.embedded? && !c.ignore }.group_by { |c| c.embedded_in.collection_name }
+        MaskRules::Table.new(
+          name: config.name, primary_key: config.primary_key,
+          # The primary key is always projected (see #build_projection).
+          selects_primary_key: true, columns: describe_fields(config, children, nil),
+        )
+      end
+
+      private_class_method def self.describe_fields(config, children, prefix)
+        foreign_keys = config.belongs_tos.map(&:foreign_key)
+        own = config.fields.map do |f|
+          MaskRules::Column.new(
+            path: [prefix, f.name].compact.join("."), name: f.name,
+            masked: !f.replace_with.nil? || !f.replace_with_fake_data.nil?,
+            # A MongoDB mask can neither say NULL nor draw random bytes.
+            safe: false,
+            allow_guessable_credential: f.allow_guessable_credential == true, allow_unmasked: f.allow_unmasked == true,
+            exempt: f.name == config.primary_key || foreign_keys.include?(f.name),
+          )
+        end
+        own + children.fetch(config.name, []).flat_map do |child|
+          describe_fields(child, children, [prefix, child.embedded_in.path].compact.join("."))
+        end
+      end
+
       # Checks that `config` can be masked as declared, before any document is read.
       #
       # @param config [Exwiw::MongodbCollectionConfig] collection to mask
       # @param config_by_name [Hash{String => Exwiw::MongodbCollectionConfig}] every declared collection by name
       # @return [Exwiw::MaskUpdateRunner::Checked]
-      # @raise [Exwiw::MaskUpdateRunner::Error] when the collection declares no mask or masks its primary key, or for an unaccepted credential-looking path
+      # @raise [Exwiw::MaskUpdateRunner::Error] when the collection declares no mask or masks its primary key
       def check_mask_update(config, config_by_name)
         @embedded_children_by_parent = index_embedded_children(config_by_name)
+        described = self.class.describe_masks(config, config_by_name)
 
-        names = mask_target_names(mask_plan(config))
-        if names.empty?
+        unless MaskRules.masked?(described)
           raise MaskUpdateRunner::Error, "collection '#{config.name}' declares no mask (replace_with / replace_with_fake_data) on any field"
         end
-        if names.include?(config.primary_key)
+        if MaskRules.masks_primary_key?(described)
           raise MaskUpdateRunner::Error, "collection '#{config.name}' masks '#{config.primary_key}', which is immutable in MongoDB"
         end
-        # A MongoDB mask can neither say NULL nor draw random bytes, so a credential-looking path always needs an allowance.
-        safe_paths = names.map { |n| [n, false] }
-        allowed = MaskUpdateRunner.check_credential_columns!(config.name, safe_paths, allow_guessable_mask_paths(config))
 
-        MaskUpdateRunner::Checked.new(columns: names, allowed_guessable_columns: allowed)
+        MaskUpdateRunner::Checked.new(columns: mask_target_names(mask_plan(config)))
       end
 
       # One `bulkWrite` of `updateOne`s on a collection: what #mask_update_statements returns. `operations` are what
@@ -311,14 +339,6 @@ module Exwiw
       # @return [void]
       def write_mask_update(io, statement)
         io.puts statement.to_extended_json
-      end
-
-      # Paths (in mask_target_names' form) of the fields that set `allow_guessable_mask`, embedded collections included.
-      private def allow_guessable_mask_paths(config, prefix = nil)
-        own = config.fields.select(&:allow_guessable_mask).map { |f| [prefix, f.name].compact.join(".") }
-        own + embedded_children_of(config).flat_map do |child|
-          allow_guessable_mask_paths(child, [prefix, child.embedded_in.path].compact.join("."))
-        end
       end
 
       private def mask_target_names(plan, prefix = nil)
