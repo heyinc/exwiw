@@ -13,14 +13,20 @@ module Exwiw
     # A table (collection) as the rules see it. `selects_primary_key` is false when the SELECT would not read the key.
     Table = Data.define(:name, :primary_key, :selects_primary_key, :columns)
 
-    # A name that looks like a credential: masking one to a guessable value defeats the mask.
-    CREDENTIAL_NAME = /password|digest|salt|secret|token|credential|encrypted|passcode|api_key|access_key/i
+    # A name that looks like a credential: masking one to a guessable value defeats the mask. `encrypted` is left out, as
+    # it says how a value is stored rather than what it is (DEFAULT_MASK_PATTERNS keeps it).
+    CREDENTIAL_NAME = /password|digest|salt|secret|token|credential|passcode|api_key|access_key|private_?key|jwk/i
+
+    # Names that match a pattern but cannot hold the value it is after: a timestamp (`email_updated_at`,
+    # `access_token_expires_at`).
+    EXCLUDED_NAME = /_at\z/i
 
     # Names that look like they hold sensitive data, in the spirit of Rails' filter_parameters.
     DEFAULT_MASK_PATTERNS = [
-      # Credentials, and one-time passwords
+      # Credentials, one-time passwords, and what is stored encrypted
       CREDENTIAL_NAME,
       /(^|_)otp(_|$)/i,
+      /encrypted/i,
       # Contact details
       /e_?mail/i,
       # `mobile` only as a whole name (or `mobile_number` ...), so that `mobile_order_count` does not match.
@@ -54,7 +60,8 @@ module Exwiw
     # @return [Array<String>] the credential-looking paths masked to a guessable value, allowed or not
     def guessable_credentials(table, patterns = [CREDENTIAL_NAME])
       table.columns.select do |column|
-        column.masked && !column.safe && patterns.any? { |pattern| column.path.match?(pattern) }
+        column.masked && !column.safe && !column.name.match?(EXCLUDED_NAME) &&
+          patterns.any? { |pattern| column.path.match?(pattern) }
       end.map(&:path)
     end
 
@@ -76,7 +83,7 @@ module Exwiw
     # @param patterns [Array<Regexp>]
     # @return [Boolean]
     def sensitive_name?(name, patterns = DEFAULT_MASK_PATTERNS)
-      patterns.any? { |pattern| name.match?(pattern) }
+      !name.match?(EXCLUDED_NAME) && patterns.any? { |pattern| name.match?(pattern) }
     end
 
     # @param table [Exwiw::MaskRules::Table]

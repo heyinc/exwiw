@@ -152,6 +152,20 @@ module Exwiw
         expect(report(check: only_credentials)["guessable_credentials"].map { |entry| entry[/\A\S+/] }).to eq(%w[accounts.shop_pin])
       end
 
+      it "judges by what the name says the value is, not by how it is stored, and leaves out timestamps" do
+        write("accounts", table("accounts", [
+                                  { "name" => "id" },
+                                  { "name" => "encrypted_card_expiry", "replace_with" => "12" },
+                                  { "name" => "encrypted_password", "replace_with" => "x" },
+                                  { "name" => "encrypted_private_jwk", "replace_with" => "x" },
+                                  { "name" => "signing_privatekey", "replace_with" => "x" },
+                                  { "name" => "access_token_expires_at", "replace_with" => "2000-01-01" },
+                                ]))
+
+        expect(report(check: only_credentials)["guessable_credentials"].map { |entry| entry[/\A\S+/] })
+          .to eq(%w[accounts.encrypted_password accounts.encrypted_private_jwk accounts.signing_privatekey])
+      end
+
       it "judges the random expression by the adapter's own functions" do
         write("accounts", table("accounts", [{ "name" => "id" }, { "name" => "api_token", "raw_sql" => "gen_random_uuid()::text" }]))
 
@@ -202,6 +216,20 @@ module Exwiw
         expect(report(check: only_unmasked)["unmasked_sensitive"]).to eq(
           ["users.email [base]: looks sensitive but is not masked; add a mask, or set allow_unmasked if the real value is needed"],
         )
+      end
+
+      it "counts what is stored encrypted, and leaves out timestamps" do
+        write("users", table("users", [
+                               { "name" => "id" },
+                               { "name" => "encrypted_card_expiry" },
+                               { "name" => "email_updated_at" },
+                               { "name" => "phone_verified_at", "allow_unmasked" => true },
+                             ]))
+
+        expect(report(check: only_unmasked)["unmasked_sensitive"]).to eq([
+          "users.encrypted_card_expiry [base]: looks sensitive but is not masked; add a mask, or set allow_unmasked if the real value is needed",
+          "users.phone_verified_at [base]: sets allow_unmasked, but its name matches no mask pattern; remove it",
+        ])
       end
 
       it "exempts the primary key and belongs_to foreign keys" do

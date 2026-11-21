@@ -651,12 +651,14 @@ check:
 The checks:
 
 - `integrity`: every profile's config loads, and every table selects its primary key unmasked. A masked or unselected (ignored) primary key breaks the rows that reference the table, and `mask-update`, which addresses rows by it.
-- `guessable_credentials`: a column (MongoDB: a field path) whose name looks like a credential, masked to anything but NULL or the adapter's random expression (see [`exwiw mask-update`](#exwiw-mask-update)), unless it sets `allow_guessable_credential: true`. A MongoDB mask is never NULL or random. Also an `allow_guessable_credential` that guards no such column. The built-in names are `password`, `digest`, `salt`, `secret`, `token`, `credential`, `encrypted`, `passcode`, `api_key` and `access_key` (case-insensitive, anywhere in the name), and cannot be removed; `patterns` adds regular expressions (case-insensitive) to them, which `unmasked_sensitive` counts too.
+- `guessable_credentials`: a column (MongoDB: a field path) whose name looks like a credential, masked to anything but NULL or the adapter's random expression (see [`exwiw mask-update`](#exwiw-mask-update)), unless it sets `allow_guessable_credential: true`. A MongoDB mask is never NULL or random. Also an `allow_guessable_credential` that guards no such column. The built-in names are `password`, `digest`, `salt`, `secret`, `token`, `credential`, `passcode`, `api_key`, `access_key`, `private_key` (also without `_`) and `jwk` (case-insensitive, anywhere in the name), and cannot be removed; `patterns` adds regular expressions (case-insensitive) to them, which `unmasked_sensitive` counts too.
 - `unmasked_sensitive`: a column (MongoDB: the last segment of a field path) whose name matches a mask pattern but that declares no mask and no `"allow_unmasked": true`, in every table. The primary key and `belongs_to` foreign keys are exempt, as exwiw never masks them. Also an `allow_unmasked` on a column that is masked, exempt, or matches no pattern. The built-in patterns are case-insensitive and cannot be removed; `patterns` adds regular expressions (case-insensitive) to them:
-  - the credential names above, with the `patterns` of `guessable_credentials`, and `otp`
+  - the credential names above, with the `patterns` of `guessable_credentials`; `otp`; `encrypted`
   - `email`, `e_mail`; `phone`, `mobile` (as a whole name, or `mobile_number` and the like), `tel`, `fax`; `address`; `zip`, `postal`
   - `birth`; `first_name`, `last_name`, `middle_name`, `full_name`, `given_name`, `family_name` (also without `_`)
   - `ssn`, `cvv`, `cvc`; `card_number`
+
+Both checks leave out a name ending in `_at` (a timestamp such as `email_updated_at`), even when it matches a pattern.
 
 `allow_unmasked: true` is a decision to export real data, so leave a `comment` saying why.
 
