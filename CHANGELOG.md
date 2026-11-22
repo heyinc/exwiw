@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-22
+
 ### Added
 
 - **`exwiw_maskable?` tells whether `mask_with_exwiw!` would mask a model's rows.** A model that includes `Exwiw::Maskable::ActiveRecordModel` (or `Exwiw::Maskable::MongoidDocument`) gets the class method `exwiw_maskable?(profile: nil)`, which reads the schema only, not the table, and is false where `mask_with_exwiw!` refuses for the schema's sake: the table is not declared, is `ignore: true`, Rails-managed or keyed by a composite primary key, declares no mask, or masks or does not select its primary key (Mongoid: also an embedded document class). A caller masking many models can skip those without rescuing errors, and `mask_with_exwiw!` still refuses them. Both ask the new `Exwiw::Schema#mask_update_refusal(table_name)`, so they cannot disagree. `mask-update` now judges the table before the `--ids`, so a table that declares no mask is reported as such even with no ids.
