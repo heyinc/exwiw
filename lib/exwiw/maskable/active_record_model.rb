@@ -12,6 +12,7 @@ module Exwiw
     #
     #   User.where(id: [1, 2, 3]).mask_with_exwiw!
     #   User.where(organization_id: 1).mask_with_exwiw!(dry_run: true).statements
+    #   User.where(organization_id: 1).mask_with_exwiw! { |summary, statements| log(statements) }
     #   User.all.mask_with_exwiw!   # refused: nothing narrows the rows
     #   user.mask_with_exwiw!
     #
@@ -24,13 +25,14 @@ module Exwiw
       # Masks this record's row in place and, unless `dry_run`, reloads the record.
       #
       # @param options [Hash] as for ClassMethods#mask_with_exwiw!
+      # @yield as for ClassMethods#mask_with_exwiw!
       # @return [Exwiw::Maskable::Result]
       # @raise [Exwiw::MaskUpdateRunner::Error] when the record is not persisted, or its row cannot be masked as declared
-      def mask_with_exwiw!(**options)
+      def mask_with_exwiw!(**options, &block)
         raise MaskUpdateRunner::Error, "#{self.class.name} is not persisted, so it has no row to mask" unless persisted?
 
         # unscoped: a default scope must not hide the record's own row.
-        result = self.class.unscoped.where(self.class.primary_key => id_in_database).mask_with_exwiw!(**options)
+        result = self.class.unscoped.where(self.class.primary_key => id_in_database).mask_with_exwiw!(**options, &block)
         reload unless options[:dry_run]
         result
       end
@@ -47,9 +49,13 @@ module Exwiw
         #   relation's order) and each batch in its own transaction, which joins the caller's when one is open; a
         #   failure leaves the batches before it masked. With false, the rows are read and updated at once in no
         #   transaction of its own; wrap the call in one to make it all-or-nothing
-        # @return [Exwiw::Maskable::Result] statements are SQL UPDATEs
+        # @yield [summary, statements] once each batch is done (after its transaction, or after the single batch
+        #   with `batch: false`); the statements are then not kept in the result
+        # @yieldparam summary [Exwiw::MaskUpdateRunner::Summary] the batch's summary
+        # @yieldparam statements [Array<String>] the batch's SQL UPDATEs, executed unless `dry_run`
+        # @return [Exwiw::Maskable::Result] statements are SQL UPDATEs with `dry_run` and no block, nil otherwise
         # @raise [Exwiw::MaskUpdateRunner::Error] when nothing narrows the rows, or they cannot be masked as declared; nothing of the batch is updated then
-        def mask_with_exwiw!(touch: true, dry_run: false, profile: nil, batch: true)
+        def mask_with_exwiw!(touch: true, dry_run: false, profile: nil, batch: true, &block)
           scope = current_scope
           if scope.nil? || scope.where_clause.empty? || scope.where_clause == default_scoped.where_clause
             raise MaskUpdateRunner::Error,
@@ -58,9 +64,9 @@ module Exwiw
 
           options = { touch: touch, dry_run: dry_run, profile: profile, batch: batch }
           # with_connection appeared in ActiveRecord 7.2.
-          return mask_with_connection(connection, **options) unless respond_to?(:with_connection)
+          return mask_with_connection(connection, **options, &block) unless respond_to?(:with_connection)
 
-          with_connection { |connection| mask_with_connection(connection, **options) }
+          with_connection { |connection| mask_with_connection(connection, **options, &block) }
         end
 
         # Whether the schema lets `mask_with_exwiw!` mask this model's rows: the table is declared, is not
@@ -76,7 +82,7 @@ module Exwiw
           Maskable.maskable?(self, TableConfig, table_name, profile)
         end
 
-        private def mask_with_connection(connection, touch:, dry_run:, profile:, batch:)
+        private def mask_with_connection(connection, touch:, dry_run:, profile:, batch:, &block)
           now = connection.quoted_date(current_time_from_proper_timezone) if touch
           source = DataSource.given(Maskable::ActiveRecordModel.exwiw_adapter_name(connection), connection.raw_connection)
           schema = Maskable.schema_for(self, source, profile)
@@ -89,18 +95,23 @@ module Exwiw
             statements.each { |sql| connection.execute(sql) } unless dry_run
             [summary, statements]
           end
+          # Only a dry run without a block keeps the statements, so batches do not pile them up in memory otherwise.
+          done = lambda do |(summary, statements)|
+            block&.call(summary, statements)
+            [summary, dry_run && !block ? statements : nil]
+          end
 
           parts =
             if batch
               in_batches(of: MaskUpdateRunner::CHUNK_SIZE).map do |relation|
                 ids = relation.pluck(arel_table[primary_key])
-                dry_run ? mask.(ids) : connection.transaction { mask.(ids) }
+                done.(dry_run ? mask.(ids) : connection.transaction { mask.(ids) })
               end
             else
-              [mask.(all.pluck(arel_table[primary_key]))]
+              [done.(mask.(all.pluck(arel_table[primary_key])))]
             end
           summary = MaskUpdateRunner::Summary.merge(table_name, parts.map(&:first))
-          Result.new(summary: summary, statements: parts.flat_map(&:last))
+          Result.new(summary: summary, statements: dry_run && !block ? parts.flat_map(&:last) : nil)
         end
       end
 
