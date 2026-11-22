@@ -20,13 +20,26 @@ module Exwiw
     # @param profile [String, nil]
     # @return [Exwiw::Schema]
     def self.schema_for(model, source, profile)
+      load_schema(model, source.adapter_class.table_config_class, profile)
+    end
+
+    # Whether the schema lets `mask_with_exwiw!` mask the rows of `table_name` (see ActiveRecordModel and
+    # MongoidDocument `exwiw_maskable?`).
+    #
+    # @param model [Class] the model to mask
+    # @param config_class [Class] TableConfig or MongodbCollectionConfig
+    # @param table_name [String] the table (collection) to mask
+    # @param profile [String, nil]
+    # @return [Boolean]
+    def self.maskable?(model, config_class, table_name, profile)
+      load_schema(model, config_class, profile).mask_update_refusal(table_name).nil?
+    end
+
+    private_class_method def self.load_schema(model, config_class, profile)
       # Looked up rather than defaulted in ClassMethods, whose default would shadow a concern's `class_methods`.
       config_path = model.exwiw_config_path if model.respond_to?(:exwiw_config_path)
       schema_dir = model.exwiw_schema_dir if model.respond_to?(:exwiw_schema_dir)
-      SchemaCache.shared.fetch(
-        config_class: source.adapter_class.table_config_class, schema_dir: schema_dir&.to_s, profile: profile,
-        config_path: config_path,
-      )
+      SchemaCache.shared.fetch(config_class: config_class, schema_dir: schema_dir&.to_s, profile: profile, config_path: config_path)
     end
 
     # Builds the statements that mask the rows of `table_name` whose primary keys are `ids`.

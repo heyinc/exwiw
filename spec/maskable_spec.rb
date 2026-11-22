@@ -324,6 +324,59 @@ module Exwiw
         end
       end
 
+      describe ".exwiw_maskable?" do
+        let(:base) { MaskableSpecModels::SqliteRecord }
+
+        before do
+          base.establish_connection(adapter: "sqlite3", database: ":memory:")
+          id = { name: "id" }
+          email = { name: "email", replace_with: "x{id}" }
+          {
+            "masked" => { columns: [id, email] },
+            "unmasked" => { columns: [id, { name: "email" }] },
+            "ignored" => { columns: [id, email], ignore: true },
+            "masked_key" => { columns: [{ name: "id", replace_with: 0 }, email] },
+            "unselected_key" => { columns: [email] },
+          }.each { |name, config| write_schema(name: name, primary_key: "id", **config) }
+        end
+
+        after { base.remove_connection }
+
+        def model(table, config_path: nil)
+          Class.new(base) do
+            self.table_name = table
+            include Exwiw::Maskable::ActiveRecordModel
+
+            define_singleton_method(:exwiw_config_path) { config_path }
+            define_singleton_method(:exwiw_schema_dir) { config_path ? nil : MaskableSpecModels.schema_dir }
+          end
+        end
+
+        it "tells whether mask_with_exwiw! would mask the table's rows, without reading the table" do
+          expect(model("masked").exwiw_maskable?).to be(true)
+          %w[unmasked ignored masked_key unselected_key undeclared].each do |table|
+            expect(model(table).exwiw_maskable?).to be(false), table
+          end
+        end
+
+        it "agrees with the refusal of mask_with_exwiw!" do
+          base.connection.create_table(:masked_key) { |t| t.string :email }
+          record = model("masked_key").create!(email: "a@x")
+
+          expect { record.mask_with_exwiw! }.to raise_error(MaskUpdateRunner::Error, /masks its primary key/)
+        end
+
+        it "applies the given profile" do
+          path = File.join(@schema_dir, "exwiw.yml")
+          File.write(path, "schema_dir: .\nprofiles: [dev]\n")
+          File.write(File.join(@schema_dir, "unmasked.dev.json"), JSON.dump(name: "unmasked", columns: [{ name: "email", replace_with: "x" }]))
+          unmasked = model("unmasked", config_path: path)
+
+          expect(unmasked.exwiw_maskable?).to be(false)
+          expect(unmasked.exwiw_maskable?(profile: "dev")).to be(true)
+        end
+      end
+
       context "with exwiw_config_path" do
         let(:base) { MaskableSpecModels::SqliteRecord }
 
@@ -502,6 +555,16 @@ module Exwiw
         expect(a.mask_with_exwiw!.summary.target_count).to eq(1)
         expect(a.email).to eq("masked#{a._id}@example.com")
         expect(b.reload.email).to eq("b@x")
+      end
+
+      it "tells with exwiw_maskable? whether mask_with_exwiw! would mask the documents, without reading the collection" do
+        write_schema(
+          name: "maskable_spec_orders", primary_key: "_id", belongs_tos: [], fields: [{ name: "_id" }, { name: "note" }],
+        )
+
+        expect(model.exwiw_maskable?).to be(true)
+        expect(MaskableSpecModels::MongoidOrder.exwiw_maskable?).to be(false)
+        expect(MaskableSpecModels::MongoidOrderLine.exwiw_maskable?).to be(false)
       end
 
       it "refuses a criteria with no condition of its own, default scope or not" do

@@ -2,8 +2,8 @@
 
 module Exwiw
   # The rules over a table's masks. `mask-update` enforces the primary key ones before it reads a row, and `schema
-  # check` reports them all from the committed config. Each adapter class describes a loaded table for them with
-  # `describe_masks`.
+  # check` reports them all from the committed config. Each config class (TableConfig, MongodbCollectionConfig)
+  # describes a loaded table for them with `describe_masks`.
   module MaskRules
     # A column (MongoDB: a field path, embedded fields included) as the rules see it. `name` is the last path segment,
     # `masked` says a mask is declared, `safe` that it is `unset` or `replace_with_random`, and `exempt`

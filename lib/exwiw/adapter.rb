@@ -98,27 +98,14 @@ module Exwiw
         raise NotImplementedError
       end
 
-      # Describes a loaded table (collection) for Exwiw::MaskRules, without a connection: what #check_mask_update and
-      # the schema check judge.
-      #
-      # @param _table [Exwiw::TableConfig, Exwiw::MongodbCollectionConfig] a loaded table (collection)
-      # @param _table_by_name [Hash{String => Object}] every declared table by name
-      # @return [Exwiw::MaskRules::Table]
-      def self.describe_masks(_table, _table_by_name)
-        raise NotImplementedError, "#{name} does not implement .describe_masks"
-      end
-
-      # Checks that the table (collection) can be masked as declared, before any row is read. Exwiw::MaskUpdateRunner
-      # calls this after validating the table and the primary key values. An implementation judges what
-      # .describe_masks returns with Exwiw::MaskRules: it raises for a table that declares no mask or masks its primary
-      # key.
+      # The columns (MongoDB: field paths) Exwiw::MaskUpdateRunner sets on the rows of a table (collection) whose
+      # masks the config has already judged maskable (see TableConfig#mask_refusal).
       #
       # @param _table [Exwiw::TableConfig, Exwiw::MongodbCollectionConfig] the table (collection) to mask
       # @param _table_by_name [Hash{String => Object}] every declared table by name, as for #build_query
-      # @return [Exwiw::MaskUpdateRunner::Checked]
-      # @raise [Exwiw::MaskUpdateRunner::Error] when the table cannot be masked as declared
-      def check_mask_update(_table, _table_by_name)
-        raise NotImplementedError, "#{self.class.name} does not implement #check_mask_update"
+      # @return [Array<String>]
+      def mask_update_columns(_table, _table_by_name)
+        raise NotImplementedError, "#{self.class.name} does not implement #mask_update_columns"
       end
 
       # Builds the statements that mask the rows of `results` in place, with no header or transaction control: the

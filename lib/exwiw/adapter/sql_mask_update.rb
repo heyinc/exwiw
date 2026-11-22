@@ -5,66 +5,11 @@ module Exwiw
     # Mask-UPDATE output shared by the SQL adapters, the counterpart of SqlBulkInsert: it formats the rows
     # MaskUpdateRunner reads with #build_query and #execute as UPDATE statements.
     module SqlMaskUpdate
-      def self.included(base)
-        base.extend(ClassMethods)
-      end
-
-      # Class-level so the schema check can describe a table without an adapter instance.
-      module ClassMethods
-        # @param table [Exwiw::TableConfig] a loaded table
-        # @param _table_by_name [Hash{String => Exwiw::TableConfig}] every declared table by name
-        # @return [Exwiw::MaskRules::Table]
-        def describe_masks(table, _table_by_name)
-          foreign_keys = table.belongs_tos.map(&:foreign_key)
-          columns = table.columns.map do |c|
-            MaskRules::Column.new(
-              path: c.name, name: c.name, masked: mask_declared?(c), safe: safe_for_credential?(c),
-              allow_guessable_credential: c.allow_guessable_credential == true, allow_unmasked: c.allow_unmasked == true,
-              exempt: c.name == table.primary_key || foreign_keys.include?(c.name),
-            )
-          end
-          MaskRules::Table.new(
-            name: table.name, primary_key: table.primary_key,
-            selects_primary_key: table.columns.any? { |c| c.name == table.primary_key }, columns: columns,
-          )
-        end
-
-        # @param column [Exwiw::TableColumn]
-        # @return [Boolean]
-        def mask_declared?(column)
-          !!(column.raw_sql || !column.replace_with.nil? || column.map || column.replace_with_fake_data ||
-            column.replace_with_random || column.unset)
-        end
-
-        # @param column [Exwiw::TableColumn]
-        # @return [Boolean] whether the mask leaves nothing to guess
-        def safe_for_credential?(column)
-          !!(column.unset || column.replace_with_random)
-        end
-      end
-
-      # Checks that `table` can be masked as declared, before any row is read.
-      #
       # @param table [Exwiw::TableConfig] table to mask
-      # @param table_by_name [Hash{String => Exwiw::TableConfig}] every declared table by name
-      # @return [Exwiw::MaskUpdateRunner::Checked]
-      # @raise [Exwiw::MaskUpdateRunner::Error] when the table declares no mask, or masks or does not select its primary key
-      def check_mask_update(table, table_by_name)
-        described = self.class.describe_masks(table, table_by_name)
-        unless MaskRules.masked?(described)
-          raise MaskUpdateRunner::Error,
-                "table '#{table.name}' declares no mask on any column"
-        end
-        if MaskRules.masks_primary_key?(described)
-          raise MaskUpdateRunner::Error,
-                "table '#{table.name}' masks its primary key '#{table.primary_key}', which selects the rows to update"
-        end
-        unless described.selects_primary_key
-          raise MaskUpdateRunner::Error,
-                "table '#{table.name}' does not select its primary key '#{table.primary_key}' (is it ignored?), so its rows cannot be addressed"
-        end
-
-        MaskUpdateRunner::Checked.new(columns: masked_columns(table).map(&:name))
+      # @param _table_by_name [Hash{String => Exwiw::TableConfig}] every declared table by name
+      # @return [Array<String>] the masked columns
+      def mask_update_columns(table, _table_by_name)
+        masked_columns(table).map(&:name)
       end
 
       # Builds the UPDATEs that set every masked column of the rows of `results` to the values `results` holds for
@@ -117,7 +62,7 @@ module Exwiw
       end
 
       private def masked_columns(table)
-        table.columns.select { |c| self.class.mask_declared?(c) }
+        table.columns.select(&:mask_declared?)
       end
 
       # A Time is written in its own zone without an offset (pass it in the zone the column stores), a Date as a date.

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`exwiw_maskable?` tells whether `mask_with_exwiw!` would mask a model's rows.** A model that includes `Exwiw::Maskable::ActiveRecordModel` (or `Exwiw::Maskable::MongoidDocument`) gets the class method `exwiw_maskable?(profile: nil)`, which reads the schema only, not the table, and is false where `mask_with_exwiw!` refuses for the schema's sake: the table is not declared, is `ignore: true`, Rails-managed or keyed by a composite primary key, declares no mask, or masks or does not select its primary key (Mongoid: also an embedded document class). A caller masking many models can skip those without rescuing errors, and `mask_with_exwiw!` still refuses them. Both ask the new `Exwiw::Schema#mask_update_refusal(table_name)`, so they cannot disagree. `mask-update` now judges the table before the `--ids`, so a table that declares no mask is reported as such even with no ids.
+
+### Changed
+
+- **The masks are judged by the config classes rather than the adapters.** `TableConfig` and `MongodbCollectionConfig` gain `#unmaskable_reason`, `#describe_masks(config_by_name)` and `#mask_refusal(config_by_name)`, and columns (fields) `#mask_declared?` and `#safe_for_credential?`; `mask-update` and `schema check` use them. `Exwiw::MaskUpdateRunner.unmaskable_reason`, `Exwiw::MaskUpdateRunner::Checked`, the adapters' `.describe_masks`, `.mask_declared?`, `.safe_for_credential?` and `#check_mask_update` are removed (an adapter now implements `#mask_update_columns`). The CLI and `mask_with_exwiw!` are unchanged.
+
 ## [1.3.0] - 2026-11-21
 
 ### Added

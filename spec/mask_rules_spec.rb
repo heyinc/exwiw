@@ -36,7 +36,7 @@ module Exwiw
           ],
         )
 
-        described = Adapter::SqliteAdapter.describe_masks(table, { "users" => table })
+        described = table.describe_masks({ "users" => table })
         expect(described.columns.map { |c| [c.path, c.masked, c.safe, c.exempt, c.allow_unmasked] }).to eq([
           ["id", false, false, true, false],
           ["shop_id", false, false, true, false],
@@ -65,7 +65,7 @@ module Exwiw
           embedded_in: { collection_name: "users", path: "notes" },
         )
 
-        described = Adapter::MongodbAdapter.describe_masks(users, { "users" => users, "cards" => cards, "notes" => ignored })
+        described = users.describe_masks({ "users" => users, "cards" => cards, "notes" => ignored })
         expect(described.columns.map { |c| [c.path, c.name, c.masked, c.safe, c.exempt] }).to eq([
           ["_id", "_id", false, false, true],
           ["token", "token", true, false, false],

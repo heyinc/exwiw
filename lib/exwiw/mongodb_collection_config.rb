@@ -81,6 +81,57 @@ module Exwiw
       !embedded_in.nil?
     end
 
+    # Why this collection cannot be masked in place at all, whatever its masks; the schema check skips such collections.
+    #
+    # @return [String, nil] the reason, or nil when it can be masked
+    def unmaskable_reason
+      return "table '#{name}' is declared ignore: true" if ignore
+      return unless embedded?
+
+      "collection '#{name}' is embedded in '#{embedded_in.collection_name}'; " \
+        "its masks apply through the parent collection's documents, so pass the parent instead"
+    end
+
+    # Describes this collection for Exwiw::MaskRules: its own fields and, under their paths, those of the collections
+    # embedded in it.
+    #
+    # @param config_by_name [Hash{String => Exwiw::MongodbCollectionConfig}] every declared collection by name
+    # @return [Exwiw::MaskRules::Table]
+    def describe_masks(config_by_name)
+      children = config_by_name.each_value.select { |c| c.embedded? && !c.ignore }.group_by { |c| c.embedded_in.collection_name }
+      MaskRules::Table.new(
+        name: name, primary_key: primary_key,
+        # The primary key is always projected (see MongodbAdapter#build_projection).
+        selects_primary_key: true, columns: describe_fields(children, nil),
+      )
+    end
+
+    # Why the documents cannot be masked in place as the masks are declared, before any document is read.
+    #
+    # @param config_by_name [Hash{String => Exwiw::MongodbCollectionConfig}] every declared collection by name
+    # @return [String, nil] the reason, or nil when they can be masked
+    def mask_refusal(config_by_name)
+      described = describe_masks(config_by_name)
+      return "collection '#{name}' declares no mask on any field" unless MaskRules.masked?(described)
+      return unless MaskRules.masks_primary_key?(described)
+
+      "collection '#{name}' masks '#{primary_key}', which is immutable in MongoDB"
+    end
+
+    protected def describe_fields(children, prefix)
+      foreign_keys = belongs_tos.map(&:foreign_key)
+      own = fields.map do |f|
+        MaskRules::Column.new(
+          path: [prefix, f.name].compact.join("."), name: f.name, masked: f.mask_declared?, safe: f.safe_for_credential?,
+          allow_guessable_credential: f.allow_guessable_credential == true, allow_unmasked: f.allow_unmasked == true,
+          exempt: f.name == primary_key || foreign_keys.include?(f.name),
+        )
+      end
+      own + children.fetch(name, []).flat_map do |child|
+        child.describe_fields(children, [prefix, child.embedded_in.path].compact.join("."))
+      end
+    end
+
     # The names of the fields flagged `ignore:true`, kept answerable after
     # #reject_ignored_members! has dropped the entries: an embedded config's
     # subdocuments arrive inside the parent's document, so masking is the only

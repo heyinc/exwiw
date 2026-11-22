@@ -50,5 +50,17 @@ module Exwiw
 
       raise ArgumentError, "the schema in #{dir} was loaded as #{config_class.name}, but #{adapter_class.name} reads #{adapter_class.table_config_class.name}"
     end
+
+    # Why the rows of `table_name` cannot be masked in place as declared, judged before any row is read: what
+    # `mask-update` and `mask_with_exwiw!` refuse.
+    #
+    # @param table_name [String] the table (collection) to mask
+    # @return [String, nil] the reason, or nil when its rows can be masked
+    def mask_update_refusal(table_name)
+      table = table_by_name[table_name.to_s]
+      return "table '#{table_name}' is not declared in the schema (#{dir})" if table.nil?
+
+      table.unmaskable_reason || table.mask_refusal(table_by_name)
+    end
   end
 end
