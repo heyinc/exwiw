@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — `mask_with_exwiw!` returns the statements only with `dry_run: true`; otherwise `Result#statements` is nil.** It used to keep every statement it executed and return them all, so masking a large relation in batches still held the SQL of every batch in memory until it returned. Each batch's statements are now dropped once executed. Call it with `dry_run: true` to see the statements.
+
 ## [1.4.0] - 2026-11-22
 
 ### Added

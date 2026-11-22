@@ -47,7 +47,7 @@ module Exwiw
         #   relation's order) and each batch in its own transaction, which joins the caller's when one is open; a
         #   failure leaves the batches before it masked. With false, the rows are read and updated at once in no
         #   transaction of its own; wrap the call in one to make it all-or-nothing
-        # @return [Exwiw::Maskable::Result] statements are SQL UPDATEs
+        # @return [Exwiw::Maskable::Result] statements are SQL UPDATEs with `dry_run`, nil otherwise
         # @raise [Exwiw::MaskUpdateRunner::Error] when nothing narrows the rows, or they cannot be masked as declared; nothing of the batch is updated then
         def mask_with_exwiw!(touch: true, dry_run: false, profile: nil, batch: true)
           scope = current_scope
@@ -85,9 +85,12 @@ module Exwiw
             summary, statements = Maskable.plan(
               source: source, schema: schema, table_name: table_name, ids: ids, extra_assignments: extra_assignments, logger: logger,
             )
+            return [summary, statements] if dry_run
+
             # Writes go through ActiveRecord, not the raw connection, so its transaction and query cache see them.
-            statements.each { |sql| connection.execute(sql) } unless dry_run
-            [summary, statements]
+            statements.each { |sql| connection.execute(sql) }
+            # Not kept, so batches do not pile up their statements in memory.
+            [summary, nil]
           end
 
           parts =
@@ -100,7 +103,7 @@ module Exwiw
               [mask.(all.pluck(arel_table[primary_key]))]
             end
           summary = MaskUpdateRunner::Summary.merge(table_name, parts.map(&:first))
-          Result.new(summary: summary, statements: parts.flat_map(&:last))
+          Result.new(summary: summary, statements: dry_run ? parts.flat_map(&:last) : nil)
         end
       end
 

@@ -49,7 +49,7 @@ module Exwiw
         # @param profile [String, nil] the schema profile to apply. The schema is found through the class methods
         #   `exwiw_config_path` and `exwiw_schema_dir` when the class defines them (see Exwiw::Maskable.schema_for)
         # @return [Exwiw::Maskable::Result] statements are Exwiw::Adapter::MongodbAdapter::MaskUpdateBulkWrite
-        #   (`#to_extended_json` gives the line `mask-update` prints)
+        #   (`#to_extended_json` gives the line `mask-update` prints) with `dry_run`, nil otherwise
         # @raise [Exwiw::MaskUpdateRunner::Error] when nothing narrows the documents, the class is embedded, or the documents
         #   cannot be masked as declared; nothing is written then
         def mask_with_exwiw!(touch: true, dry_run: false, profile: nil)
@@ -77,12 +77,12 @@ module Exwiw
             extra_assignments: touch && fields.key?("updated_at") ? { "updated_at" => Time.now.utc } : {},
             logger: logger,
           )
-          unless dry_run
-            bulk_writes.each do |bulk_write|
-              client[bulk_write.collection_name].bulk_write(bulk_write.driver_operations, session ? { session: session } : {})
-            end
+          return Result.new(summary: summary, statements: bulk_writes) if dry_run
+
+          bulk_writes.each do |bulk_write|
+            client[bulk_write.collection_name].bulk_write(bulk_write.driver_operations, session ? { session: session } : {})
           end
-          Result.new(summary: summary, statements: bulk_writes)
+          Result.new(summary: summary, statements: nil)
         end
 
         # Whether the schema lets `mask_with_exwiw!` mask this model's documents: the class is not embedded, and its

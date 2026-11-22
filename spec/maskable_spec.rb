@@ -149,7 +149,7 @@ module Exwiw
             result = account.where(city: "tokyo").mask_with_exwiw!
 
             expect(result.summary).to have_attributes(target_count: 1, columns: %w[email born_at], missing_primary_key_values: [])
-            expect(result.statements).to contain_exactly(a_string_matching(/\AUPDATE .*updated_at.* = '\d{4}-\d\d-\d\d [\d:.]+'/))
+            expect(result.statements).to be_nil
             a.reload
             expect(a).to have_attributes(email: "masked#{a.id}@example.com", city: "tokyo")
             expect(a.born_at.year).to eq(2000)
@@ -160,9 +160,9 @@ module Exwiw
           it "leaves updated_at alone with touch: false" do
             a = create_account("a@x", "tokyo")
 
-            result = account.where(id: a.id).mask_with_exwiw!(touch: false)
+            expect(account.where(id: a.id).mask_with_exwiw!(touch: false, dry_run: true).statements.join).not_to include("updated_at")
+            account.where(id: a.id).mask_with_exwiw!(touch: false)
 
-            expect(result.statements.join).not_to include("updated_at")
             expect(a.reload).to have_attributes(email: "masked#{a.id}@example.com", updated_at: long_ago)
           end
 
@@ -172,7 +172,7 @@ module Exwiw
             result = account.where(id: a.id).mask_with_exwiw!(dry_run: true)
 
             expect(result.summary.target_count).to eq(1)
-            expect(result.statements).to contain_exactly(a_string_starting_with("UPDATE "))
+            expect(result.statements).to contain_exactly(a_string_matching(/\AUPDATE .*updated_at.* = '\d{4}-\d\d-\d\d [\d:.]+'/))
             expect(a.reload.email).to eq("a@x")
           end
 
@@ -220,13 +220,13 @@ module Exwiw
           it "masks the relation in batches of CHUNK_SIZE rows, each in its own transaction" do
             stub_const("Exwiw::MaskUpdateRunner::CHUNK_SIZE", 2)
             accounts = Array.new(3) { |i| create_account("#{i}@x", "tokyo") }
+            expect(account.where(city: "tokyo").mask_with_exwiw!(dry_run: true).statements.size).to eq(name == :sqlite ? 3 : 2)
             transactions = count_transactions
 
             result = account.where(city: "tokyo").mask_with_exwiw!
 
             expect(transactions.call).to eq(2)
             expect(result.summary).to have_attributes(target_count: 3, columns: %w[email born_at], missing_primary_key_values: [])
-            expect(result.statements.size).to eq(name == :sqlite ? 3 : 2)
             expect(account.order(:id).pluck(:email)).to eq(accounts.map { |a| "masked#{a.id}@example.com" })
           end
 
@@ -257,9 +257,9 @@ module Exwiw
           it "masks nothing for an empty relation" do
             create_account("a@x", "tokyo")
 
+            expect(account.where(city: "nowhere").mask_with_exwiw!(dry_run: true).statements).to eq([])
             result = account.where(city: "nowhere").mask_with_exwiw!
 
-            expect(result).to have_attributes(statements: [])
             expect(result.summary.target_count).to eq(0)
           end
 
@@ -517,13 +517,14 @@ module Exwiw
         a = create_user("a")
         b = create_user("b")
 
-        result = model.where(name: "a").mask_with_exwiw!
-
-        expect(result.summary).to have_attributes(target_count: 1, columns: %w[email token])
-        expect(result.statements.sole).to have_attributes(
+        expect(model.where(name: "a").mask_with_exwiw!(dry_run: true).statements.sole).to have_attributes(
           collection_name: "maskable_spec_users",
           operations: [{ "updateOne" => { "filter" => { "_id" => a._id }, "update" => { "$set" => hash_including("updated_at") } } }],
         )
+        result = model.where(name: "a").mask_with_exwiw!
+
+        expect(result.summary).to have_attributes(target_count: 1, columns: %w[email token])
+        expect(result.statements).to be_nil
         a.reload
         expect(a).to have_attributes(name: "a", email: "masked#{a._id}@example.com", token: "fixed")
         expect(a.updated_at).to be > long_ago
