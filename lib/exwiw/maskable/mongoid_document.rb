@@ -25,9 +25,10 @@ module Exwiw
       # Masks this document in place and, unless `dry_run`, reloads it.
       #
       # @param options [Hash] as for ClassMethods#mask_with_exwiw!
+      # @yield as for ClassMethods#mask_with_exwiw!
       # @return [Exwiw::Maskable::Result]
       # @raise [Exwiw::MaskUpdateRunner::Error] when the document is not persisted, or cannot be masked as declared
-      def mask_with_exwiw!(**options)
+      def mask_with_exwiw!(**options, &block)
         raise MaskUpdateRunner::Error, "#{self.class.name} is not persisted, so it has no document to mask" unless persisted?
         if embedded?
           raise MaskUpdateRunner::Error,
@@ -35,7 +36,7 @@ module Exwiw
         end
 
         # unscoped: a default scope must not hide the document itself.
-        result = self.class.unscoped.where(_id: _id).mask_with_exwiw!(**options)
+        result = self.class.unscoped.where(_id: _id).mask_with_exwiw!(**options, &block)
         reload unless options[:dry_run]
         result
       end
@@ -48,11 +49,15 @@ module Exwiw
         # @param dry_run [Boolean] only build the bulk writes, without executing them
         # @param profile [String, nil] the schema profile to apply. The schema is found through the class methods
         #   `exwiw_config_path` and `exwiw_schema_dir` when the class defines them (see Exwiw::Maskable.schema_for)
+        # @yield [summary, statements] once the documents are written (one batch: documents are not masked in batches);
+        #   the statements are then not kept in the result
+        # @yieldparam summary [Exwiw::MaskUpdateRunner::Summary]
+        # @yieldparam statements [Array<Exwiw::Adapter::MongodbAdapter::MaskUpdateBulkWrite>] written unless `dry_run`
         # @return [Exwiw::Maskable::Result] statements are Exwiw::Adapter::MongodbAdapter::MaskUpdateBulkWrite
-        #   (`#to_extended_json` gives the line `mask-update` prints) with `dry_run`, nil otherwise
+        #   (`#to_extended_json` gives the line `mask-update` prints) with `dry_run` and no block, nil otherwise
         # @raise [Exwiw::MaskUpdateRunner::Error] when nothing narrows the documents, the class is embedded, or the documents
         #   cannot be masked as declared; nothing is written then
-        def mask_with_exwiw!(touch: true, dry_run: false, profile: nil)
+        def mask_with_exwiw!(touch: true, dry_run: false, profile: nil, &block)
           if embedded?
             raise MaskUpdateRunner::Error,
                   "#{name} is embedded; its masks apply through the parent's documents, so mask the parent instead"
@@ -77,12 +82,13 @@ module Exwiw
             extra_assignments: touch && fields.key?("updated_at") ? { "updated_at" => Time.now.utc } : {},
             logger: logger,
           )
-          return Result.new(summary: summary, statements: bulk_writes) if dry_run
-
-          bulk_writes.each do |bulk_write|
-            client[bulk_write.collection_name].bulk_write(bulk_write.driver_operations, session ? { session: session } : {})
+          unless dry_run
+            bulk_writes.each do |bulk_write|
+              client[bulk_write.collection_name].bulk_write(bulk_write.driver_operations, session ? { session: session } : {})
+            end
           end
-          Result.new(summary: summary, statements: nil)
+          block&.call(summary, bulk_writes)
+          Result.new(summary: summary, statements: dry_run && !block ? bulk_writes : nil)
         end
 
         # Whether the schema lets `mask_with_exwiw!` mask this model's documents: the class is not embedded, and its

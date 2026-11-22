@@ -254,6 +254,45 @@ module Exwiw
             expect(account.order(:id).pluck(:email)).to eq(accounts.map { |a| "masked#{a.id}@example.com" })
           end
 
+          it "yields each batch once its transaction is done, keeping none of the statements" do
+            stub_const("Exwiw::MaskUpdateRunner::CHUNK_SIZE", 2)
+            accounts = Array.new(3) { |i| create_account("#{i}@x", "tokyo") }
+            yielded = []
+
+            result = account.where(city: "tokyo").mask_with_exwiw! do |summary, statements|
+              yielded << [summary.target_count, statements.size, connection.transaction_open?, account.where.not("email LIKE 'masked%'").count]
+            end
+
+            per_batch = name == :sqlite ? [2, 1] : [1, 1]
+            expect(yielded).to eq([[2, per_batch[0], false, 1], [1, per_batch[1], false, 0]])
+            expect(result.statements).to be_nil
+            expect(result.summary.target_count).to eq(3)
+            expect(account.order(:id).pluck(:email)).to eq(accounts.map { |a| "masked#{a.id}@example.com" })
+          end
+
+          it "yields the statements of a dry run without executing or keeping them" do
+            a = create_account("a@x", "tokyo")
+            yielded = []
+
+            result = account.where(id: a.id).mask_with_exwiw!(dry_run: true) { |_, statements| yielded.concat(statements) }
+
+            expect(yielded).to contain_exactly(a_string_starting_with("UPDATE "))
+            expect(result.statements).to be_nil
+            expect(result.summary.target_count).to eq(1)
+            expect(a.reload.email).to eq("a@x")
+          end
+
+          it "yields once with batch: false, and passes the block through a record" do
+            stub_const("Exwiw::MaskUpdateRunner::CHUNK_SIZE", 2)
+            a, = Array.new(3) { |i| create_account("#{i}@x", "tokyo") }
+
+            counts = []
+            account.where(city: "tokyo").mask_with_exwiw!(batch: false, dry_run: true) { |summary, _| counts << summary.target_count }
+            a.mask_with_exwiw!(dry_run: true) { |summary, _| counts << summary.target_count }
+
+            expect(counts).to eq([3, 1])
+          end
+
           it "masks nothing for an empty relation" do
             create_account("a@x", "tokyo")
 
@@ -537,6 +576,17 @@ module Exwiw
         model.where(name: "a").mask_with_exwiw!(touch: false)
 
         expect(a.reload).to have_attributes(email: "masked#{a._id}@example.com", updated_at: long_ago)
+      end
+
+      it "yields the bulk writes once they are written, keeping none of them" do
+        a = create_user("a")
+        yielded = []
+
+        result = model.where(name: "a").mask_with_exwiw! { |summary, bulk_writes| yielded << [summary.target_count, bulk_writes.size, a.reload.email] }
+
+        expect(yielded).to eq([[1, 1, "masked#{a._id}@example.com"]])
+        expect(result.statements).to be_nil
+        expect(result.summary.target_count).to eq(1)
       end
 
       it "only returns the bulk writes with dry_run: true" do

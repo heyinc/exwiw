@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`mask_with_exwiw!` takes an optional block, told of each batch once it is done.** It yields the batch's summary and statements (`mask_with_exwiw!(dry_run: true) { |summary, statements| ... }`), after the batch's transaction and with or without `dry_run`. Given a block, it keeps no statements (`Result#statements` is nil) and returns the total summary, so the statements of a large relation can be handled batch by batch without holding them all. Mongoid masks in one batch, so the block is called once.
+
 ### Changed
 
 - **BREAKING — `mask_with_exwiw!` returns the statements only with `dry_run: true`; otherwise `Result#statements` is nil.** It used to keep every statement it executed and return them all, so masking a large relation in batches still held the SQL of every batch in memory until it returned. Each batch's statements are now dropped once executed. Call it with `dry_run: true` to see the statements.
